@@ -1,0 +1,46 @@
+{
+  "lastChangelogVersion": "0.87.1",
+  "theme": "light",
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-fable-5-1",
+  "packages": [
+    "npm:pi-simplify",
+    "git:github.com/DietrichGebert/ponytail",
+    "npm:@ian-pascoe/pi-lsp",
+    "npm:@richardgill/pi-background-bash",
+    "git:github.com/emilkowalski/skills"
+  ],
+  "lsp": {
+    "servers": {
+      "typescript": {
+        "command": "npx",
+        "args": [
+          "--no-install",
+          "tsc",
+          "--lsp",
+          "--stdio"
+        ],
+        "languages": [
+          {
+            "extensions": [
+              ".ts",
+              ".mts",
+              ".cts"
+            ],
+            "languageId": "typescript"
+          },
+          {
+            "extensions": [
+              ".tsx"
+            ],
+            "languageId": "typescriptreact"
+          }
+        ],
+        "requireRootMarker": true,
+        "rootMarkers": [
+          "tsconfig.json"
+        ]
+      }
+    }
+  }
+}

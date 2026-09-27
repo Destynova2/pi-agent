@@ -1,0 +1,89 @@
+import { spawn } from "node:child_process";
+
+interface Options {
+  cwd: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxBytes?: number;
+  graceMs?: number;
+}
+
+/** Exécute sans shell et arrête le groupe POSIX avant de rendre une annulation. */
+export function runProcess(program: string, args: string[], options: Options): Promise<string> {
+  if (process.platform === "win32") return Promise.reject(new Error("Supervision POSIX requise"));
+  if (options.signal?.aborted) return Promise.reject(new Error("Opération annulée"));
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, args, {
+      cwd: options.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    let stopping = false;
+    let closed = false;
+    let killSent = false;
+    let stopError: Error | undefined;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    let reapDeadline: ReturnType<typeof setTimeout> | undefined;
+    const deadline = setTimeout(() => stop(new Error(`${program}: délai dépassé`)), options.timeoutMs ?? 180_000);
+    const abort = () => stop(new Error(`${program}: opération annulée`));
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      clearTimeout(escalation);
+      clearTimeout(reapDeadline);
+      options.signal?.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve(Buffer.concat(stdout).toString("utf8").trim());
+    };
+    const killGroup = (signal: NodeJS.Signals | 0): boolean => {
+      if (child.pid === undefined) return false;
+      try { process.kill(-child.pid, signal); return true; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        return false;
+      }
+    };
+    function stop(error: Error) {
+      if (stopping || settled) return;
+      stopping = true;
+      stopError = error;
+      try {
+        if (!killGroup("SIGTERM") && closed) { finish(error); return; }
+      } catch (failure) { finish(failure as Error); return; }
+      // Ne pas annuler l'escalade si le parent sort avant ses descendants.
+      escalation = setTimeout(() => {
+        try {
+          killGroup("SIGKILL");
+          killSent = true;
+          if (closed) finish(error);
+          else reapDeadline = setTimeout(() => finish(new Error(`${program}: fermeture non confirmée après SIGKILL`)), 5000);
+        } catch (failure) { finish(failure as Error); }
+      }, options.graceMs ?? 1500);
+    }
+    const collect = (target: Buffer[], chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > (options.maxBytes ?? 4 * 1024 * 1024)) {
+        stop(new Error(`${program}: sortie trop volumineuse`));
+      } else target.push(chunk);
+    };
+    child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
+    child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
+    child.once("error", (error) => finish(error));
+    child.once("close", (code, signal) => {
+      closed = true;
+      if (stopping) { if (killSent) finish(stopError); return; }
+      if (code === 0) {
+        try {
+          if (killGroup(0)) stop(new Error(`${program}: parent terminé avec descendants encore actifs`));
+          else finish();
+        } catch (error) { finish(error as Error); }
+      } else stop(new Error(`${program}: code ${code}, signal ${signal ?? "aucun"}\n${Buffer.concat(stderr).toString("utf8").slice(-2000)}`));
+    });
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
+  });
+}

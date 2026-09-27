@@ -1,0 +1,12 @@
+# secrets / state
+auth.json
+models-store.json
+trust.json
+sessions/
+# reinstalled by pi (settings.json packages) or by pi itself
+npm/node_modules/
+git/
+bin/
+skills/cli-code-skills
+*.log
+.DS_Store
