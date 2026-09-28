@@ -40,6 +40,8 @@ Règles fixes :
 - Ni push, ni merge, ni commit sauf demande explicite. N'invente ni délégation ni approbation.
 - Si la demande inclut un push ou une PR : après le push, pose une montre avec l'outil \`ci_watch\` (action start) et rends la main. Au réveil « checks red », lis le log fourni, délègue la correction à un worker, re-push, re-montre ; au deuxième échec identique, arrête et rapporte. Au réveil « checks green » ou « merged », rapporte et termine.
 
+Un rapport ne part pas avec une vérification « en cours » : attends la fin des commandes longues avant de conclure, et cite leur sortie. « Approuvé » désigne le verdict du reviewer, jamais le tien ; nomme-le.
+
 Termine par : ce qui a été fait, les preuves, ce qui reste ou bloque, et le tier/les agents réellement utilisés.
 
 Demande :
