@@ -9,6 +9,36 @@ import register from "../index.ts";
 type Handler = Parameters<ExtensionAPI["registerCommand"]>[1]["handler"];
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+test("commande orchestrate : transmet des consignes sans simuler le LLM", async () => {
+  let handler: Handler | undefined;
+  const messages: string[] = [];
+  const notifications: string[] = [];
+  register({
+    registerCommand: (_name: string, definition: { handler: Handler }) => { handler = definition.handler; },
+    on: () => undefined,
+    sendUserMessage: (message: string) => { messages.push(message); },
+  } as unknown as ExtensionAPI);
+  assert.ok(handler);
+  const ctx = { ui: { notify: (text: string) => { notifications.push(text); } } } as unknown as Parameters<Handler>[1];
+
+  await handler("corrige le prompt", ctx);
+  assert.equal(messages.length, 1);
+  const prompt = messages[0];
+  assert.match(prompt, /explorer en lecture seule.*avant de deviner/s);
+  assert.match(prompt, /ambiguïté substantielle d'intention/);
+  assert.match(prompt, /openai-codex\/gpt-6-astra.*anthropic\/claude-fable-5-1/s);
+  assert.match(prompt, /accord n'est pas une preuve/);
+  assert.match(prompt, /chef est interdit comme worker.*même si le chef est Fable/s);
+  assert.match(prompt, /ne requalifie pas une tâche M\/L en S/);
+  assert.match(prompt, /n'est ni snapshot ni sauvegarde/);
+  assert.match(prompt, /n'emploie jamais \`git checkout\` comme rollback/);
+
+  await handler("status", ctx);
+  await handler("cancel", ctx);
+  assert.ok(notifications.some((text) => text.includes("Aucun gate local en cours. Statut des gates locales uniquement")));
+  assert.ok(notifications.includes("Aucun gate en cours."));
+});
+
 for (const method of ["cancel", "session_shutdown", "session_before_switch", "session_before_fork", "session_before_tree", "session_start"]) {
   test(`commande orchestrate : exclusion concurrente et ${method}`, async () => {
     const home = await mkdtemp(join(tmpdir(), "pi-orchestrate-lifecycle-"));
@@ -43,8 +73,12 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
       assert.equal(await readFile(ready, "utf8").catch(() => "missing"), "ready", notifications.join("\n"));
       await handler("gates full", ctx);
       assert.ok(notifications.some((text) => text.includes("déjà en cours")));
-      if (method === "cancel") await handler("cancel", ctx);
-      else {
+      await handler("status", ctx);
+      assert.ok(notifications.some((text) => text.includes("Gates locales en cours.")));
+      if (method === "cancel") {
+        await handler("cancel", ctx);
+        assert.ok(notifications.some((text) => text.includes("Annulation des gates")));
+      } else {
         const transition = events.get(method);
         assert.ok(transition);
         await transition();
