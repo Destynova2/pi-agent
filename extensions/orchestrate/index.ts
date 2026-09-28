@@ -1,6 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runProcess } from "../../lib/process.ts";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { recommendedWorkspace, workspaceHint } from "./workspace.ts";
 
@@ -85,7 +84,9 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("orchestrate", `Gates ${mode} sur copie propre…`);
       try {
         const signals = ctx.signal ? [active.signal, ctx.signal] : [active.signal];
-        task = runProcess(join(homedir(), ".local/bin/pi-prek"), [mode], {
+        // Binaire officiel copié dans l'agent dir ; PI_GATES_BIN reste un échappatoire (tests, install alternative).
+        const gatesBin = process.env.PI_GATES_BIN || join(getAgentDir(), "gates/pi-prek");
+        task = runProcess(gatesBin, [mode], {
           cwd: ctx.cwd, signal: AbortSignal.any(signals), timeoutMs: 2 * 60 * 60 * 1000,
           maxBytes: 8 * 1024 * 1024,
         });

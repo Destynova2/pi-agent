@@ -2,8 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runProcess } from "../process.ts";
+
+// Chemin portable relatif à ce fichier de test : jamais $HOME ni un chemin d'installation utilisateur.
+const GATES_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../gates/pi-orchestrate");
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -55,7 +59,7 @@ test("annulation Node → runner Python → groupe de hook distinct", async () =
   const child = `import signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path(${JSON.stringify(ready)}).write_text('ready'); time.sleep(1); pathlib.Path(${JSON.stringify(marker)}).write_text('bad')`;
   const script = [
     "import sys,signal",
-    `sys.path.insert(0, ${JSON.stringify(join(process.env.HOME ?? "", ".local/share/pi-orchestrate"))})`,
+    `sys.path.insert(0, ${JSON.stringify(GATES_DIR)})`,
     "import gates",
     "signal.signal(signal.SIGTERM, gates.interrupted)",
     `gates.run([sys.executable, '-c', ${JSON.stringify(child)}], ${JSON.stringify(cwd)})`,

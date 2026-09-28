@@ -2,14 +2,15 @@
 
 Config perso de [pi](https://github.com/earendil-works/pi) : délégation à des sous-agents, prompt « chef » pour l'orchestration, mémoire SQLite partagée entre agents.
 
-## Installer
+Ce dépôt est une **source** à installer, pas un runtime en place. Voir [INSTALLATION.md](INSTALLATION.md) pour cloner ce dépôt ailleurs et l'installer proprement vers un répertoire agent pi (jamais dans ce dépôt lui-même).
 
-```bash
-git clone git@github.com:Destynova2/pi-agent.git ~/.pi/agent
-pi            # réinstalle les packages listés dans settings.json
-```
+## Prérequis
 
-`auth.json` (clés API) n'est pas versionné : `pi` le recrée au premier login.
+- Node.js `>=22.19` avec `node:sqlite` (voir `package.json`)
+- [`pi`](https://github.com/earendil-works/pi) installé et sur `PATH` (`lastChangelogVersion` dans `settings.json` : `0.87.1`, à vérifier contre votre version réelle)
+- `git`, `curl`
+
+`node scripts/doctor.mjs` diagnostique l'environnement (requis + optionnels : `graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`).
 
 ## Utiliser
 
@@ -33,7 +34,7 @@ settings.json        packages : pi-simplify, ponytail, pi-lsp, background-bash, 
 keybindings.json     ctrl+r libéré pour la recherche de prompts
 agents/              scout, worker, reviewer (prompts des sous-agents)
 extensions/
-  orchestrate/       /orchestrate et le prompt chef
+  orchestrate/       /orchestrate et le prompt chef ; gates via gates/pi-prek
   subagent/          outil subagent (single, parallel, chain)
   notes.ts           mémoire SQLite, /btw, ctrl+r, inbox inter-agents
   ci-watch/          outil ci_watch
@@ -41,12 +42,23 @@ extensions/
   web/               web_fetch, web_search
   anthropic-docs-compat/  chemins de la doc pi dans le prompt
 lib/                 helpers communs
+gates/
+  pi-prek              wrapper POSIX (résout gates.py par lien symbolique)
+  pi-orchestrate/      gates.py, test_gates.py, example-policy.json
+scripts/             install.mjs, doctor.mjs, test.mjs, check.mjs (installeur/diagnostic, stdlib Node)
+tests/               tests des scripts (node:test)
 ```
 
-## Tests
+Non versionné : `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `npm/node_modules`, `git/`, `bin/`, symlink `skills/cli-code-skills` (voir INSTALLATION.md).
+
+## Développement
 
 ```bash
-for t in extensions/*/tests/*.test.ts lib/tests/*.test.ts; do node --test "$t"; done
+npm run check           # syntaxe .mjs + hygiène espaces + git diff --check
+npm test                # suite standard (node:test), hors *.integration.test.*
+npm run test:integration  # suite complète + gates Python (échoue dur si une dépendance externe manque)
 ```
 
-Non versionné : `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `npm/node_modules`, `git/`, `bin/`, symlink `skills/cli-code-skills`.
+Pas de `node_modules` versionné : stdlib Node uniquement pour `scripts/` et `tests/`, `npm ci` n'a rien à installer (aucun `package-lock.json`).
+
+Voir [INSTALLATION.md](INSTALLATION.md) pour le détail de l'installeur, du diagnostic et des gates.

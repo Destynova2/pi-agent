@@ -1,0 +1,7 @@
+{
+  "_comment": "Exemple de politique pi-orchestrate. Ce fichier n'est jamais lu ni créé automatiquement par gates.py : copiez-le manuellement vers ~/.config/pi-orchestrate/projects/<sha256(root)[:20]>.json puis adaptez 'root' et 'required'. 'root' doit être le chemin absolu réel de la racine jj/Git ciblée (doit correspondre exactement, realpath compris). 'required' est la liste des commandes obligatoires en mode 'full' (chacune un tableau argv, exécutée dans la copie propre après les hooks prek) ; elle ne doit jamais être vide.",
+  "root": "/absolute/path/to/your/jj-or-git-repo",
+  "required": [
+    ["npm", "test"]
+  ]
+}

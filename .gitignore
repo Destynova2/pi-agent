@@ -10,3 +10,5 @@ bin/
 skills/cli-code-skills
 *.log
 .DS_Store
+# sauvegardes créées à côté d'une cible par scripts/install.mjs (jamais dans ce dépôt)
+*.backup-*/

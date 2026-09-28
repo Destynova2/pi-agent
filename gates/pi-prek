@@ -1,0 +1,22 @@
+#!/bin/sh
+# Wrapper POSIX pour gates/pi-orchestrate/gates.py.
+# Localise gates.py relativement à l'emplacement réel de ce script (résolution
+# de symlinks incluse) : aucun $HOME ni nom d'utilisateur codé en dur.
+set -eu
+
+resolve_script_dir() {
+  target=$1
+  while [ -h "$target" ]; do
+    link=$(readlink -- "$target")
+    dir=$(dirname -- "$target")
+    case "$link" in
+      /*) target=$link ;;
+      *) target="$dir/$link" ;;
+    esac
+  done
+  dir=$(dirname -- "$target")
+  (cd "$dir" && pwd)
+}
+
+script_dir=$(resolve_script_dir "$0")
+exec python3 "$script_dir/pi-orchestrate/gates.py" "$@"

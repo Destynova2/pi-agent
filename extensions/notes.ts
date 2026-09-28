@@ -13,7 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -91,17 +91,18 @@ export default function notes(pi: ExtensionAPI) {
 		}
 	}
 
-	// One-shot import of this project's past human prompts from ~/.pi/agent/sessions/**/*.jsonl (Claude Code / Codex history.jsonl idea).
+	// One-shot import of this project's past human prompts from <agent dir>/sessions/**/*.jsonl (Claude Code / Codex history.jsonl idea).
 	function importSessions(): number {
 		const db = dbs[0];
 		if ((db.prepare("SELECT count(*) AS n FROM notes WHERE agent LIKE 'session-%'").get() as { n: number }).n > 0) return -1;
-		const files = fs.readdirSync(path.join(os.homedir(), ".pi", "agent", "sessions"), { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".jsonl"));
+		const sessionsDir = path.join(getAgentDir(), "sessions");
+		const files = fs.readdirSync(sessionsDir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".jsonl"));
 		const insert = db.prepare("INSERT INTO notes (project, agent, kind, body, created_at) VALUES (?, ?, 'ask', ?, ?)");
 		let n = 0;
 		for (const f of files) {
 			let proj = "";
 			let sid = "";
-			for (const line of fs.readFileSync(path.join(os.homedir(), ".pi", "agent", "sessions", f), "utf8").split("\n")) {
+			for (const line of fs.readFileSync(path.join(sessionsDir, f), "utf8").split("\n")) {
 				if (!line) continue;
 				let e: { type?: string; id?: string; cwd?: string; timestamp?: string; message?: { role?: string; content?: unknown } };
 				try { e = JSON.parse(line); } catch { continue; }
@@ -143,7 +144,7 @@ export default function notes(pi: ExtensionAPI) {
 			"- Start of a non-trivial task: call note_list to see what humans asked other agents (kind=ask, recorded automatically) and what those agents planned, claimed, decided or got blocked on.",
 			"- Before touching a file or area another agent may also touch: note_add kind=claim with the paths. Do not edit a path another agent claimed.",
 			"- Record decisions (kind=decision), completed work (kind=done), blockers (kind=blocker) and reusable lessons (kind=lesson) as one short line each. No status chatter.",
-			"- Every note stores the repo revision at write time, shown as (jj:<op id>) or (git:<sha>) in note_list. To go back to the state of a note: `jj op restore <op id>` or `git checkout <sha>`. Write a kind=done note before risky changes so there is a point to return to.",
+			"- Every note stores the repo revision at write time, shown as (jj:<op id>) or (git:<sha>) in note_list for reference; it is not a rollback mechanism.",
 			"- Subagents load this same extension and share the same DB; write your plan (kind=plan) before delegating so they can read it.",
 			"- To talk to another agent: note_add kind=msg, body starting with \"@<agent> \" for one agent or plain text for all. Messages arrive at their next turn as an <agent_inbox> message; answer with kind=msg too.",
 		].join("\n");

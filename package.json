@@ -1,0 +1,17 @@
+{
+  "name": "pi-agent-config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Config pi versionnée : installeur portable, doctor, tests. Stdlib Node uniquement.",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "setup": "node scripts/install.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "test": "node scripts/test.mjs",
+    "test:integration": "node scripts/test.mjs --integration",
+    "check": "node scripts/check.mjs"
+  }
+}

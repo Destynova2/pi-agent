@@ -4,11 +4,11 @@
   "defaultProvider": "anthropic",
   "defaultModel": "claude-fable-5-1",
   "packages": [
-    "npm:pi-simplify",
-    "git:github.com/DietrichGebert/ponytail",
-    "npm:@ian-pascoe/pi-lsp",
-    "npm:@richardgill/pi-background-bash",
-    "git:github.com/emilkowalski/skills"
+    "npm:pi-simplify@0.2.3",
+    "git:github.com/DietrichGebert/ponytail@e3ba2aa6f1e6f0bc4d69eb09c9f0d0a93af56156",
+    "npm:@ian-pascoe/pi-lsp@0.4.4",
+    "npm:@richardgill/pi-background-bash@0.0.3",
+    "git:github.com/emilkowalski/skills@d16ebe60d09a5ba2afcb7054ede9d0a10c9f6128"
   ],
   "lsp": {
     "servers": {

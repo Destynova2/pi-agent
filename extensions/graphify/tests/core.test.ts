@@ -1,11 +1,25 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { cacheDirectory, command, projectGraph, projectRoot } from "../core.ts";
 
-test("racine Git, séparation projets, fichiers ignorés, suppressions et aucune mutation Git", async () => {
+// Explicit skip only when the real binary is absent from PATH; PI_TEST_INTEGRATION=1 forces a
+// hard failure instead, so CI cannot silently pass without ever exercising this suite.
+function onPath(name: string): boolean {
+	return (process.env.PATH ?? "").split(delimiter).some((dir) => dir && existsSync(join(dir, name)));
+}
+function requireDependency(t: { skip: (msg: string) => void }, name: string): boolean {
+	if (onPath(name)) return true;
+	if (process.env.PI_TEST_INTEGRATION === "1") throw new Error(`${name} absent : requis par PI_TEST_INTEGRATION=1`);
+	t.skip(`${name} absent : test ignoré explicitement`);
+	return false;
+}
+
+test("racine Git, séparation projets, fichiers ignorés, suppressions et aucune mutation Git", async (t) => {
+	if (!requireDependency(t, "git") || !requireDependency(t, "graphify")) return;
   const temp = await mkdtemp(join(tmpdir(), "pi-graphify-test-"));
   try {
     const repo = join(temp, "repo");
@@ -38,7 +52,8 @@ test("racine Git, séparation projets, fichiers ignorés, suppressions et aucune
   }
 });
 
-test("racine la plus proche pour jj imbriqué, Git imbriqué et colocation", async () => {
+test("racine la plus proche pour jj imbriqué, Git imbriqué et colocation", async (t) => {
+  if (!requireDependency(t, "git") || !requireDependency(t, "jj")) return;
   const temp = await mkdtemp(join(tmpdir(), "pi-roots-test-"));
   try {
     await command("git", ["init", "-q"], temp);

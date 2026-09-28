@@ -51,7 +51,7 @@ pi --provider anthropic --model claude-fable-5-1 --print --no-session \
 
 ## Upstream patch
 
-Prepared locally in `/Users/ludwig/workspace/pi`, branch
+Prepared locally in a source checkout of `pi` (outside this repo), branch
 `fix/compact-documentation-prompt`. No commit, push or PR has been made.
 
 The core constructs the compact guide directly. The topic-to-file lookup table
