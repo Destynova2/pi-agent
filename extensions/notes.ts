@@ -134,15 +134,26 @@ export default function notes(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("before_agent_start", (event) => {
-		const ask = event.prompt.trim().split("\n")[0]?.slice(0, 200);
-		if (ask) add("ask", ask);
-		// Inbox: messages from other agents of this project since last turn; "@name ..." only reaches name.
-		const inbox = (dbs[0]
+	// Inbox: unread messages from other agents of this project; "@name ..." only reaches name.
+	function readInbox(): string | undefined {
+		const rows = (dbs[0]
 			.prepare("SELECT id, agent, body FROM notes WHERE project = ? AND kind = 'msg' AND id > ? AND agent <> ? AND created_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day') ORDER BY id")
 			.all(project, lastSeenMsg, agent) as { id: number; agent: string; body: string }[])
 			.filter((m) => !m.body.startsWith("@") || m.body.startsWith(`@${agent} `));
 		lastSeenMsg = (dbs[0].prepare("SELECT coalesce(max(id), 0) AS id FROM notes").get() as { id: number }).id;
+		return rows.length ? `<agent_inbox>\n${rows.map((m) => `${m.agent}: ${m.body}`).join("\n")}\n</agent_inbox>` : undefined;
+	}
+
+	// In-flight delivery: a subagent run checks its inbox after each tool call.
+	pi.on("tool_result", () => {
+		const text = readInbox();
+		if (text) pi.sendMessage({ customType: "agent_inbox", content: text, display: true }, { deliverAs: "steer" });
+	});
+
+	pi.on("before_agent_start", (event) => {
+		const ask = event.prompt.trim().split("\n")[0]?.slice(0, 200);
+		if (ask) add("ask", ask);
+		const inbox = readInbox();
 		event.systemPromptOptions.sections.shared_notes = [
 			`Shared SQLite memory for agents working on project "${project}" (you are "${agent}").`,
 			"- Start of a non-trivial task: call note_list to see what humans asked other agents (kind=ask, recorded automatically) and what those agents planned, claimed, decided or got blocked on.",
@@ -152,14 +163,28 @@ export default function notes(pi: ExtensionAPI) {
 			"- Subagents load this same extension and share the same DB; write your plan (kind=plan) before delegating so they can read it.",
 			"- To talk to another agent: note_add kind=msg, body starting with \"@<agent> \" for one agent or plain text for all. Messages arrive at their next turn as an <agent_inbox> message; answer with kind=msg too.",
 		].join("\n");
-		if (inbox.length === 0) return;
-		return {
-			message: {
-				customType: "agent_inbox",
-				content: `<agent_inbox>\n${inbox.map((m) => `${m.agent}: ${m.body}`).join("\n")}\n</agent_inbox>`,
-				display: true,
-			},
-		};
+		if (inbox) return { message: { customType: "agent_inbox", content: inbox, display: true } };
+	});
+
+	// /btw <text>: message another agent without a model turn. Routing: @name in text, else the agent whose
+	// active claim (24h) matches a path in the text, else broadcast to the project.
+	pi.registerCommand("btw", {
+		description: "/btw [@agent] <text>: message routed by @name, by claimed path, else broadcast",
+		handler: async (args, ctx) => {
+			const text = args.trim();
+			if (!text) return ctx.ui.notify("usage: /btw [@agent] <text>", "warning");
+			let body = text;
+			if (!text.startsWith("@")) {
+				const claims = dbs[0]
+					.prepare("SELECT agent, body FROM notes WHERE project = ? AND kind = 'claim' AND agent <> ? AND created_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day') ORDER BY id DESC")
+					.all(project, agent) as { agent: string; body: string }[];
+				const words = text.split(/\s+/).filter((w) => w.includes("/") || w.includes("."));
+				const hit = claims.find((c) => words.some((w) => c.body.includes(w) || w.includes(c.body.trim())));
+				if (hit) body = `@${hit.agent} ${text}`;
+			}
+			add("msg", body);
+			ctx.ui.notify(body.startsWith("@") ? `sent to ${body.split(" ")[0]}` : "broadcast to project", "info");
+		},
 	});
 
 	// ctrl+r: search this project's past human prompts and put the pick back in the editor.

@@ -18,7 +18,7 @@ pi            # réinstalle les packages listés dans settings.json
 | Déléguer une tâche de bout en bout | `/orchestrate <demande>` : le chef réécrit la demande, taille, délègue à scout / worker / reviewer |
 | Déléguer une sous-tâche | outil `subagent` avec `agent: scout\|worker\|reviewer` |
 | Noter une décision sans tour modèle | `/note decision <texte>` (kinds : plan, decision, done, blocker, lesson, claim, msg) |
-| Parler à un autre agent du projet | `/note msg @pi-1234 <texte>`, livré à son prochain tour |
+| Parler à un autre agent du projet | `/btw [@agent] <texte>` : routé par @nom, sinon par chemin revendiqué (claim), sinon broadcast ; livré à son prochain tour ou entre deux outils s'il tourne |
 | Retrouver un ancien prompt | `ctrl+r` |
 | Importer l'historique des sessions | `/note import` |
 | Carte du code | outil `project_graph`, index automatique au démarrage |
