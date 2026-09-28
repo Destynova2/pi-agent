@@ -6,9 +6,7 @@ Ce document décrit comment récupérer ce dépôt ailleurs que dans un réperto
 
 Ce dépôt (`pi-agent`, remote `https://github.com/Destynova2/pi-agent.git`) est une **source de configuration**, pas un état installé. `scripts/install.mjs` refuse explicitement toute cible identique ou imbriquée avec la source (chemins comparés en forme canonique, liens symboliques résolus) : source et cible doivent être deux répertoires distincts et non imbriqués, sinon l'installeur s'arrête avant toute écriture.
 
-**État actuel** : au moment d'écrire ce document, la copie locale de ce dépôt (`~/.pi/agent`) est à la fois la source de travail *et* un agent pi en fonctionnement — elle contient des modifications non commitées et non poussées vers `origin` (voir `git status`). Cloner `origin` aujourd'hui **ne récupère pas** ces modifications. Ce document décrit la procédure pour une fois qu'elles seront publiées ; en attendant, testez depuis cette copie locale directement (elle joue le rôle de source pour `scripts/install.mjs --target <ailleurs>`).
-
-Une fois les modifications publiées, cloner dans un répertoire séparé, jamais directement dans le répertoire agent visé :
+Cloner dans un répertoire séparé, jamais directement dans le répertoire agent visé :
 
 ```bash
 git clone https://github.com/Destynova2/pi-agent.git ~/src/pi-agent
