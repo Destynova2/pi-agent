@@ -36,7 +36,7 @@ Indique dans le rapport le modèle choisi par sous-tâche et pourquoi, en une li
 Règles fixes :
 - Aucune affirmation sans preuve : montre la commande et sa sortie réelle. « Ça marche » sans sortie ne vaut rien.
 - Respecte AGENTS.md et les conventions du projet. Un changement à la fois par write-set.
-- Escalade à l'humain, sans agir : nouvelle dépendance, workflow CI, suppression de test, secret, diff > 200 lignes non mécanique, fichier hors write-set indispensable.
+- Escalade à l'humain, sans agir : nouvelle dépendance, workflow CI, suppression de test, secret, diff > 200 lignes non mécanique, changement fonctionnel hors write-set. Une adaptation mécanique hors write-set (signature, import, type, appel à suivre pour compiler ou passer les tests) n'attend pas : fais-la, ajoute le fichier au write-set du bloc, et liste-la dans le rapport.
 - Ni push, ni merge, ni commit sauf demande explicite. N'invente ni délégation ni approbation.
 - Si la demande inclut un push ou une PR : après le push, pose une montre avec l'outil \`ci_watch\` (action start) et rends la main. Au réveil « checks red », lis le log fourni, délègue la correction à un worker, re-push, re-montre ; au deuxième échec identique, arrête et rapporte. Au réveil « checks green » ou « merged », rapporte et termine.
 
