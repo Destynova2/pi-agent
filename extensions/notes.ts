@@ -118,22 +118,6 @@ export default function notes(pi: ExtensionAPI) {
 		return n;
 	}
 
-	// /note <kind> <text>: write a note without spending a model turn (Claude Code's `#`). /note import: pull past prompts.
-	pi.registerCommand("note", {
-		description: "/note <plan|decision|done|blocker|lesson|claim|msg> <text> | /note import",
-		handler: async (args, ctx) => {
-			const [kind, ...rest] = args.trim().split(/\s+/);
-			if (kind === "import") {
-				const n = importSessions();
-				return ctx.ui.notify(n < 0 ? "sessions already imported" : `imported ${n} prompts`, "info");
-			}
-			const body = rest.join(" ");
-			if (!KINDS.includes(kind as Kind) || kind === "ask" || !body) return ctx.ui.notify("usage: /note <plan|decision|done|blocker|lesson|claim|msg> <text>", "warning");
-			add(kind as Kind, body);
-			ctx.ui.notify(`noted [${kind}] ${body}`, "info");
-		},
-	});
-
 	// Inbox: unread messages from other agents of this project; "@name ..." only reaches name.
 	function readInbox(): string | undefined {
 		const rows = (dbs[0]
@@ -166,13 +150,22 @@ export default function notes(pi: ExtensionAPI) {
 		if (inbox) return { message: { customType: "agent_inbox", content: inbox, display: true } };
 	});
 
-	// /btw <text>: message another agent without a model turn. Routing: @name in text, else the agent whose
-	// active claim (24h) matches a path in the text, else broadcast to the project.
+	// /btw: write without a model turn (Claude Code's `#`). First word = kind -> note; "import" -> pull past prompts;
+	// otherwise a message routed by @name, else by the agent whose active claim (24h) matches a path, else broadcast.
 	pi.registerCommand("btw", {
-		description: "/btw [@agent] <text>: message routed by @name, by claimed path, else broadcast",
+		description: "/btw <plan|decision|done|blocker|lesson|claim> <text> | /btw import | /btw [@agent] <message>",
 		handler: async (args, ctx) => {
 			const text = args.trim();
-			if (!text) return ctx.ui.notify("usage: /btw [@agent] <text>", "warning");
+			if (!text) return ctx.ui.notify("usage: /btw <kind> <text> | /btw import | /btw [@agent] <message>", "warning");
+			const [first, ...rest] = text.split(/\s+/);
+			if (first === "import") {
+				const n = importSessions();
+				return ctx.ui.notify(n < 0 ? "sessions already imported" : `imported ${n} prompts`, "info");
+			}
+			if (KINDS.includes(first as Kind) && first !== "ask" && first !== "msg" && rest.length) {
+				add(first as Kind, rest.join(" "));
+				return ctx.ui.notify(`noted [${first}] ${rest.join(" ")}`, "info");
+			}
 			let body = text;
 			if (!text.startsWith("@")) {
 				const claims = dbs[0]

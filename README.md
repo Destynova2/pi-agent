@@ -17,10 +17,10 @@ pi            # réinstalle les packages listés dans settings.json
 |---|---|
 | Déléguer une tâche de bout en bout | `/orchestrate <demande>` : le chef réécrit la demande, taille, délègue à scout / worker / reviewer |
 | Déléguer une sous-tâche | outil `subagent` avec `agent: scout\|worker\|reviewer` |
-| Noter une décision sans tour modèle | `/note decision <texte>` (kinds : plan, decision, done, blocker, lesson, claim, msg) |
+| Noter une décision sans tour modèle | `/btw decision <texte>` (kinds : plan, decision, done, blocker, lesson, claim) |
 | Parler à un autre agent du projet | `/btw [@agent] <texte>` : routé par @nom, sinon par chemin revendiqué (claim), sinon broadcast ; livré à son prochain tour ou entre deux outils s'il tourne |
 | Retrouver un ancien prompt | `ctrl+r` |
-| Importer l'historique des sessions | `/note import` |
+| Importer l'historique des sessions | `/btw import` |
 | Carte du code | outil `project_graph`, index automatique au démarrage |
 | Surveiller une PR | outil `ci_watch`, réveil sur vert / rouge / mergée |
 
@@ -35,7 +35,7 @@ agents/              scout, worker, reviewer (prompts des sous-agents)
 extensions/
   orchestrate/       /orchestrate et le prompt chef
   subagent/          outil subagent (single, parallel, chain)
-  notes.ts           mémoire SQLite, /note, ctrl+r, inbox inter-agents
+  notes.ts           mémoire SQLite, /btw, ctrl+r, inbox inter-agents
   ci-watch/          outil ci_watch
   graphify/          outil project_graph
   web/               web_fetch, web_search
