@@ -1,9 +1,11 @@
-// Enforces the startup tool policy on every model tool call (deny before execute).
+// Re-reads the trusted tool policy before authorization (deny before execute).
 // Trust boundary: only user-loaded extensions; handlers loaded before this one still see
-// and may mutate input first. Not an OS sandbox and not a shell-command classifier.
+// and may mutate input first. Task rules recognize a narrow subset, not an OS sandbox.
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { DEFAULT_TOOL_POLICY, isValidToolName, loadToolPolicy, PATH_GUARDED_TOOLS, protectedPathViolation, TOOL_POLICY_FILE, toolDecision, type ToolPolicy } from "./core.ts";
+
+import { taskDecision } from "./task.ts";
 
 const MAX_PREVIEW = 4000;
 
@@ -25,7 +27,7 @@ function currentSignal(ctx: ExtensionContext): AbortSignal | undefined {
   }
 }
 
-async function confirmOnce(ctx: ExtensionContext, toolName: string, input: unknown, signal: AbortSignal | undefined, source: string): Promise<boolean> {
+async function confirmOnce(ctx: ExtensionContext, toolName: string, input: unknown, signal: AbortSignal | undefined, source: string, testGrant = false): Promise<"once" | "task" | false> {
   if (signal?.aborted) return false;
   let preview: string;
   try {
@@ -40,8 +42,12 @@ async function confirmOnce(ctx: ExtensionContext, toolName: string, input: unkno
     signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    const answer = await Promise.race([ctx.ui.confirm(`Allow tool "${toolName}"?`, `Policy: ask (${source})\n\n${preview}`, { signal }), aborted]);
-    return answer === true && !signal?.aborted;
+    const choices = ["Deny", "Allow once", "Allow this exact test command for this task"];
+    const dialog = testGrant
+      ? ctx.ui.select(`Project code has full filesystem/network access, including after edits.\n${source}\n${preview}`, choices, { signal }).then(choice => choice === choices[1] ? "once" as const : choice === choices[2] ? "task" as const : false)
+      : ctx.ui.confirm(`Allow tool "${toolName}"?`, `Policy: ask (${source})\n\n${preview}`, { signal }).then(answer => answer === true ? "once" as const : false);
+    const answer = await Promise.race([dialog, aborted]);
+    return signal?.aborted ? false : answer;
   } catch {
     return false;
   } finally {
@@ -61,17 +67,64 @@ export default function (pi: ExtensionAPI) {
   } catch (error) {
     loadError = error instanceof Error ? error.message : String(error);
   }
-  const source = policy === DEFAULT_TOOL_POLICY ? `built-in; ${policyPath} absent` : policyPath;
+  let source = policy === DEFAULT_TOOL_POLICY ? `built-in; ${policyPath} absent` : policyPath;
   let tail: Promise<unknown> = Promise.resolve();
   const serialize = <T>(task: () => Promise<T>): Promise<T> => {
     const run = tail.then(task, task);
     tail = run.catch(() => undefined);
     return run;
   };
-  const block = (reason: string) => ({ block: true, reason });
+  let generation = 0;
+  let taskRoot: string | undefined;
+  const grants = new Set<string>();
+  let automatic = 0;
+  let approvedCount = 0;
+  let deniedCount = 0;
+  const reset = () => {
+    generation++;
+    taskRoot = undefined;
+    grants.clear();
+    automatic = approvedCount = deniedCount = 0;
+  };
+  let hasTaskRules = policy && Object.values(policy).includes("task");
+  const refreshPolicy = () => {
+    const previous = JSON.stringify(policy);
+    const previousError = loadError;
+    try {
+      agentDir ??= getAgentDir();
+      policyPath = join(agentDir, TOOL_POLICY_FILE);
+      policy = loadToolPolicy(agentDir);
+      loadError = undefined;
+    } catch (error) {
+      policy = undefined; // Never keep an old allow rule after an unreadable/corrupt update.
+      loadError = error instanceof Error ? error.message : String(error);
+    }
+    if (JSON.stringify(policy) !== previous || loadError !== previousError) {
+      generation++;
+      grants.clear();
+    }
+    source = policy === DEFAULT_TOOL_POLICY ? `built-in; ${policyPath} absent` : policyPath;
+    hasTaskRules = policy && Object.values(policy).includes("task");
+  };
+  pi.on("session_start", () => { refreshPolicy(); reset(); });
+  pi.on("session_shutdown", reset);
+  pi.on("before_agent_start", (event, ctx) => {
+    refreshPolicy();
+    reset();
+    taskRoot = ctx.cwd;
+    if (hasTaskRules) event.systemPromptOptions.sections.tool_policy = "Task permissions use the current working directory, not inferred user intent. Prefer read/find/ls/grep for routine inspection. Shell scripts, compound commands, sensitive paths and external actions may need approval. Never work around a denial using another tool. Test grants expire when this task settles or new input starts.";
+  });
+  pi.on("agent_settled", (_event, ctx) => {
+    const report = hasTaskRules && ctx.hasUI && automatic + approvedCount + deniedCount > 0;
+    const summary = `Tool permissions: ${automatic} automatically authorized, ${approvedCount} explicitly authorized, ${deniedCount} blocked. These are permissions, not execution results. Task grants cleared.`;
+    reset(); // Revoke before notifying: a failing UI must not preserve grants.
+    if (report) ctx.ui.notify(summary, "info");
+  });
+  const block = (reason: string) => { deniedCount++; return { block: true, reason }; };
 
   pi.on("tool_call", async (event, ctx) => {
-    if (!policy) return block(`Tool policy failed to load, every tool is blocked: ${loadError}. The user must fix or remove ${policyPath} and restart Pi (/tool-policy shows details).`);
+    refreshPolicy();
+    if (!policy) return block(`Tool policy failed to load, every tool is blocked: ${loadError}. The user must fix or remove ${policyPath}; the next call re-reads it (/tool-policy shows details).`);
     const name: unknown = event.toolName;
     if (!isValidToolName(name)) return block(`Tool name ${JSON.stringify(String(name))} is not valid for the tool policy.`);
     const signal = currentSignal(ctx);
@@ -93,20 +146,38 @@ export default function (pi: ExtensionAPI) {
       if (violation) return block(`Tool "${name}" blocked by the tool policy: target ${violation}. Edit it yourself outside Pi if intended.`);
     }
     if (decision === "allow") return undefined;
-    if (!ctx.hasUI) return block(`Tool "${name}" requires user confirmation and no UI is available; denied.`);
-    const approved = await serialize(() => confirmOnce(ctx, name, event.input, signal, source));
-    return approved ? undefined : block(`Tool "${name}" was not approved by the user.`);
+    const epoch = generation;
+    const scoped = decision === "task" && taskRoot === ctx.cwd
+      ? taskDecision(name, event.input as Record<string, unknown>, ctx.cwd, agentDir)
+      : undefined;
+    if (scoped?.action === "allow") { automatic++; return undefined; }
+    const key = JSON.stringify([ctx.cwd, name, event.input]);
+    if (scoped?.action === "test" && grants.has(key)) { automatic++; return undefined; }
+    if (!ctx.hasUI) return block(`Tool "${name}" requires user confirmation and no UI is available; denied. ${scoped?.reason ?? ""}`);
+    return serialize(async () => {
+      refreshPolicy();
+      if (epoch !== generation || signal?.aborted) return block(`Tool "${name}" blocked: task changed or aborted.`);
+      if (scoped?.action === "test" && grants.has(key)) { automatic++; return undefined; }
+      const approved = await confirmOnce(ctx, name, event.input, signal, `${source}${scoped ? `; ${scoped.reason}` : ""}`, scoped?.action === "test");
+      refreshPolicy();
+      if (!approved || epoch !== generation || signal?.aborted) return block(`Tool "${name}" was not approved for the current task.`);
+      if (approved === "task") grants.add(key);
+      approvedCount++;
+      return undefined;
+    });
   });
 
   pi.registerCommand("tool-policy", {
-    description: "Show the startup tool policy (allow/ask/deny), its source and any load error",
-    handler: async (_args, ctx) => {
+    description: "Re-read and show current tool permissions; /tool-policy reset revokes task grants",
+    handler: async (args, ctx) => {
+      refreshPolicy();
+      if (args.trim() === "reset") reset();
       if (!policy) {
-        ctx.ui.notify(`Tool policy: LOAD FAILED, all tools blocked.\n${loadError}\nFix or remove ${policyPath}, then restart Pi.`, "error");
+        ctx.ui.notify(`Tool policy: LOAD FAILED, all tools blocked.\n${loadError}\nFix or remove ${policyPath}; the next call re-reads it.`, "error");
         return;
       }
       const lines = Object.keys(policy).sort().map((key) => `  ${key}: ${policy![key]}`);
-      ctx.ui.notify(`Tool policy (startup snapshot, restart to reload)\nSource: ${source}\n${lines.join("\n")}`, "info");
+      ctx.ui.notify(`Tool policy (live file; re-read before each authorization)\nSource: ${source}\nTask scope: ${taskRoot ?? "none"}; exact test grants: ${grants.size}\n${lines.join("\n")}`, "info");
     },
   });
 }

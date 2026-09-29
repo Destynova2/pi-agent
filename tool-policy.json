@@ -1,0 +1,15 @@
+{
+  "read": "allow",
+  "grep": "allow",
+  "find": "allow",
+  "ls": "allow",
+  "edit": "allow",
+  "write": "allow",
+  "bash": "allow",
+  "note_list": "allow",
+  "note_add": "allow",
+  "project_graph": "allow",
+  "git_inspect": "allow",
+  "subagent": "allow",
+  "*": "ask"
+}

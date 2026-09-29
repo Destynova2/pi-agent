@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import register from "../index.ts";
@@ -50,7 +50,7 @@ if (task.includes('SIGNAL')) {
 }
 `;
 
-async function withTool(fn: (execute: (...args: any[]) => Promise<any>, root: string, render: (result: any) => string) => Promise<void>) {
+async function withTool(fn: (execute: (...args: any[]) => Promise<any>, root: string, render: (result: any) => string) => Promise<void>, policy?: Record<string, string>) {
   const root = await mkdtemp(join(tmpdir(), "pi-subagent-runtime-"));
   const oldDir = process.env.PI_CODING_AGENT_DIR;
   const oldChild = process.env.PI_SUBAGENT_CHILD;
@@ -60,6 +60,7 @@ async function withTool(fn: (execute: (...args: any[]) => Promise<any>, root: st
     delete process.env.PI_SUBAGENT_CHILD;
     await mkdir(join(root, "agent/agents"), { recursive: true });
     await writeFile(join(root, "agent/agents/fixture.md"), "---\nname: fixture\ndescription: offline process fixture\nmodel: fixture/model\n---\nReturn the requested fixture.\n");
+    if (policy) await writeFile(join(root, "agent/tool-policy.json"), JSON.stringify(policy));
     process.argv[1] = join(root, "fake-pi.mjs");
     await writeFile(process.argv[1], fixture);
     let tool: any;
@@ -213,6 +214,44 @@ test("headless project agents cannot bypass confirmation with flags or general p
       assert.match(result.content[0].text, /human approval/);
       assert.ok(!(await readdir(root)).includes("started"));
     }
+  });
+});
+
+test("task tools are inherited but a model cannot widen scope through child cwd", async () => {
+  const outside = await mkdtemp(join(tmpdir(), "pi-child-outside-"));
+  try {
+    await withTool(async (execute, root) => {
+      await symlink(outside, join(root, "escape"));
+      for (const cwd of [outside, join(root, "escape")]) {
+        for (const params of [{ agent: "fixture", task: "ok", cwd }, { tasks: [{ agent: "fixture", task: "ok", cwd }] }, { chain: [{ agent: "fixture", task: "ok", cwd }] }]) {
+          const result = await execute(params);
+          assert.equal(result.isError, true);
+          assert.match(result.content[0].text, /outside the task scope/);
+          assert.ok(!(await readdir(outside)).includes("started"));
+        }
+      }
+      await mkdir(join(root, "src"));
+      const result = await execute({ agent: "fixture", task: "ok", cwd: "src" });
+      assert.ok(!result.isError);
+      const { args } = JSON.parse(await readFile(join(root, "src/child-env"), "utf8"));
+      assert.equal(args[args.indexOf("--tools") + 1], "read,write,bash");
+    }, { read: "task", write: "task", bash: "task", subagent: "allow" });
+  } finally { await rm(outside, { recursive: true, force: true }); }
+});
+
+test("delegation re-reads policy changes without recreating the extension", async () => {
+  await withTool(async (execute, root) => {
+    await execute({ agent: "fixture", task: "ok" });
+    const initial = JSON.parse(await readFile(join(root, "child-env"), "utf8"));
+    assert.equal(initial.args[initial.args.indexOf("--tools") + 1], "read,write");
+    await writeFile(join(root, "agent/tool-policy.json"), '{"bash":"allow","read":"deny","write":"deny"}');
+    await execute({ agent: "fixture", task: "ok" });
+    const updated = JSON.parse(await readFile(join(root, "child-env"), "utf8"));
+    assert.equal(updated.args[updated.args.indexOf("--tools") + 1], "bash");
+    const before = await readFile(join(root, "started"), "utf8");
+    await writeFile(join(root, "agent/tool-policy.json"), '{broken');
+    await assert.rejects(execute({ agent: "fixture", task: "ok" }), /policy failed to load/);
+    assert.equal(await readFile(join(root, "started"), "utf8"), before);
   });
 });
 

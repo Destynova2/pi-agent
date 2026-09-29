@@ -21,7 +21,7 @@ export default function(pi) {
         stream.push({type:'start',partial:result});
         const last = context.messages.findLast(m => m.role === 'toolResult');
         if (!last) {
-          const call = {type:'toolCall',id:'call-fixture',name:process.env.FIXTURE_TOOL || 'write',arguments:process.env.FIXTURE_TOOL === 'subagent' ? {agent:'missing-fixture',task:'probe failure'} : {path:process.env.FIXTURE_PATH,content:'written'}};
+          const call = {type:'toolCall',id:'call-fixture',name:process.env.FIXTURE_TOOL || 'write',arguments:process.env.FIXTURE_TOOL === 'subagent' ? {agent:'missing-fixture',task:'probe failure'} : process.env.FIXTURE_TOOL === 'bash' ? {command:process.env.FIXTURE_COMMAND} : {path:process.env.FIXTURE_PATH,content:'written'}};
           result.content.push(call); result.stopReason='toolUse';
           stream.push({type:'toolcall_start',contentIndex:0,partial:result});
           stream.push({type:'toolcall_delta',contentIndex:0,delta:JSON.stringify(call.arguments),partial:result});
@@ -41,28 +41,34 @@ export default function(pi) {
 }
 `;
 
-for (const mode of ["headless-ask", "allow", "protected", "downstream-mutation", "subagent-error"]) {
+for (const mode of ["headless-ask", "allow", "protected", "downstream-mutation", "subagent-error", "task-pwd", "task-compound", "task-test", "task-write", "task-sensitive", "task-outside"]) {
   test(`real Pi tool authorization: ${mode}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-policy-real-"));
     try {
       const agentDir = join(root, "agent"); await mkdir(agentDir);
       const policyFile = join(agentDir, "tool-policy.json");
-      await writeFile(policyFile, JSON.stringify({ write: mode === "headless-ask" ? "ask" : "allow", subagent: "allow", "*": "deny" }));
+      await writeFile(policyFile, JSON.stringify({ write: mode === "headless-ask" ? "ask" : mode.startsWith("task-") ? "task" : "allow", bash: "task", subagent: "allow", "*": "deny" }));
+      const shell = ["task-pwd", "task-compound", "task-test"].includes(mode);
+      const tool = mode === "subagent-error" ? "subagent" : shell ? "bash" : "write";
+      const command = mode === "task-pwd" ? "pwd" : mode === "task-test" ? "npm run check" : "pwd; touch allowed.txt";
+      const outside = join(root, "..", `${root.split("/").at(-1)}-outside.txt`);
       const fixture = join(root, "provider.ts"); await writeFile(fixture, provider);
       const packageJson = findPiPackageJson(); assert.ok(packageJson, "Pi install required");
       const manifest = JSON.parse(await readFile(packageJson, "utf8"));
       const cli = join(dirname(packageJson), typeof manifest.bin === "string" ? manifest.bin : manifest.bin.pi);
-      const output = await runProcess(process.execPath, [cli, "--offline", "--no-approve", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes", "--extension", resolve("extensions/tool-policy/index.ts"), "--extension", fixture, ...(mode === "subagent-error" ? ["--extension", resolve("extensions/subagent/index.ts")] : []), "--tools", mode === "subagent-error" ? "subagent" : "write", "--model", "policy-fixture/fixture", "--mode", "json", "-p", "--no-session", "Exercise the tool"], {
+      const output = await runProcess(process.execPath, [cli, "--offline", "--no-approve", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes", "--extension", resolve("extensions/tool-policy/index.ts"), "--extension", fixture, ...(mode === "subagent-error" ? ["--extension", resolve("extensions/subagent/index.ts")] : []), "--tools", tool, "--model", "policy-fixture/fixture", "--mode", "json", "-p", "--no-session", "Exercise the tool"], {
         cwd: root, timeoutMs: 20000, maxBytes: 2 * 1024 * 1024,
-        env: { HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENT_CHILD: undefined, FIXTURE_TOOL: mode === "subagent-error" ? "subagent" : undefined, FIXTURE_PATH: mode === "protected" ? policyFile : join(root, "allowed.txt"), FIXTURE_MUTATE: mode === "downstream-mutation" ? "1" : undefined },
+        env: { HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENT_CHILD: undefined, FIXTURE_TOOL: tool, FIXTURE_COMMAND: command, FIXTURE_PATH: mode === "protected" ? policyFile : mode === "task-sensitive" ? join(root, ".env") : mode === "task-outside" ? outside : join(root, "allowed.txt"), FIXTURE_MUTATE: mode === "downstream-mutation" ? "1" : undefined },
       });
       const messages = output.split("\n").filter(Boolean).map(line => JSON.parse(line));
       const final = messages.filter(e => e.type === "message_end" && e.message?.role === "assistant").at(-1).message;
       const answer = JSON.parse(final.content.filter(p => p.type === "text").map(p => p.text).join(""));
-      assert.equal(Boolean(answer.isError), mode !== "allow", JSON.stringify(answer));
-      if (mode === "allow") assert.equal(await readFile(join(root, "allowed.txt"), "utf8"), "written");
+      assert.equal(Boolean(answer.isError), !["allow", "task-pwd", "task-write"].includes(mode), JSON.stringify(answer));
+      if (["allow", "task-write"].includes(mode)) assert.equal(await readFile(join(root, "allowed.txt"), "utf8"), "written");
       else await assert.rejects(readFile(join(root, "allowed.txt")));
       await assert.rejects(readFile(join(root, "changed.txt")));
+      await assert.rejects(readFile(join(root, ".env")));
+      await assert.rejects(readFile(outside));
       assert.ok(JSON.parse(await readFile(policyFile, "utf8")).write);
     } finally { await rm(root, { recursive: true, force: true }); }
   });

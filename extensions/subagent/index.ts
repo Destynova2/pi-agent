@@ -16,6 +16,7 @@ import { StringDecoder } from "node:string_decoder";
 import { runProcess } from "../../lib/process.ts";
 import { loadToolPolicy, toolDecision, isValidToolName, type ToolPolicy } from "../tool-policy/core.ts";
 import { openRun } from "./runs.ts";
+import { taskPathReason } from "../tool-policy/task.ts";
 import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -275,6 +276,7 @@ interface DispatchDefaults {
 	timeoutSeconds?: number;
 	parentSession: string;
 	tools: string[];
+	taskScoped: boolean;
 }
 
 async function runSingleAgent(
@@ -344,6 +346,11 @@ async function runSingleAgent(
 
 	try {
 		signal?.throwIfAborted();
+		cwd = path.resolve(defaultCwd, cwd ?? ".");
+		if (dispatchDefaults.taskScoped) {
+			const reason = taskPathReason(cwd, defaultCwd);
+			if (reason) throw new Error(`Cannot delegate outside the task scope: ${reason}`);
+		}
 		run = openRun({ parentSession: dispatchDefaults.parentSession, agent: agent.name, agentFile: agent.filePath,
 			cwd: cwd ?? defaultCwd, tools, resume });
 		const runDir = run.attemptDir;
@@ -491,9 +498,6 @@ const SubagentParams = Type.Object({
 
 export default function (pi: ExtensionAPI) {
 	if (process.env.PI_SUBAGENT_CHILD) return;
-	let policy: ToolPolicy | undefined;
-	let policyError: unknown;
-	try { policy = loadToolPolicy(getAgentDir()); } catch (error) { policyError = error; }
 	// Pi marks execute() returns successful even when the object has an isError field.
 	// Preserve rich partial results and set the authoritative flag through its supported result hook.
 	pi.on("tool_result", (event) => {
@@ -513,15 +517,18 @@ export default function (pi: ExtensionAPI) {
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			if (!policy) throw new Error(`Cannot delegate: tool policy failed to load (${String(policyError)})`);
+			let policy: ToolPolicy;
+			try { policy = loadToolPolicy(getAgentDir()); }
+			catch (error) { throw new Error(`Cannot delegate: tool policy failed to load (${String(error)})`); }
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const parentFile = ctx.sessionManager.getSessionFile();
 			const dispatchDefaults: DispatchDefaults = {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 				thinkingLevel: ctx.thinkingLevel,
 				timeoutSeconds: params.timeoutSeconds,
+				taskScoped: Object.values(policy).includes("task"),
 				parentSession: JSON.stringify([ctx.sessionManager.getSessionId(), parentFile ? fs.realpathSync(parentFile) : null]),
-				tools: pi.getActiveTools().filter((name) => name !== "subagent" && isValidToolName(name) && toolDecision(policy!, name) === "allow"),
+				tools: pi.getActiveTools().filter((name) => name !== "subagent" && isValidToolName(name) && ["allow", "task"].includes(toolDecision(policy, name))),
 			};
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;

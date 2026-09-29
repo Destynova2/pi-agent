@@ -1,4 +1,4 @@
-// Exact tool-name authorization policy (allow | ask | deny), read once from the trusted
+// Exact tool-name authorization policy (allow | ask | deny | task), read from the trusted
 // Pi agent directory. Never from the repository, the environment or model input.
 // This is a tool-call gate, not an OS sandbox: an allowed shell tool can still do anything.
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
@@ -6,12 +6,12 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type ToolAction = "allow" | "ask" | "deny";
+export type ToolAction = "allow" | "ask" | "deny" | "task";
 export type ToolPolicy = Readonly<Record<string, ToolAction>>;
 
 export const TOOL_POLICY_FILE = "tool-policy.json";
 export const MAX_POLICY_BYTES = 64 * 1024;
-const ACTIONS: ReadonlySet<string> = new Set(["allow", "ask", "deny"]);
+const ACTIONS: ReadonlySet<string> = new Set(["allow", "ask", "deny", "task"]);
 const NAME = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/;
 const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
 
@@ -74,7 +74,7 @@ export function loadToolPolicy(agentDir: string): ToolPolicy {
     throw new Error(`${path}: invalid JSON (${(error as Error).message})`);
   }
   if (typeof data !== "object" || data === null || Array.isArray(data) || Object.getPrototypeOf(data) !== Object.prototype) {
-    throw new Error(`${path}: expected a JSON object mapping tool names to "allow" | "ask" | "deny"`);
+    throw new Error(`${path}: expected a JSON object mapping tool names to "allow" | "ask" | "deny" | "task"`);
   }
   const entries: [string, ToolAction][] = [];
   for (const key of Reflect.ownKeys(data)) {
@@ -83,7 +83,7 @@ export function loadToolPolicy(agentDir: string): ToolPolicy {
     }
     const action = (Object.getOwnPropertyDescriptor(data, key) as PropertyDescriptor).value;
     if (typeof action !== "string" || !ACTIONS.has(action)) {
-      throw new Error(`${path}: invalid action for ${JSON.stringify(key)} (expected "allow", "ask" or "deny")`);
+      throw new Error(`${path}: invalid action for ${JSON.stringify(key)} (expected "allow", "ask", "deny" or "task")`);
     }
     entries.push([key, action as ToolAction]);
   }
@@ -105,7 +105,7 @@ export const PATH_GUARDED_TOOLS: ReadonlySet<string> = new Set(["edit", "write"]
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 /** Mirrors Pi's resolveToCwd (utils/paths.js): unicode spaces, leading @, ~, file://, MSYS drives, cwd. */
-function resolveLikePi(input: string, cwd: string): string {
+export function resolveLikePi(input: string, cwd: string): string {
   let p = input.replace(UNICODE_SPACES, " ");
   if (p.startsWith("@")) p = p.slice(1);
   if (process.platform === "win32" && p.startsWith("/") && !p.startsWith("//") && !p.includes("\\")) {
@@ -119,7 +119,7 @@ function resolveLikePi(input: string, cwd: string): string {
 }
 
 /** Real path of an existing entry, or of its nearest existing ancestor + the missing tail. Throws when unresolvable. */
-function canonical(path: string): string {
+export function canonical(path: string): string {
   const tail: string[] = [];
   for (let current = path; ; current = dirname(current)) {
     try {
@@ -134,7 +134,7 @@ function canonical(path: string): string {
   }
 }
 
-function inside(root: string, target: string): boolean {
+export function inside(root: string, target: string): boolean {
   const fold = process.platform === "darwin" || process.platform === "win32";
   const rel = fold ? relative(root.toLowerCase(), target.toLowerCase()) : relative(root, target);
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
