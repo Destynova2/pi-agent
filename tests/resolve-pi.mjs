@@ -34,7 +34,7 @@ export const REDIRECTED_SPECIFIERS = [
   "typebox",
 ];
 
-function readValidPackageJson(path) {
+function readValidPackageJson(path, expectedName = EXPECTED_PACKAGE_NAME) {
   if (!existsSync(path)) return undefined;
   let pkg;
   try {
@@ -42,7 +42,7 @@ function readValidPackageJson(path) {
   } catch {
     return undefined;
   }
-  return pkg && pkg.name === EXPECTED_PACKAGE_NAME ? path : undefined;
+  return pkg && pkg.name === expectedName ? path : undefined;
 }
 
 /** Locates the real Pi install's package.json, without ever executing it. */
@@ -92,8 +92,8 @@ function resolveSelfEntry(pkgJsonPath) {
   const dot = pkg.exports && typeof pkg.exports === "object" ? pkg.exports["."] : undefined;
   if (typeof dot === "string") rel = dot;
   else if (dot && typeof dot === "object") rel = dot.import ?? dot.default ?? dot.require;
-  if (!rel) rel = pkg.main;
-  if (!rel) return undefined;
+  if (typeof rel !== "string") rel = pkg.main;
+  if (typeof rel !== "string" || !rel) return undefined;
   const entry = join(dirname(pkgJsonPath), rel);
   return existsSync(entry) ? entry : undefined;
 }
@@ -104,18 +104,27 @@ function resolveSelfEntry(pkgJsonPath) {
  * `pkgJsonPath`. Specifiers that cannot be resolved (dependency absent from this Pi
  * install) are simply left to Node's normal resolution.
  */
-function registerRedirect(pkgJsonPath) {
+export function resolvePiDependency(pkgJsonPath, specifier) {
+  if (!REDIRECTED_SPECIFIERS.includes(specifier)) return undefined;
   const req = createRequire(pkgJsonPath);
+  // Prefer the real dependency's ESM entry over require conditions or a previously registered hook.
+  for (const dir of req.resolve.paths(specifier) ?? []) {
+    const candidate = join(dir, specifier, "package.json");
+    if (!existsSync(candidate)) continue;
+    const manifest = readValidPackageJson(candidate, specifier);
+    return manifest ? resolveSelfEntry(manifest) : undefined;
+  }
+  return undefined;
+}
+
+function registerRedirect(pkgJsonPath) {
   const map = new Map();
   const selfEntry = resolveSelfEntry(pkgJsonPath);
   if (selfEntry) map.set(EXPECTED_PACKAGE_NAME, pathToFileURL(selfEntry).href);
   for (const specifier of REDIRECTED_SPECIFIERS) {
     if (specifier === EXPECTED_PACKAGE_NAME) continue;
-    try {
-      map.set(specifier, pathToFileURL(req.resolve(specifier)).href);
-    } catch {
-      // not a dependency of the found Pi install: nothing to redirect for this specifier
-    }
+    const entry = resolvePiDependency(pkgJsonPath, specifier);
+    if (entry) map.set(specifier, pathToFileURL(entry).href);
   }
   if (map.size === 0) return undefined;
   registerHooks({

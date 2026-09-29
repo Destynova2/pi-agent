@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
-import { findPiPackageJson, EXPECTED_PACKAGE_NAME } from "./resolve-pi.mjs";
+import { findPiPackageJson, resolvePiDependency, EXPECTED_PACKAGE_NAME } from "./resolve-pi.mjs";
 import { makeTmpDir } from "./fixtures/build.mjs";
 
 test("PI_PACKAGE_JSON: accepted only if the package name matches", async () => {
@@ -49,6 +49,25 @@ test("PATH lookup: finds Pi's package.json by walking up from the binary", async
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("import-only Pi dependencies resolve through a name-validated manifest", async () => {
+  const root = await makeTmpDir("pi-agent-resolve-esm-");
+  const packageJson = join(root, "package.json");
+  const dependency = join(root, "node_modules/@earendil-works/pi-ai");
+  try {
+    await mkdir(dependency, { recursive: true });
+    await writeFile(packageJson, JSON.stringify({ name: EXPECTED_PACKAGE_NAME }));
+    await writeFile(join(dependency, "index.js"), "export const fixture = true;\n");
+    const manifest = { name: "@earendil-works/pi-ai", type: "module", exports: { ".": { import: "./index.js" } } };
+    await writeFile(join(dependency, "package.json"), JSON.stringify(manifest));
+    assert.equal(resolvePiDependency(packageJson, "@earendil-works/pi-ai"), join(dependency, "index.js"));
+    await writeFile(join(dependency, "package.json"), JSON.stringify({ ...manifest, exports: { ".": { import: { default: "./index.js" } } } }));
+    assert.equal(resolvePiDependency(packageJson, "@earendil-works/pi-ai"), undefined, "unsupported nested conditions must not crash the bootstrap");
+    await writeFile(join(dependency, "package.json"), JSON.stringify({ ...manifest, name: "unrelated" }));
+    assert.equal(resolvePiDependency(packageJson, "@earendil-works/pi-ai"), undefined);
+    assert.equal(resolvePiDependency(packageJson, "unrelated"), undefined);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("empty PATH or missing pi: no package.json found", async () => {

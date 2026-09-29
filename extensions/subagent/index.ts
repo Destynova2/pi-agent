@@ -12,7 +12,8 @@
  * Uses JSON mode to capture structured output from subagents.
  */
 
-import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
+import { runProcess } from "../../lib/process.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -33,7 +34,9 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
-const PER_TASK_OUTPUT_CAP = 50 * 1024;
+const PER_TASK_OUTPUT_CAP = 12 * 1024;
+const MAX_STREAM_BYTES = 32 * 1024 * 1024;
+const DEFAULT_TIMEOUT_SECONDS = 1800;
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -157,6 +160,8 @@ interface SingleResult {
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
+	reportPath?: string;
+	tracePath?: string;
 	step?: number;
 }
 
@@ -171,34 +176,27 @@ function getFinalOutput(messages: Message[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
 		if (msg.role === "assistant") {
-			for (const part of msg.content) {
-				if (part.type === "text") return part.text;
-			}
+			return msg.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
 		}
 	}
 	return "";
 }
 
 function isFailedResult(result: SingleResult): boolean {
-	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+	return result.exitCode !== 0 || Boolean(result.stopReason && result.stopReason !== "stop");
 }
 
 function getResultOutput(result: SingleResult): string {
-	if (isFailedResult(result)) {
-		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
-	}
-	return getFinalOutput(result.messages) || "(no output)";
-}
-
-function truncateParallelOutput(output: string): string {
-	const byteLength = Buffer.byteLength(output, "utf8");
-	if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
-
-	let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-	while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
-		truncated = truncated.slice(0, -1);
-	}
-	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in tool details.]`;
+	const output = (isFailedResult(result) ? result.errorMessage || result.stderr : "") || getFinalOutput(result.messages) || "(no output)";
+	const bytes = Buffer.from(output);
+	const text = bytes.length <= PER_TASK_OUTPUT_CAP
+		? output
+		: `${new StringDecoder("utf8").write(bytes.subarray(0, PER_TASK_OUTPUT_CAP))}\n\n[Output truncated; read the full report before relying on omitted details.]`;
+	const artifacts = result.exitCode === -1 ? "" : [
+		result.reportPath && `Report: ${result.reportPath}`,
+		result.tracePath && `Trace: ${result.tracePath}`,
+	].filter(Boolean).join("\n");
+	return text + (artifacts ? `\n\n${artifacts}` : "");
 }
 
 type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
@@ -267,6 +265,7 @@ type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 interface DispatchDefaults {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
+	timeoutSeconds?: number;
 }
 
 async function runSingleAgent(
@@ -309,12 +308,13 @@ async function runSingleAgent(
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
+	let traceFd: number | undefined;
 
 	const currentResult: SingleResult = {
 		agent: agentName,
 		agentSource: agent.source,
 		task,
-		exitCode: 0,
+		exitCode: -1,
 		messages: [],
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
@@ -325,13 +325,22 @@ async function runSingleAgent(
 	const emitUpdate = () => {
 		if (onUpdate) {
 			onUpdate({
-				content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
+				content: [{ type: "text", text: getResultOutput(currentResult) }],
 				details: makeDetails([currentResult]),
 			});
 		}
 	};
 
 	try {
+		signal?.throwIfAborted();
+		const runsDir = path.join(getAgentDir(), "subagent-runs");
+		await fs.promises.mkdir(runsDir, { recursive: true, mode: 0o700 });
+		const runDir = await fs.promises.mkdtemp(path.join(runsDir, "run-"));
+		const taskPath = path.join(runDir, "task.md");
+		await fs.promises.writeFile(taskPath, `Task: ${task}`, { mode: 0o600 });
+		currentResult.reportPath = path.join(runDir, "report.md");
+		currentResult.tracePath = path.join(runDir, "trace.jsonl");
+		traceFd = fs.openSync(currentResult.tracePath, "wx", 0o600);
 		if (agent.systemPrompt.trim()) {
 			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
 			tmpPromptDir = tmp.dir;
@@ -339,94 +348,72 @@ async function runSingleAgent(
 			args.push("--append-system-prompt", tmpPromptPath);
 		}
 
-		args.push(`Task: ${task}`);
-		let wasAborted = false;
-
-		const exitCode = await new Promise<number>((resolve) => {
-			const invocation = getPiInvocation(args);
-			const proc = spawn(invocation.command, invocation.args, {
-				cwd: cwd ?? defaultCwd,
-				shell: false,
-				stdio: ["ignore", "pipe", "pipe"],
-				// Children must not spawn their own subagents (no recursive delegation).
-				env: { ...process.env, PI_SUBAGENT_CHILD: "1" },
-			});
-			let buffer = "";
-
-			const processLine = (line: string) => {
-				if (!line.trim()) return;
-				let event: any;
-				try {
-					event = JSON.parse(line);
-				} catch {
-					return;
-				}
-
-				if (event.type === "message_end" && event.message) {
-					const msg = event.message as Message;
-					currentResult.messages.push(msg);
-
-					if (msg.role === "assistant") {
-						currentResult.usage.turns++;
-						const usage = msg.usage;
-						if (usage) {
-							currentResult.usage.input += usage.input || 0;
-							currentResult.usage.output += usage.output || 0;
-							currentResult.usage.cacheRead += usage.cacheRead || 0;
-							currentResult.usage.cacheWrite += usage.cacheWrite || 0;
-							currentResult.usage.cost += usage.cost?.total || 0;
-							currentResult.usage.contextTokens = usage.totalTokens || 0;
-						}
-						if (!currentResult.model && msg.model) currentResult.model = msg.model;
-						if (msg.stopReason) currentResult.stopReason = msg.stopReason;
-						if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
-					}
-					emitUpdate();
-				}
-
-				if (event.type === "tool_result_end" && event.message) {
-					currentResult.messages.push(event.message as Message);
-					emitUpdate();
-				}
-			};
-
-			proc.stdout.on("data", (data) => {
-				buffer += data.toString();
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-				for (const line of lines) processLine(line);
-			});
-
-			proc.stderr.on("data", (data) => {
-				currentResult.stderr += data.toString();
-			});
-
-			proc.on("close", (code) => {
-				if (buffer.trim()) processLine(buffer);
-				resolve(code ?? 0);
-			});
-
-			proc.on("error", () => {
-				resolve(1);
-			});
-
-			if (signal) {
-				const killProc = () => {
-					wasAborted = true;
-					proc.kill("SIGTERM");
-					setTimeout(() => {
-						if (!proc.killed) proc.kill("SIGKILL");
-					}, 5000);
-				};
-				if (signal.aborted) killProc();
-				else signal.addEventListener("abort", killProc, { once: true });
+		// File transport avoids the OS per-argument size limit, including chain handoffs.
+		args.push(`@${taskPath}`);
+		const invocation = getPiInvocation(args);
+		const decoder = new StringDecoder("utf8");
+		let buffer = "";
+		const processLine = (line: string) => {
+			if (!line.trim()) return;
+			let event: any;
+			try { event = JSON.parse(line); } catch { return; }
+			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
+			const msg = event.message as Extract<Message, { role: "assistant" }>;
+			currentResult.messages.push(msg);
+			// ponytail: keep 40 assistant turns for UI; full JSONL stays on disk for inspection.
+			if (currentResult.messages.length > 40) currentResult.messages.shift();
+			currentResult.usage.turns++;
+			if (msg.usage) {
+				currentResult.usage.input += msg.usage.input || 0;
+				currentResult.usage.output += msg.usage.output || 0;
+				currentResult.usage.cacheRead += msg.usage.cacheRead || 0;
+				currentResult.usage.cacheWrite += msg.usage.cacheWrite || 0;
+				currentResult.usage.cost += msg.usage.cost?.total || 0;
+				currentResult.usage.contextTokens = msg.usage.totalTokens || 0;
 			}
-		});
-
-		currentResult.exitCode = exitCode;
-		if (wasAborted) throw new Error("Subagent was aborted");
-		return currentResult;
+			currentResult.stopReason = msg.stopReason;
+			currentResult.errorMessage = msg.errorMessage;
+			emitUpdate();
+		};
+		try {
+			await runProcess(invocation.command, invocation.args, {
+				cwd: cwd ?? defaultCwd, signal,
+				timeoutMs: (dispatchDefaults.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+				maxBytes: MAX_STREAM_BYTES,
+				env: { PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: `${agent.name}-${path.basename(runDir)}` },
+				onStdout: (chunk) => {
+					fs.writeFileSync(traceFd!, chunk);
+					buffer += decoder.write(chunk);
+					const lines = buffer.split("\n");
+					buffer = lines.pop() || "";
+					for (const line of lines) processLine(line);
+				},
+			});
+		} finally {
+			buffer += decoder.end();
+			if (buffer.trim()) processLine(buffer);
+		}
+		currentResult.exitCode = 0;
+		if (currentResult.stopReason !== "stop" || !getFinalOutput(currentResult.messages).trim()) {
+			throw new Error(currentResult.errorMessage || `Incomplete subagent response (${currentResult.stopReason ?? "no final message"})`);
+		}
+	} catch (error) {
+		currentResult.exitCode = 1;
+		const message = error instanceof Error ? error.message : String(error);
+		currentResult.errorMessage = [...new Set([currentResult.errorMessage, message].filter(Boolean))].join("\n");
+		if (signal?.aborted) currentResult.stopReason = "aborted";
 	} finally {
+		if (traceFd !== undefined) fs.closeSync(traceFd);
+		if (currentResult.reportPath) {
+			const status = isFailedResult(currentResult) ? `FAILED: ${currentResult.errorMessage || currentResult.stopReason}\n\nPartial output:\n` : "";
+			try {
+				fs.writeFileSync(currentResult.reportPath, status + (getFinalOutput(currentResult.messages) || "(no output)"), { mode: 0o600 });
+			} catch (error) {
+				currentResult.exitCode = 1;
+				currentResult.errorMessage = `${currentResult.errorMessage || ""}\nCannot save report: ${String(error)}`.trim();
+				currentResult.reportPath = undefined;
+			}
+		}
 		if (tmpPromptPath)
 			try {
 				fs.unlinkSync(tmpPromptPath);
@@ -440,6 +427,7 @@ async function runSingleAgent(
 				/* ignore */
 			}
 	}
+	return currentResult;
 }
 
 const ModelOverride = Type.Optional(
@@ -476,6 +464,7 @@ const SubagentParams = Type.Object({
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 	model: ModelOverride,
+	timeoutSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 7200, default: DEFAULT_TIMEOUT_SECONDS, description: "Per-child time limit in seconds (all modes). Default 1800, maximum 7200." })),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -496,6 +485,7 @@ export default function (pi: ExtensionAPI) {
 			const dispatchDefaults: DispatchDefaults = {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 				thinkingLevel: ctx.thinkingLevel,
+				timeoutSeconds: params.timeoutSeconds,
 			};
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
@@ -605,10 +595,10 @@ export default function (pi: ExtensionAPI) {
 							isError: true,
 						};
 					}
-					previousOutput = getFinalOutput(result.messages);
+					previousOutput = getResultOutput(result);
 				}
 				return {
-					content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }],
+					content: [{ type: "text", text: getResultOutput(results[results.length - 1]) }],
 					details: makeDetails("chain")(results),
 				};
 			}
@@ -681,9 +671,9 @@ export default function (pi: ExtensionAPI) {
 
 				const successCount = results.filter((r) => !isFailedResult(r)).length;
 				const summaries = results.map((r) => {
-					const output = truncateParallelOutput(getResultOutput(r));
+					const output = getResultOutput(r);
 					const status = isFailedResult(r)
-						? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
+						? `failed${r.stopReason ? ` (${r.stopReason})` : ""}`
 						: "completed";
 					return `### [${r.agent}] ${status}\n\n${output}`;
 				});
@@ -695,6 +685,7 @@ export default function (pi: ExtensionAPI) {
 						},
 					],
 					details: makeDetails("parallel")(results),
+					isError: successCount !== results.length,
 				};
 			}
 
@@ -722,7 +713,7 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 				return {
-					content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+					content: [{ type: "text", text: getResultOutput(result) }],
 					details: makeDetails("single")([result]),
 				};
 			}
@@ -805,8 +796,9 @@ export default function (pi: ExtensionAPI) {
 
 			if (details.mode === "single" && details.results.length === 1) {
 				const r = details.results[0];
-				const isError = isFailedResult(r);
-				const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+				const isRunning = r.exitCode === -1;
+				const isError = !isRunning && isFailedResult(r);
+				const icon = isRunning ? theme.fg("warning", "⏳") : isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
 				const displayItems = getDisplayItems(r.messages);
 				const finalOutput = getFinalOutput(r.messages);
 
@@ -875,8 +867,9 @@ export default function (pi: ExtensionAPI) {
 			};
 
 			if (details.mode === "chain") {
-				const successCount = details.results.filter((r) => r.exitCode === 0).length;
-				const icon = successCount === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
+				const successCount = details.results.filter((r) => !isFailedResult(r)).length;
+				const isRunning = details.results.some((r) => r.exitCode === -1);
+				const icon = isRunning ? theme.fg("warning", "⏳") : successCount === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
 
 				if (expanded) {
 					const container = new Container();
@@ -892,7 +885,7 @@ export default function (pi: ExtensionAPI) {
 					);
 
 					for (const r of details.results) {
-						const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+						const rIcon = r.exitCode === -1 ? theme.fg("warning", "⏳") : !isFailedResult(r) ? theme.fg("success", "✓") : theme.fg("error", "✗");
 						const displayItems = getDisplayItems(r.messages);
 						const finalOutput = getFinalOutput(r.messages);
 
@@ -944,7 +937,7 @@ export default function (pi: ExtensionAPI) {
 					theme.fg("toolTitle", theme.bold("chain ")) +
 					theme.fg("accent", `${successCount}/${details.results.length} steps`);
 				for (const r of details.results) {
-					const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+					const rIcon = r.exitCode === -1 ? theme.fg("warning", "⏳") : !isFailedResult(r) ? theme.fg("success", "✓") : theme.fg("error", "✗");
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
 					if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;

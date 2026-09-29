@@ -6,6 +6,9 @@ interface Options {
   timeoutMs?: number;
   maxBytes?: number;
   graceMs?: number;
+  env?: NodeJS.ProcessEnv;
+  /** When supplied, stdout chunks stream here instead of being buffered; the resolved value is then empty. */
+  onStdout?: (chunk: Buffer) => void;
 }
 
 /** Executes without a shell and stops the POSIX group before honoring a cancellation. */
@@ -15,7 +18,7 @@ export function runProcess(program: string, args: string[], options: Options): P
   return new Promise((resolve, reject) => {
     const child = spawn(program, args, {
       cwd: options.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, NO_COLOR: "1" },
+      env: { ...process.env, ...options.env, NO_COLOR: "1" },
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -64,14 +67,17 @@ export function runProcess(program: string, args: string[], options: Options): P
         } catch (failure) { finish(failure as Error); }
       }, options.graceMs ?? 1500);
     }
-    const collect = (target: Buffer[], chunk: Buffer) => {
+    const collect = (chunk: Buffer, sink: (chunk: Buffer) => void) => {
       bytes += chunk.length;
       if (bytes > (options.maxBytes ?? 4 * 1024 * 1024)) {
         stop(new Error(`${program}: output too large`));
-      } else target.push(chunk);
+        return;
+      }
+      try { sink(chunk); } catch (error) { stop(error as Error); }
     };
-    child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
-    child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
+    const onStdout = options.onStdout;
+    child.stdout.on("data", (chunk: Buffer) => collect(chunk, onStdout ?? ((c) => stdout.push(c))));
+    child.stderr.on("data", (chunk: Buffer) => collect(chunk, (c) => stderr.push(c)));
     child.once("error", (error) => finish(error));
     child.once("close", (code, signal) => {
       closed = true;

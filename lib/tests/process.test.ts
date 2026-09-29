@@ -77,3 +77,52 @@ test("bounded output, launch error and success", async () => {
   await assert.rejects(runProcess("/not/an/executable", [], { cwd }));
   await assert.rejects(runProcess(process.execPath, ["-e", "console.log('x'.repeat(10000))"], { cwd, maxBytes: 100, graceMs: 10 }), /too large/);
 });
+
+test("onStdout streams chunks and resolves with an empty buffered result", async () => {
+  const cwd = tmpdir();
+  const chunks: Buffer[] = [];
+  const result = await runProcess(process.execPath, ["-e", "process.stdout.write('hello streamed')"], {
+    cwd, onStdout: (chunk) => chunks.push(chunk),
+  });
+  assert.equal(result, "");
+  assert.equal(Buffer.concat(chunks).toString("utf8"), "hello streamed");
+});
+
+test("env is merged with process.env and NO_COLOR stays forced", async () => {
+  const cwd = tmpdir();
+  const script = "console.log(JSON.stringify({v: process.env.PI_TEST_VAR, noColor: process.env.NO_COLOR}))";
+  const out = await runProcess(process.execPath, ["-e", script], { cwd, env: { PI_TEST_VAR: "custom", NO_COLOR: "0" } });
+  assert.deepEqual(JSON.parse(out), { v: "custom", noColor: "1" });
+});
+
+test("a throwing onStdout callback stops the descendant and rejects instead of escaping", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-onstdout-throw-test-"));
+  const ready = join(cwd, "ready");
+  const marker = join(cwd, "survived");
+  const child = `process.on('SIGTERM',()=>{}); process.stdout.write('go'); require('fs').writeFileSync(${JSON.stringify(ready)},'ready'); setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'bad'),1000);`;
+  try {
+    await assert.rejects(
+      runProcess(process.execPath, ["-e", child], {
+        cwd, graceMs: 50, timeoutMs: 5000,
+        onStdout: () => { throw new Error("callback boom"); },
+      }),
+      /callback boom/,
+    );
+    for (let i = 0; i < 100; i++) {
+      try { await access(ready); break; } catch { await delay(10); }
+    }
+    await delay(1100);
+    await assert.rejects(access(marker));
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("output limit is still enforced while streaming stdout", async () => {
+  const cwd = tmpdir();
+  const chunks: Buffer[] = [];
+  await assert.rejects(
+    runProcess(process.execPath, ["-e", "console.log('x'.repeat(10000))"], {
+      cwd, maxBytes: 100, graceMs: 10, onStdout: (chunk) => chunks.push(chunk),
+    }),
+    /too large/,
+  );
+});
