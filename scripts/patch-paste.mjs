@@ -1,5 +1,5 @@
 // Bounded, portable bracketed-paste keepalive patch for the PRIVATE npm
-// runtime @earendil-works/pi-coding-agent 0.87.1 only.
+// runtime @earendil-works/pi-coding-agent versions pinned in the patch data.
 //
 // Reproduces textually (no rebuild, no esbuild) the terminal.ts fix already
 // merged in the private source tree: a periodic, TTY-gated, unref'd resend of
@@ -19,9 +19,9 @@ import { pathToFileURL } from "node:url";
 import {
 	EXPECTED_PACKAGE_NAME,
 	EXPECTED_TUI_PACKAGE_NAME,
-	EXPECTED_VERSION,
 	PATCHED_MARKER,
 	TARGETS,
+	TARGETS_BY_VERSION,
 } from "../patches/paste-keepalive.mjs";
 
 export class PastePatchError extends Error {
@@ -55,15 +55,15 @@ async function readPackageManifest(packageDir) {
 	return manifest;
 }
 
-function assertExpectedManifest(manifest, expectedName, manifestPath) {
+function assertExpectedManifest(manifest, expectedName, manifestPath, expectedVersion) {
 	if (manifest.name !== expectedName) {
 		throw new PastePatchError(
 			`patch-paste: ${manifestPath} declares name "${manifest.name}", expected "${expectedName}" — refusing (unknown input)`,
 		);
 	}
-	if (manifest.version !== EXPECTED_VERSION) {
+	if (manifest.version !== expectedVersion || !Object.hasOwn(TARGETS_BY_VERSION, manifest.version)) {
 		throw new PastePatchError(
-			`patch-paste: ${manifestPath} declares version "${manifest.version}", this patch only targets ${EXPECTED_VERSION} — refusing (unknown input)`,
+			`patch-paste: ${manifestPath} declares version "${manifest.version}", this patch only targets ${Object.keys(TARGETS_BY_VERSION).join(", ")} — refusing (unknown input)`,
 		);
 	}
 }
@@ -112,10 +112,10 @@ function applyReplacements(content, target, filePath) {
  */
 async function planPatches(packageRoot, targets) {
 	const manifest = await readPackageManifest(packageRoot);
-	assertExpectedManifest(manifest, EXPECTED_PACKAGE_NAME, join(packageRoot, "package.json"));
+	assertExpectedManifest(manifest, EXPECTED_PACKAGE_NAME, join(packageRoot, "package.json"), manifest.version);
 
 	const plan = [];
-	for (const target of targets) {
+	for (const target of targets ?? TARGETS_BY_VERSION[manifest.version]) {
 		let baseDir = packageRoot;
 		if (target.id === "pi-tui-dependency-terminal") {
 			const tuiRoot = findPiTuiPackageRoot(packageRoot);
@@ -124,7 +124,7 @@ async function planPatches(packageRoot, targets) {
 				continue;
 			}
 			const tuiManifest = await readPackageManifest(tuiRoot);
-			assertExpectedManifest(tuiManifest, EXPECTED_TUI_PACKAGE_NAME, join(tuiRoot, "package.json"));
+			assertExpectedManifest(tuiManifest, EXPECTED_TUI_PACKAGE_NAME, join(tuiRoot, "package.json"), manifest.version);
 			baseDir = tuiRoot;
 		}
 
@@ -151,7 +151,7 @@ async function planPatches(packageRoot, targets) {
 		if (digest !== target.pristineSha256) {
 			throw new PastePatchError(
 				`patch-paste: ${filePath} does not match the known pristine content for ` +
-					`${EXPECTED_PACKAGE_NAME}@${EXPECTED_VERSION} (sha256 ${digest}) — refusing (unknown input)`,
+					`${EXPECTED_PACKAGE_NAME}@${manifest.version} (sha256 ${digest}) — refusing (unknown input)`,
 			);
 		}
 
@@ -168,7 +168,7 @@ async function writeAtomic(filePath, content) {
 }
 
 /**
- * Patch npm @earendil-works/pi-coding-agent@0.87.1 in place under
+ * Patch a supported npm @earendil-works/pi-coding-agent version in place under
  * `packageRoot` so bracketed paste survives a mode-2004 reset (dropped
  * terminal state, nested reattach, etc.). Idempotent: already-patched files
  * are left untouched. Validates every target before writing any of them;
@@ -179,7 +179,7 @@ async function writeAtomic(filePath, content) {
  *   installed/staged @earendil-works/pi-coding-agent package (the directory
  *   containing its package.json).
  * @param {{ targets?: typeof TARGETS }} [options] `targets` overrides the
- *   default 0.87.1 target list; only used by tests, real callers should omit it.
+ *   version-specific target list; only used by tests, real callers should omit it.
  * @returns {Promise<{ root: string, version: string, patched: string[], alreadyPatched: string[], skipped: string[] }>}
  */
 export async function patchPaste(packageRoot, options = {}) {
@@ -190,7 +190,7 @@ export async function patchPaste(packageRoot, options = {}) {
 	if (!existsSync(root) || !statSync(root).isDirectory()) {
 		throw new PastePatchError(`patch-paste: packageRoot is not a directory: ${root}`);
 	}
-	const targets = options.targets ?? TARGETS;
+	const targets = options.targets;
 
 	const { manifest, plan } = await planPatches(root, targets);
 
@@ -215,7 +215,7 @@ function printHelp() {
 	console.log(
 		"Usage: node scripts/patch-paste.mjs <packageRoot>\n\n" +
 			`Applies the bracketed-paste keepalive patch to a staged copy of ` +
-			`${EXPECTED_PACKAGE_NAME}@${EXPECTED_VERSION}. Never touches a running ` +
+			`${EXPECTED_PACKAGE_NAME} (${Object.keys(TARGETS_BY_VERSION).join(", ")}). Never touches a running ` +
 			"or global Pi install directly; point it at a package tree on disk.",
 	);
 }

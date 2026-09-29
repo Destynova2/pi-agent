@@ -244,6 +244,16 @@ test("patchPaste(): fails closed on a package.json name mismatch, writes nothing
   assert.equal(untouched, required.__pristineContent);
 });
 
+test("patchPaste(): accepts the pinned 0.99.1 version without accepting arbitrary versions", async (t) => {
+  const target = makeSyntheticTarget({ id: "new-runtime", required: true, body: "hello" });
+  const root = await buildSyntheticRoot([target], { version: "0.99.1" });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const result = await patchPaste(root, { targets: [target] });
+  assert.equal(result.version, "0.99.1");
+  assert.deepEqual(result.patched, ["new-runtime"]);
+  await assert.rejects(() => patchPaste(root), /chunk-AXPY26X7/);
+});
+
 test("patchPaste(): fails closed on a package.json version mismatch", async (t) => {
   const required = makeSyntheticTarget({ id: "req-b", required: true, body: "hello" });
   const root = await buildSyntheticRoot([required], { version: "0.0.1" });
