@@ -38,6 +38,8 @@ test("orchestrate command: forwards instructions without simulating the LLM", as
   assert.match(prompt, /independent reviewer for risky changes/);
   assert.match(prompt, /children do not inherit this conversation/);
   assert.match(prompt, /checkpoint in shared notes/);
+  assert.match(prompt, /Batch independent investigations and read-only checks/);
+  assert.match(prompt, /After compaction, resume the checkpoint/);
   assert.match(prompt, /inspect the current worktree; notes are hints, not proof/);
   assert.match(prompt, /verify the combined change and map each requirement to evidence/);
   assert.match(prompt, /configured agent models; verify availability/);
@@ -54,6 +56,36 @@ test("orchestrate command: forwards instructions without simulating the LLM", as
   await handler("cancel", ctx);
   assert.ok(notifications.some((text) => text.includes("No local gate in progress. Local gates status only")));
   assert.ok(notifications.includes("No gate in progress."));
+});
+
+test("ordinary requests get adaptive guidance only when root delegation is available", () => {
+  const events = new Map<string, (event: any) => void>();
+  let tools = ["subagent"];
+  const oldChild = process.env.PI_SUBAGENT_CHILD;
+  try {
+    delete process.env.PI_SUBAGENT_CHILD;
+    register({ on: (name: string, handler: any) => events.set(name, handler), getActiveTools: () => tools, registerCommand: () => {} } as any);
+    const event = { prompt: "fix this bug", systemPromptOptions: { sections: {} as Record<string, string> } };
+    const before = events.get("before_agent_start")!;
+    before(event);
+    const policy = event.systemPromptOptions.sections.adaptive_delegation;
+    assert.match(policy, /Start direct for simple or tightly coupled work/);
+    assert.match(policy, /Split progressively/);
+    assert.match(policy, /coordination costs exceed the benefit/);
+    assert.match(policy, /Resume an owned child/);
+    assert.match(policy, /handle a different useful slice, not their same investigation/);
+    assert.match(policy, /re-read only changed or missing evidence/);
+    assert.match(policy, /Stop exploring when the next scoped change and its acceptance check are clear/);
+    assert.match(policy, /No commit, push or deployment without explicit user authorization/);
+    before(event);
+    assert.equal(event.systemPromptOptions.sections.adaptive_delegation, policy, "no accumulating prompt text");
+    tools = []; before(event);
+    assert.equal(event.systemPromptOptions.sections.adaptive_delegation, undefined);
+    tools = ["subagent"]; process.env.PI_SUBAGENT_CHILD = "1"; before(event);
+    assert.equal(event.systemPromptOptions.sections.adaptive_delegation, undefined);
+  } finally {
+    if (oldChild === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = oldChild;
+  }
 });
 
 for (const method of ["cancel", "session_shutdown", "session_before_switch", "session_before_fork", "session_before_tree", "session_start"]) {

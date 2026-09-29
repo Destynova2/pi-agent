@@ -8,13 +8,13 @@ import { recommendedWorkspace, workspaceHint } from "./workspace.ts";
  * it adapts effort to complexity and risk, delegates only when useful,
  * and requests independent review for risky changes.
  */
-const ORCHESTRATE_PROMPT = `Take ownership of the request below. Explore first, delegate only when useful, and never invent progress. These are reasoning instructions, not a workflow engine or a global session tracker.
+const ORCHESTRATE_PROMPT = `Take ownership of the request below. Never invent progress. These are reasoning instructions, not a workflow engine or a global session tracker.
 
 Read the relevant code, repository rules and context before editing. If intent remains materially ambiguous, ask the user directly before acting. For audits, stay read-only and cite file:line findings.
 
-Adapt effort to complexity and risk, not file count. Handle a simple, low-risk task directly without a formal planning template or mandatory delegation. For complex or risky work, give a short plan with scope, owners and checks; record it in shared notes when available. Use a read-only scout or bounded workers only when they help, with disjoint write-sets or sequential edits. Request an independent reviewer for risky changes, preferably from another model family, and provide the full diff, scope, ownership and test evidence.
+Adapt effort to complexity and risk, not file count. Handle a simple, low-risk task directly without a formal planning template or mandatory delegation. For complex or risky work, give a short plan with scope, owners and checks; record it in shared notes when available. Batch independent investigations and read-only checks; serialize shared writes. Scouts return findings, source ranges and open questions; don't repeat their full scans. Request an independent reviewer for risky changes, preferably from another model family, and provide the full diff, scope, ownership and test evidence.
 
-For long tasks, preserve the original objective and track remaining requirements. Give each worker the goal, relevant paths, constraints and acceptance check; children do not inherit this conversation. After each slice, save a checkpoint in shared notes: done, files, check + exit code, blockers, next step. Before resuming, inspect the current worktree; notes are hints, not proof. Before completion, verify the combined change and map each requirement to evidence; unverified items stay open.
+For long tasks, preserve the original objective and track remaining requirements. Give each worker the goal, relevant paths, constraints and acceptance check; children do not inherit this conversation. After each slice, save a checkpoint in shared notes: done, files, check + exit code, blockers, next step, child resume IDs. After compaction, resume the checkpoint rather than restart completed exploration. Before resuming, inspect the current worktree; notes are hints, not proof. Before completion, verify the combined change and map each requirement to evidence; unverified items stay open.
 
 Use configured agent models; verify availability before delegating and choose the least costly suitable available model. If delegation or independent review is needed but unavailable, explain the limitation and ask whether to continue solo; wait for the user's answer. Never present solo work as independently reviewed. After review findings, fix and re-review; stop and report on a repeated rejection, escalation or lack of progress.
 
@@ -22,13 +22,26 @@ Before edits, check other agents' claims and protect preexisting changes. Reassi
 
 Verify with real checks: wait for completion, preserve exit codes, and report failures or skipped checks. Never hide failures behind output-filtering pipelines. No commit, push, merge or deployment without explicit user authorization; a review verdict does not authorize deployment. After a push with a PR, use ci_watch when available and report pending CI as pending; otherwise state that CI is not being watched. Attribute any approval to the actual reviewer.
 
-Finish briefly: what changed, checks and results, remaining risks or blockers, and any agents actually used. Keep routine work concise; do not claim completion before verification.
+Finish briefly: changes, checks, blockers and agents used. Do not claim completion before verification.
 
 Request:
 `;
 
-/** Free-form request to the current agent, or explicit execution of local gates. */
+const AUTO_DELEGATION_PROMPT = `Adapt the work to the user's request automatically; /orchestrate is optional. Start direct for simple or tightly coupled work, without a planner agent or an extra model call just to choose a workflow.
+Split progressively only when a subtask has a clear goal and boundary and delegation saves work or supplies useful independent review. Batch independent investigations, read-only checks and disjoint write-sets; keep shared-file or strongly coupled changes together/sequential. While children work, handle a different useful slice, not their same investigation. Consolidate when coordination costs exceed the benefit. Do not use file-count thresholds or a fixed number of agents.
+Give each child the objective, relevant paths, constraints and acceptance check. Check its available capabilities: headless children cannot approve ask-policy tools. Resume an owned child for a follow-up on the same task instead of making it rediscover everything; do not reuse unrelated history. Do not bypass permissions or invent independent review.
+Stop exploring when the next scoped change and its acceptance check are clear. Scouts return findings with source ranges and open questions; verify disputed/high-risk findings without repeating their whole scans. After compaction, resume from the latest checkpoint, remaining requirements and current diff; re-read only changed or missing evidence. Keep original-request/artifact pointers and child resume IDs in checkpoints. Verify the combined result against the original request. Explain the chosen split briefly only when delegation helps; no ceremony for trivial work. Ask before material ambiguity or an unapproved scope change. No commit, push or deployment without explicit user authorization.`;
+
+/** Adaptive instructions for ordinary turns, plus explicit orchestration/gate commands. */
 export default function (pi: ExtensionAPI) {
+  pi.on("before_agent_start", (event) => {
+    const sections = event.systemPromptOptions.sections;
+    if (process.env.PI_SUBAGENT_CHILD || !pi.getActiveTools().includes("subagent") || event.prompt.startsWith(ORCHESTRATE_PROMPT)) {
+      delete sections.adaptive_delegation;
+      return;
+    }
+    sections.adaptive_delegation = AUTO_DELEGATION_PROMPT;
+  });
   let active: AbortController | undefined;
   let task: Promise<string> | undefined;
   const stop = async () => {
