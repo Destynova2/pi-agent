@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Installeur idempotent de la configuration pi-agent vers un répertoire cible.
-// Stdlib Node uniquement. Voir README.md et docs/configuration.md (pi) pour le contrat.
+// Idempotent installer for the pi-agent configuration into a target directory.
+// Node stdlib only. See README.md and docs/configuration.md (pi) for the contract.
 import { cp, mkdir, readdir, readFile, realpath, rm, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -19,11 +19,11 @@ function defaultTarget(env) {
 }
 
 /**
- * Résout un chemin vers sa forme canonique (liens symboliques traversés) même s'il n'existe
- * pas encore : on remonte jusqu'au premier ancêtre existant, on le résout avec `realpath`, puis
- * on rajoute le suffixe inexistant tel quel. Deux chemins désignant le même emplacement via des
- * alias légitimes (ex. macOS `/tmp` -> `/private/tmp`) deviennent ainsi comparables, sans pour
- * autant rejeter tout chemin qui contiendrait `/tmp`.
+ * Resolves a path to its canonical form (symlinks traversed) even if it does not
+ * exist yet: walks up to the first existing ancestor, resolves it with `realpath`, then
+ * appends the nonexistent suffix as-is. Two paths designating the same location through
+ * legitimate aliases (e.g. macOS `/tmp` -> `/private/tmp`) thus become comparable, without
+ * rejecting every path that happens to contain `/tmp`.
  */
 async function canonicalPath(path) {
   const resolved = resolve(path);
@@ -44,7 +44,7 @@ async function canonicalPath(path) {
   return suffixParts.length > 0 ? join(real, ...suffixParts) : real;
 }
 
-/** Liste tous les liens symboliques (à toute profondeur) sous `root`, sans descendre dedans. */
+/** Lists every symlink (at any depth) under `root`, without descending into them. */
 async function scanSymlinks(root) {
   const found = [];
   async function walk(dir) {
@@ -73,26 +73,25 @@ async function scanSymlinks(root) {
 }
 
 /**
- * Vérifie, avant toute mutation, que source et cible sont des emplacements distincts et non
- * imbriqués (comparaison sur chemins canoniques : les liens symboliques du système comme
- * `/tmp` <-> `/private/tmp` sur macOS sont donc résolus vers le même emplacement plutôt que
- * rejetés en bloc), que la cible elle-même n'est pas un lien symbolique, et qu'aucune ressource
- * gérée (source ou cible, entrée elle-même et tout son contenu) n'en contient un : un lien
- * symbolique dans un répertoire géré permettrait d'écrire hors de la cible pendant la
- * synchronisation.
+ * Checks, before any mutation, that source and target are distinct and non-nested
+ * locations (comparison on canonical paths: system symlinks like `/tmp` <-> `/private/tmp`
+ * on macOS are thus resolved to the same location rather than being rejected outright),
+ * that the target itself is not a symlink, and that no managed resource (source or
+ * target, the entry itself and all its content) contains one: a symlink inside a managed
+ * directory would allow writing outside the target during sync.
  */
 async function assertSafeTarget(sourceRoot, target) {
   if (await isSymlink(target)) {
-    throw new Error(`refus : la cible est un lien symbolique (${target})`);
+    throw new Error(`refuse: target is a symbolic link (${target})`);
   }
 
   const sourceCanonical = await canonicalPath(sourceRoot);
   const targetCanonical = await canonicalPath(target);
   if (sourceCanonical === targetCanonical) {
-    throw new Error(`refus : cible identique à la source (${target}). Ce dépôt reste la source, pas le stockage installé.`);
+    throw new Error(`refuse: target identical to source (${target}). This repo remains the source, not installed storage.`);
   }
   if (isSubPath(sourceCanonical, targetCanonical) || isSubPath(targetCanonical, sourceCanonical)) {
-    throw new Error(`refus : source et cible se chevauchent (${sourceRoot} / ${target})`);
+    throw new Error(`refuse: source and target overlap (${sourceRoot} / ${target})`);
   }
 
   const symlinkEntries = [];
@@ -102,7 +101,7 @@ async function assertSafeTarget(sourceRoot, target) {
   }
   if (symlinkEntries.length > 0) {
     throw new Error(
-      `refus : lien(s) symbolique(s) détecté(s) dans des ressources gérées, risque d'écriture hors cible :\n${symlinkEntries.join("\n")}`,
+      `refuse: symbolic link(s) detected in managed resources, risk of writing outside the target:\n${symlinkEntries.join("\n")}`,
     );
   }
 }
@@ -123,7 +122,7 @@ async function backupExisting(target, entries) {
   return backupDir;
 }
 
-/** Liste les fichiers réguliers sous `dir` (chemins relatifs). Refuse tout lien symbolique. */
+/** Lists regular files under `dir` (relative paths). Refuses any symlink. */
 async function listFiles(dir) {
   const results = [];
   async function walk(current, relBase) {
@@ -132,7 +131,7 @@ async function listFiles(dir) {
       const abs = join(current, entry.name);
       const rel = relBase ? join(relBase, entry.name) : entry.name;
       if (entry.isSymbolicLink()) {
-        throw new Error(`refus : lien symbolique rencontré pendant la copie (${abs})`);
+        throw new Error(`refuse: symbolic link encountered during copy (${abs})`);
       }
       if (entry.isDirectory()) {
         await walk(abs, rel);
@@ -146,9 +145,9 @@ async function listFiles(dir) {
 }
 
 /**
- * Copie fichier par fichier depuis `src` vers `dest`, en ne touchant que les chemins présents
- * dans `src`. Ne supprime jamais `dest` : tout fichier/dossier que l'utilisateur a ajouté dans
- * un répertoire géré (extension personnelle, note, etc.) et qui n'existe pas dans `src` reste
+ * Copies file by file from `src` to `dest`, touching only the paths present
+ * in `src`. Never deletes `dest`: any file/directory the user added in a
+ * managed directory (personal extension, note, etc.) that does not exist in `src` stays
  * intact.
  */
 async function syncDir(src, dest) {
@@ -174,32 +173,32 @@ async function syncFile(src, dest) {
 
 function validateSettingsSchema(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`refus : ${label} n'est pas un objet JSON valide (${label})`);
+    throw new Error(`refuse: ${label} is not a valid JSON object (${label})`);
   }
   if ("packages" in value) {
     const ok = Array.isArray(value.packages) && value.packages.every((p) => typeof p === "string");
-    if (!ok) throw new Error(`refus : ${label}.packages doit être un tableau de chaînes`);
+    if (!ok) throw new Error(`refuse: ${label}.packages must be an array of strings`);
   }
 }
 
-/** Lit et valide un settings.json minimal, avant toute mutation. Absent => objet vide. */
+/** Reads and validates a minimal settings.json, before any mutation. Absent => empty object. */
 async function readSettings(path, label) {
   if (!(await pathExists(path))) return {};
   let parsed;
   try {
     parsed = JSON.parse(await readFile(path, "utf8"));
   } catch (err) {
-    throw new Error(`refus : ${label} JSON invalide (${path}) : ${err.message}`);
+    throw new Error(`refuse: invalid JSON in ${label} (${path}): ${err.message}`);
   }
   validateSettingsSchema(parsed, label);
   return parsed;
 }
 
 /**
- * Identité d'une entrée `packages` sans son marqueur de version final (`@version` ou
- * `@sha`), pour pouvoir remplacer une ancienne version par la nouvelle sans dupliquer.
- * Un `@` qui suit immédiatement `/` ou `:` fait partie d'un scope npm (`npm:@scope/nom`),
- * pas d'un marqueur de version : il n'est pas retiré.
+ * Identity of a `packages` entry without its trailing version marker (`@version` or
+ * `@sha`), so an old version can be replaced by the new one without duplicating it.
+ * An `@` immediately following `/` or `:` is part of an npm scope (`npm:@scope/name`),
+ * not a version marker: it is not stripped.
  */
 export function packageIdentity(spec) {
   const at = spec.lastIndexOf("@");
@@ -210,10 +209,10 @@ export function packageIdentity(spec) {
 }
 
 /**
- * Préserve les préférences déjà présentes en cible (et les paquets personnels qu'elle a
- * ajoutés). Seuls les paquets gérés par la source (même identité) sont remplacés par la
- * version de la source ; les paquets personnels de la cible sans équivalent en source sont
- * conservés tels quels.
+ * Preserves preferences already present in the target (and the personal packages it
+ * added). Only packages managed by the source (same identity) are replaced by the
+ * source's version; personal target packages with no equivalent in the source are
+ * kept as-is.
  */
 export function mergeSettings(sourceSettings, targetSettings) {
   const merged = { ...sourceSettings, ...targetSettings };
@@ -248,13 +247,13 @@ function installPackages(packages, target, env) {
 }
 
 /**
- * Installe la configuration depuis `sourceRoot` (le dépôt courant par défaut) vers `target`.
- * Ne touche jamais auth.json, sessions/, models-store.json, trust.json ni tout fichier hors
- * MANAGED_ENTRIES : ils restent la responsabilité de Pi et de l'utilisateur.
+ * Installs the configuration from `sourceRoot` (the current repo by default) into `target`.
+ * Never touches auth.json, sessions/, models-store.json, trust.json, or any file outside
+ * MANAGED_ENTRIES: those remain Pi's and the user's responsibility.
  *
- * Ordre : validation intégrale (chemin cible, sécurité source/cible, schéma JSON) avant la
- * moindre mutation, puis sauvegarde, puis copie, pour ne jamais laisser une entrée invalide
- * toucher les ressources déjà installées.
+ * Order: full validation (target path, source/target safety, JSON schema) before any
+ * mutation, then backup, then copy, so an invalid entry never touches already-installed
+ * resources.
  */
 export async function runInstall({
   sourceRoot = DEFAULT_SOURCE_ROOT,
@@ -263,7 +262,7 @@ export async function runInstall({
   env = process.env,
 } = {}) {
   if (target !== undefined && (typeof target !== "string" || target.trim() === "")) {
-    throw new Error("refus : --target doit être un chemin non vide");
+    throw new Error("refuse: --target must be a non-empty path");
   }
   sourceRoot = resolve(sourceRoot);
   const resolvedTarget = resolve(target ?? defaultTarget(env));
@@ -271,7 +270,7 @@ export async function runInstall({
   await assertSafeTarget(sourceRoot, resolvedTarget);
 
   const sourceSettings = await readSettings(join(sourceRoot, "settings.json"), "settings.json source");
-  const targetSettings = await readSettings(join(resolvedTarget, "settings.json"), "settings.json cible");
+  const targetSettings = await readSettings(join(resolvedTarget, "settings.json"), "settings.json target");
   const mergedSettings = mergeSettings(sourceSettings, targetSettings);
 
   await mkdir(resolvedTarget, { recursive: true });
@@ -307,8 +306,8 @@ export async function runInstall({
       skippedPackages: noPackages,
     };
   } catch (err) {
-    // La sauvegarde a déjà eu lieu : on la signale même si la suite échoue, pour que
-    // l'utilisateur sache où retrouver son état précédent.
+    // The backup already happened: we report it even if the rest fails, so
+    // the user knows where to find their previous state.
     err.backupDir = backupDir;
     throw err;
   }
@@ -319,38 +318,38 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--target") {
-      if (i + 1 >= argv.length) throw new Error("--target requiert un chemin");
+      if (i + 1 >= argv.length) throw new Error("--target requires a path");
       out.target = argv[++i];
     } else if (arg === "--no-packages") out.noPackages = true;
     else if (arg === "-h" || arg === "--help") out.help = true;
-    else throw new Error(`option inconnue : ${arg}`);
+    else throw new Error(`unknown option: ${arg}`);
   }
   return out;
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/install.mjs [--target <chemin>] [--no-packages]
+  console.log(`Usage: node scripts/install.mjs [--target <path>] [--no-packages]
 
-  --target <chemin>   Répertoire agent cible (défaut: $PI_CODING_AGENT_DIR ou ~/.pi/agent)
-  --no-packages       Ne pas invoquer \`pi install\` (mode hors-ligne)
+  --target <path>     Target agent directory (default: $PI_CODING_AGENT_DIR or ~/.pi/agent)
+  --no-packages       Do not invoke \`pi install\` (offline mode)
 `);
 }
 
 function printSummary(result) {
-  console.log(`install: cible ${result.target}`);
-  if (result.backupDir) console.log(`install: sauvegarde préalable dans ${result.backupDir}`);
-  console.log(`install: répertoires synchronisés : ${result.syncedDirs.join(", ") || "(aucun)"}`);
-  console.log(`install: fichiers synchronisés : ${result.syncedFiles.join(", ") || "(aucun)"}`);
+  console.log(`install: target ${result.target}`);
+  if (result.backupDir) console.log(`install: prior backup in ${result.backupDir}`);
+  console.log(`install: synced directories: ${result.syncedDirs.join(", ") || "(none)"}`);
+  console.log(`install: synced files: ${result.syncedFiles.join(", ") || "(none)"}`);
   if (result.skippedPackages) {
-    console.log("install: paquets ignorés (--no-packages)");
+    console.log("install: packages skipped (--no-packages)");
   } else if (result.packageFailures.length > 0) {
-    console.log(`install: paquets installés : ${result.installedPackages.join(", ") || "(aucun)"}`);
+    console.log(`install: installed packages: ${result.installedPackages.join(", ") || "(none)"}`);
     for (const failure of result.packageFailures) {
-      console.error(`install: échec paquet ${failure.source} : ${failure.message}`);
+      console.error(`install: package failure ${failure.source}: ${failure.message}`);
     }
-    console.error("install: terminé avec des échecs de paquets, ne pas considérer comme un succès complet");
+    console.error("install: finished with package failures, do not consider this a full success");
   } else {
-    console.log(`install: paquets installés : ${result.installedPackages.join(", ") || "(aucun)"}`);
+    console.log(`install: installed packages: ${result.installedPackages.join(", ") || "(none)"}`);
   }
 }
 
@@ -372,7 +371,7 @@ async function main() {
     printSummary(result);
     process.exitCode = result.packageFailures.length > 0 ? 1 : 0;
   } catch (err) {
-    if (err.backupDir) console.error(`install: sauvegarde préalable conservée dans ${err.backupDir} malgré l'échec`);
+    if (err.backupDir) console.error(`install: prior backup kept in ${err.backupDir} despite the failure`);
     console.error(`install: ${err.message}`);
     process.exitCode = 1;
   }

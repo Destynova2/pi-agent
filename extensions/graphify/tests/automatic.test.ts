@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AutomaticIndex } from "../automatic.ts";
 
-test("démarrage non bloquant, une seule tâche et attente explicite", async () => {
+test("non-blocking start, single task and explicit wait", async () => {
   const automatic = new AutomaticIndex<number>();
   let finish: ((value: number) => void) | undefined;
   let calls = 0;
@@ -22,12 +22,12 @@ test("démarrage non bloquant, une seule tâche et attente explicite", async () 
   assert.equal(unexpected, 0);
 });
 
-test("transition : annulation attendue, aucune notification tardive", async () => {
+test("transition: expected cancellation, no late notification", async () => {
   const automatic = new AutomaticIndex<void>();
   let cleaned = false;
   let notifications = 0;
   automatic.start((signal) => new Promise((_, reject) => {
-    signal.addEventListener("abort", () => { cleaned = true; reject(new Error("annulé")); }, { once: true });
+    signal.addEventListener("abort", () => { cleaned = true; reject(new Error("canceled")); }, { once: true });
   }), () => { notifications++; }, () => { notifications++; });
   await automatic.close();
   assert.equal(cleaned, true);
@@ -39,11 +39,11 @@ test("transition : annulation attendue, aucune notification tardive", async () =
   assert.equal(notifications, 0);
 });
 
-test("échec d’indexation signalé une fois sans rejet non géré", async () => {
+test("indexing failure reported once with no unhandled rejection", async () => {
   const automatic = new AutomaticIndex<void>();
   let failures = 0;
   let completed = false;
-  automatic.start(async () => { throw new Error("Graphify absent"); }, () => { completed = true; }, () => { failures++; });
+  automatic.start(async () => { throw new Error("Graphify missing"); }, () => { completed = true; }, () => { failures++; });
   await automatic.wait();
   assert.equal(failures, 1);
   assert.equal(completed, false);

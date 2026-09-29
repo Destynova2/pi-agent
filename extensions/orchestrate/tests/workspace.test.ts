@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { command } from "../../graphify/core.ts";
 import { recommendedWorkspace, workspaceHint } from "../workspace.ts";
 
-test("non configuré (par défaut) : aucune suggestion, aucun chemin personnel codé en dur", async () => {
+test("not configured (by default): no suggestion, no hardcoded personal path", async () => {
   const home = await realpath(await mkdtemp(join(tmpdir(), "pi-workspace-test-")));
   try {
     const source = join(home, "any-project");
@@ -17,7 +17,7 @@ test("non configuré (par défaut) : aucune suggestion, aucun chemin personnel c
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
-test("proposer la copie configurée seulement depuis sa racine réelle, jamais basculer", async () => {
+test("propose the configured copy only from its real root, never switch", async () => {
   const home = await realpath(await mkdtemp(join(tmpdir(), "pi-workspace-test-")));
   const env = { PI_ORCHESTRATE_SOURCE_DIR: "workspace/source", PI_ORCHESTRATE_WORKSPACE_DIR: "workspace/source-orchestrate-jj" };
   try {
@@ -33,7 +33,7 @@ test("proposer la copie configurée seulement depuis sa racine réelle, jamais b
     assert.equal(await recommendedWorkspace(source, home, env), target);
     assert.equal(await recommendedWorkspace(target, home, env), undefined);
     assert.equal(await command("git", ["status", "--porcelain"], source), before);
-    assert.match(workspaceHint(target), /non commités de la source configurée/);
+    assert.match(workspaceHint(target), /uncommitted changes from the configured source/);
     assert.match(workspaceHint("/tmp/l'atelier"), /'\\''/);
   } finally { await rm(home, { recursive: true, force: true }); }
 });

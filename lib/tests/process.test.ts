@@ -6,13 +6,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runProcess } from "../process.ts";
 
-// Chemin portable relatif à ce fichier de test : jamais $HOME ni un chemin d'installation utilisateur.
+// Portable path relative to this test file: never $HOME or a user install path.
 const GATES_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../gates/pi-orchestrate");
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 for (const mode of ["timeout", "abort", "parent-exits"] as const) {
-  test(`supervision ${mode} : un descendant ignorant TERM ne survit pas`, async () => {
+  test(`supervision ${mode}: a descendant ignoring TERM does not survive`, async () => {
     const cwd = await mkdtemp(join(tmpdir(), "pi-process-test-"));
     const ready = join(cwd, "ready");
     const marker = join(cwd, "survived");
@@ -24,7 +24,7 @@ for (const mode of ["timeout", "abort", "parent-exits"] as const) {
       const job = runProcess(process.execPath, ["-e", parent], {
         cwd, signal: controller.signal, timeoutMs: mode === "timeout" ? 500 : 5000, graceMs: 50,
       });
-      const rejected = assert.rejects(job, mode === "timeout" ? /délai/ : /annulée/);
+      const rejected = assert.rejects(job, mode === "timeout" ? /deadline/ : /canceled/);
       for (let i = 0; i < 100; i++) {
         try { await access(ready); break; } catch { await delay(10); }
       }
@@ -39,7 +39,7 @@ for (const mode of ["timeout", "abort", "parent-exits"] as const) {
   });
 }
 
-test("parent sorti avec succès : refuser et arrêter le descendant sans sorties héritées", async () => {
+test("parent exited successfully: refuse and stop the descendant without inherited outputs", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-background-test-"));
   const ready = join(cwd, "ready");
   const marker = join(cwd, "survived");
@@ -52,7 +52,7 @@ test("parent sorti avec succès : refuser et arrêter le descendant sans sorties
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-test("annulation Node → runner Python → groupe de hook distinct", async () => {
+test("Node cancellation → Python runner → distinct hook group", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-cascade-test-"));
   const ready = join(cwd, "ready");
   const marker = join(cwd, "survived");
@@ -65,15 +65,15 @@ test("annulation Node → runner Python → groupe de hook distinct", async () =
     `gates.run([sys.executable, '-c', ${JSON.stringify(child)}], ${JSON.stringify(cwd)})`,
   ].join("\n");
   try {
-    await assert.rejects(runProcess("python3", ["-c", script], { cwd, timeoutMs: 500 }), /délai/);
+    await assert.rejects(runProcess("python3", ["-c", script], { cwd, timeoutMs: 500 }), /deadline/);
     assert.equal(await readFile(ready, "utf8"), "ready");
     await assert.rejects(access(marker));
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-test("sortie bornée, erreur de lancement et succès", async () => {
+test("bounded output, launch error and success", async () => {
   const cwd = tmpdir();
   assert.equal(await runProcess(process.execPath, ["-e", "console.log('OK')"], { cwd }), "OK");
   await assert.rejects(runProcess("/not/an/executable", [], { cwd }));
-  await assert.rejects(runProcess(process.execPath, ["-e", "console.log('x'.repeat(10000))"], { cwd, maxBytes: 100, graceMs: 10 }), /volumineuse/);
+  await assert.rejects(runProcess(process.execPath, ["-e", "console.log('x'.repeat(10000))"], { cwd, maxBytes: 100, graceMs: 10 }), /too large/);
 });

@@ -1,32 +1,32 @@
-// Bootstrap statique pour les tests de ce dépôt.
+// Static bootstrap for this repo's tests.
 //
-// Contrat : chargé via `node --import ./tests/resolve-pi.mjs <fichiers de test...>`. Ce dépôt
-// est une *configuration* pi (extensions/agents/lib), pas le paquet Pi lui-même : certains
-// modules qu'il importe à l'exécution (pas seulement en `import type`, effacé par le décapage
-// TypeScript natif de Node) vivent dans l'installation Pi réelle, pas dans node_modules/ de ce
-// dépôt (il n'y en a pas, volontairement — voir package.json). Ce fichier redirige ce petit
-// ensemble de specifiers "bare" vers les modules livrés avec l'installation Pi trouvée sur
-// PATH (ou désignée explicitement par PI_PACKAGE_JSON), en utilisant exclusivement les hooks
-// synchrones de `node:module` (`registerHooks`, même thread) : pas de `eval`, pas de `data:`
-// URL, pas d'`import()` dynamique de code généré, pas de lien symbolique temporaire. Le contenu
-// de ce fichier est fixe, il ne dépend jamais de l'environnement au moment d'écrire sur disque.
+// Contract: loaded via `node --import ./tests/resolve-pi.mjs <test files...>`. This repo
+// is a pi *configuration* (extensions/agents/lib), not the Pi package itself: some
+// modules it imports at runtime (not just in `import type`, stripped by Node's native
+// TypeScript stripping) live in the real Pi install, not in this repo's node_modules/
+// (there isn't one, deliberately -- see package.json). This file redirects this small
+// set of "bare" specifiers to the modules shipped with the Pi install found on
+// PATH (or explicitly designated by PI_PACKAGE_JSON), using exclusively the synchronous
+// hooks of `node:module` (`registerHooks`, same thread): no `eval`, no `data:`
+// URL, no dynamic `import()` of generated code, no temporary symlink. The content
+// of this file is fixed, it never depends on the environment when written to disk.
 //
-// Worker C (extensions/graphify, extensions/orchestrate) : n'implémentez plus votre propre
-// redirection ad hoc (ex. hook `register()` avec une `data:` URL générée) dans les fichiers de
-// test ; chargez ce fichier via `--import` à la place (scripts/test.mjs le fait déjà pour la
-// suite complète du dépôt). Il exporte `piPackageJson` et `redirectedSpecifiers` si vous avez
-// besoin d'inspecter ce qui a été résolu.
+// Worker C (extensions/graphify, extensions/orchestrate): stop implementing your own
+// ad hoc redirection (e.g. a `register()` hook with a generated `data:` URL) in test
+// files; load this file via `--import` instead (scripts/test.mjs already does it for the
+// full repo suite). It exports `piPackageJson` and `redirectedSpecifiers` if you
+// need to inspect what was resolved.
 import { createRequire, registerHooks } from "node:module";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-// Nom attendu du package.json trouvé : évite qu'un PI_PACKAGE_JSON (ou un exécutable `pi` sur
-// PATH) pointant vers un package.json arbitraire ne redirige silencieusement ces imports.
+// Expected name of the found package.json: prevents a PI_PACKAGE_JSON (or a `pi` executable on
+// PATH) pointing to an arbitrary package.json from silently redirecting these imports.
 export const EXPECTED_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 
-// Seuls les specifiers "bare" réellement importés (hors `import type`) par le code de ce dépôt
-// et absents de ses propres dépendances npm : ils vivent dans le paquet Pi installé.
+// Only the "bare" specifiers actually imported (outside `import type`) by this repo's code
+// and absent from its own npm dependencies: they live in the installed Pi package.
 export const REDIRECTED_SPECIFIERS = [
   "@earendil-works/pi-coding-agent",
   "@earendil-works/pi-ai",
@@ -45,7 +45,7 @@ function readValidPackageJson(path) {
   return pkg && pkg.name === EXPECTED_PACKAGE_NAME ? path : undefined;
 }
 
-/** Localise le package.json de l'installation Pi réelle, sans jamais l'exécuter. */
+/** Locates the real Pi install's package.json, without ever executing it. */
 export function findPiPackageJson(env = process.env) {
   const override = env.PI_PACKAGE_JSON;
   if (override) return readValidPackageJson(override);
@@ -76,10 +76,10 @@ export function findPiPackageJson(env = process.env) {
 }
 
 /**
- * Résout l'entrée principale du paquet Pi lui-même depuis son package.json (exports["."] puis
- * main). Node ne permet pas toujours à un paquet de se résoudre par son propre nom via
- * `require.resolve` (auto-référence) ; on lit donc directement son manifeste plutôt que de
- * dépendre de ce mécanisme.
+ * Resolves the Pi package's own main entry from its package.json (exports["."] then
+ * main). Node does not always allow a package to resolve itself by its own name via
+ * `require.resolve` (self-reference); its manifest is therefore read directly instead of
+ * relying on that mechanism.
  */
 function resolveSelfEntry(pkgJsonPath) {
   let pkg;
@@ -99,10 +99,10 @@ function resolveSelfEntry(pkgJsonPath) {
 }
 
 /**
- * Enregistre un hook de résolution synchrone (même thread, pas de worker, pas de source
- * générée) qui redirige uniquement REDIRECTED_SPECIFIERS vers les modules résolus depuis
- * `pkgJsonPath`. Les specifiers non résolvables (dépendance absente de cette installation Pi)
- * sont simplement laissés à la résolution normale de Node.
+ * Registers a synchronous resolution hook (same thread, no worker, no generated
+ * source) that redirects only REDIRECTED_SPECIFIERS to the modules resolved from
+ * `pkgJsonPath`. Specifiers that cannot be resolved (dependency absent from this Pi
+ * install) are simply left to Node's normal resolution.
  */
 function registerRedirect(pkgJsonPath) {
   const req = createRequire(pkgJsonPath);
@@ -114,7 +114,7 @@ function registerRedirect(pkgJsonPath) {
     try {
       map.set(specifier, pathToFileURL(req.resolve(specifier)).href);
     } catch {
-      // pas une dépendance de l'installation Pi trouvée : rien à rediriger pour ce specifier
+      // not a dependency of the found Pi install: nothing to redirect for this specifier
     }
   }
   if (map.size === 0) return undefined;

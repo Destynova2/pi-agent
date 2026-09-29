@@ -8,10 +8,10 @@ interface Options {
   graceMs?: number;
 }
 
-/** Exécute sans shell et arrête le groupe POSIX avant de rendre une annulation. */
+/** Executes without a shell and stops the POSIX group before honoring a cancellation. */
 export function runProcess(program: string, args: string[], options: Options): Promise<string> {
-  if (process.platform === "win32") return Promise.reject(new Error("Supervision POSIX requise"));
-  if (options.signal?.aborted) return Promise.reject(new Error("Opération annulée"));
+  if (process.platform === "win32") return Promise.reject(new Error("POSIX supervision required"));
+  if (options.signal?.aborted) return Promise.reject(new Error("Operation canceled"));
   return new Promise((resolve, reject) => {
     const child = spawn(program, args, {
       cwd: options.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"],
@@ -27,8 +27,8 @@ export function runProcess(program: string, args: string[], options: Options): P
     let stopError: Error | undefined;
     let escalation: ReturnType<typeof setTimeout> | undefined;
     let reapDeadline: ReturnType<typeof setTimeout> | undefined;
-    const deadline = setTimeout(() => stop(new Error(`${program}: délai dépassé`)), options.timeoutMs ?? 180_000);
-    const abort = () => stop(new Error(`${program}: opération annulée`));
+    const deadline = setTimeout(() => stop(new Error(`${program}: deadline exceeded`)), options.timeoutMs ?? 180_000);
+    const abort = () => stop(new Error(`${program}: operation canceled`));
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
@@ -54,20 +54,20 @@ export function runProcess(program: string, args: string[], options: Options): P
       try {
         if (!killGroup("SIGTERM") && closed) { finish(error); return; }
       } catch (failure) { finish(failure as Error); return; }
-      // Ne pas annuler l'escalade si le parent sort avant ses descendants.
+      // Do not cancel the escalation if the parent exits before its descendants.
       escalation = setTimeout(() => {
         try {
           killGroup("SIGKILL");
           killSent = true;
           if (closed) finish(error);
-          else reapDeadline = setTimeout(() => finish(new Error(`${program}: fermeture non confirmée après SIGKILL`)), 5000);
+          else reapDeadline = setTimeout(() => finish(new Error(`${program}: close not confirmed after SIGKILL`)), 5000);
         } catch (failure) { finish(failure as Error); }
       }, options.graceMs ?? 1500);
     }
     const collect = (target: Buffer[], chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > (options.maxBytes ?? 4 * 1024 * 1024)) {
-        stop(new Error(`${program}: sortie trop volumineuse`));
+        stop(new Error(`${program}: output too large`));
       } else target.push(chunk);
     };
     child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
@@ -78,10 +78,10 @@ export function runProcess(program: string, args: string[], options: Options): P
       if (stopping) { if (killSent) finish(stopError); return; }
       if (code === 0) {
         try {
-          if (killGroup(0)) stop(new Error(`${program}: parent terminé avec descendants encore actifs`));
+          if (killGroup(0)) stop(new Error(`${program}: parent exited with descendants still alive`));
           else finish();
         } catch (error) { finish(error as Error); }
-      } else stop(new Error(`${program}: code ${code}, signal ${signal ?? "aucun"}\n${Buffer.concat(stderr).toString("utf8").slice(-2000)}`));
+      } else stop(new Error(`${program}: code ${code}, signal ${signal ?? "none"}\n${Buffer.concat(stderr).toString("utf8").slice(-2000)}`));
     });
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) abort();

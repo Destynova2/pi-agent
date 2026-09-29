@@ -1,4 +1,4 @@
-// Aides de fixtures pour les tests d'install/doctor : dépôt source jetable et faux `pi` CLI.
+// Fixture helpers for the install/doctor tests: disposable source repo and fake `pi` CLI.
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -7,7 +7,7 @@ export async function makeTmpDir(prefix) {
   return mkdtemp(join(tmpdir(), prefix));
 }
 
-/** Construit un dépôt source minimal avec les répertoires/fichiers gérés par l'installeur. */
+/** Builds a minimal source repo with the directories/files managed by the installer. */
 export async function buildFixtureSource(overrides = {}) {
   const root = await makeTmpDir("pi-agent-source-");
   await mkdir(join(root, "agents"), { recursive: true });
@@ -30,9 +30,9 @@ export async function buildFixtureSource(overrides = {}) {
 }
 
 /**
- * Écrit un faux exécutable `pi` (Node) dans un répertoire dédié et renvoie un PATH
- * qui le fait passer en premier. Journalise chaque `install <source>` dans FAKE_PI_LOG.
- * `failSource`, s'il est fourni, fait échouer cette source précise avec le code 1.
+ * Writes a fake `pi` executable (Node) into a dedicated directory and returns a PATH
+ * that puts it first. Logs every `install <source>` to FAKE_PI_LOG.
+ * `failSource`, if given, makes that specific source fail with exit code 1.
  */
 export async function makeFakePi({ failSource } = {}) {
   const binDir = await makeTmpDir("pi-agent-fakebin-");
@@ -63,7 +63,7 @@ process.exit(0);
   return { binDir, logPath, env };
 }
 
-/** Répertoire de bin factice contenant un exécutable vide pour chacun des noms donnés. */
+/** Fake bin directory containing an empty executable for each given name. */
 export async function makeFakeToolchain(names) {
   const binDir = await makeTmpDir("pi-agent-fake-tools-");
   for (const name of names) {

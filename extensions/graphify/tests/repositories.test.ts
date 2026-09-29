@@ -11,7 +11,7 @@ async function fixture(work: (root: string) => Promise<void>) {
   try { await work(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
-test("détecte .git fichier et .jj dossier sans suivre les symlinks/caches", async () => fixture(async (root) => {
+test("detects .git file and .jj directory without following symlinks/caches", async () => fixture(async (root) => {
   await mkdir(join(root, "worktree"));
   await writeFile(join(root, "worktree/.git"), "gitdir: /fake");
   await mkdir(join(root, "jj/.jj"), { recursive: true });
@@ -21,18 +21,18 @@ test("détecte .git fichier et .jj dossier sans suivre les symlinks/caches", asy
   assert.equal((await nestedRepositories(root, undefined, 1)).incomplete, true);
 }));
 
-test("dépôt simple automatique ; dossier sans dépôt ignoré", async () => fixture(async (root) => {
+test("automatic simple repository; directory without a repository ignored", async () => fixture(async (root) => {
   assert.equal(await chooseIndexRoot(root, new Set()), undefined);
   await command("git", ["init", "-q"], root);
   assert.equal(await chooseIndexRoot(root, new Set()), root);
 }));
 
-test("dépôt imbriqué : confirmation obligatoire, refus et accord mémorisé", async () => fixture(async (root) => {
+test("nested repository: confirmation required, refusal and remembered approval", async () => fixture(async (root) => {
   await command("git", ["init", "-q"], root);
   const child = join(root, "child");
   await mkdir(child);
   await command("git", ["init", "-q"], child);
-  await assert.rejects(chooseIndexRoot(root, new Set()), /Confirmation requise/);
+  await assert.rejects(chooseIndexRoot(root, new Set()), /Confirmation required/);
   assert.equal(await chooseIndexRoot(root, new Set(), async () => undefined), undefined);
   const approved = new Set<string>();
   let questions = 0;
@@ -45,24 +45,24 @@ test("dépôt imbriqué : confirmation obligatoire, refus et accord mémorisé",
   assert.equal(questions, 2);
 }));
 
-test("choix d’un sous-projet, depuis un dépôt ou un dossier parent", async () => fixture(async (root) => {
+test("choosing a sub-project, from a repository or a parent directory", async () => fixture(async (root) => {
   const child = join(root, "child");
   await mkdir(child);
   await command("git", ["init", "-q"], child);
-  const choose = async (_title: string, options: string[]) => options.find((value) => value === `Choisir ${child}`);
+  const choose = async (_title: string, options: string[]) => options.find((value) => value === `Choose ${child}`);
   assert.equal(await chooseIndexRoot(root, new Set(), choose), child);
   await command("git", ["init", "-q"], root);
   assert.equal(await chooseIndexRoot(root, new Set(), choose), child);
 }));
 
-test("exploration incomplète : jamais assimilée à une absence de sous-dépôts", async () => fixture(async (root) => {
+test("incomplete exploration: never treated as an absence of sub-repositories", async () => fixture(async (root) => {
   await command("git", ["init", "-q"], root);
   await mkdir(join(root, ...Array.from({ length: 10 }, () => "deep")), { recursive: true });
-  await assert.rejects(chooseIndexRoot(root, new Set()), /Confirmation requise/);
+  await assert.rejects(chooseIndexRoot(root, new Set()), /Confirmation required/);
   let questions = 0;
   const approved = new Set<string>();
   const choose = async (title: string, options: string[]) => {
-    assert.match(title, /partielle/);
+    assert.match(title, /partial/);
     questions++;
     return options[1];
   };
@@ -71,7 +71,7 @@ test("exploration incomplète : jamais assimilée à une absence de sous-dépôt
   assert.equal(questions, 2);
 }));
 
-test("annulation du repérage respectée", async () => fixture(async (root) => {
+test("cancellation of the scan respected", async () => fixture(async (root) => {
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(nestedRepositories(root, controller.signal));

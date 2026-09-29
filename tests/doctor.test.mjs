@@ -5,19 +5,19 @@ import { join } from "node:path";
 import { runDoctor, REQUIRED_COMMANDS, OPTIONAL_COMMANDS } from "../scripts/doctor.mjs";
 import { makeFakeToolchain, makeTmpDir } from "./fixtures/build.mjs";
 
-test("signale les outils requis manquants et échoue même sans --strict", async () => {
+test("reports missing required tools and fails even without --strict", async () => {
   const target = await makeTmpDir("pi-agent-doctor-target-");
   try {
     const result = await runDoctor({ target, env: { PATH: "" } });
     assert.equal(result.ok, false);
     const missingNames = result.missingRequired.map((r) => r.name);
-    for (const cmd of REQUIRED_COMMANDS) assert.ok(missingNames.includes(cmd), `${cmd} attendu manquant`);
+    for (const cmd of REQUIRED_COMMANDS) assert.ok(missingNames.includes(cmd), `expected ${cmd} missing`);
   } finally {
     await rm(target, { recursive: true, force: true });
   }
 });
 
-test("tout présent (requis + optionnel + outil embarqué) : ok même en --strict", async () => {
+test("everything present (required + optional + bundled tool): ok even in --strict", async () => {
   const target = await makeTmpDir("pi-agent-doctor-target-");
   const binDir = await makeFakeToolchain([...REQUIRED_COMMANDS, ...OPTIONAL_COMMANDS]);
   await mkdir(join(target, "gates"), { recursive: true });
@@ -34,7 +34,7 @@ test("tout présent (requis + optionnel + outil embarqué) : ok même en --stric
   }
 });
 
-test("outil optionnel manquant : ok par défaut, échec seulement en --strict", async () => {
+test("missing optional tool: ok by default, fails only in --strict", async () => {
   const target = await makeTmpDir("pi-agent-doctor-target-");
   const present = [...REQUIRED_COMMANDS, ...OPTIONAL_COMMANDS.filter((c) => c !== "jj")];
   const binDir = await makeFakeToolchain(present);
@@ -45,17 +45,17 @@ test("outil optionnel manquant : ok par défaut, échec seulement en --strict", 
     const lenient = await runDoctor({ target, strict: false, env: { PATH: binDir } });
     assert.equal(lenient.missingRequired.length, 0);
     assert.deepEqual(lenient.missingOptional.map((r) => r.name), ["jj"]);
-    assert.equal(lenient.ok, true, "outil optionnel manquant ne fait pas échouer le mode par défaut");
+    assert.equal(lenient.ok, true, "a missing optional tool does not fail the default mode");
 
     const strict = await runDoctor({ target, strict: true, env: { PATH: binDir } });
-    assert.equal(strict.ok, false, "le mode --strict échoue si un outil optionnel manque");
+    assert.equal(strict.ok, false, "--strict mode fails when an optional tool is missing");
   } finally {
     await rm(target, { recursive: true, force: true });
     await rm(binDir, { recursive: true, force: true });
   }
 });
 
-test("outil embarqué gates/pi-prek absent : signalé, optionnel", async () => {
+test("bundled tool gates/pi-prek missing: reported, optional", async () => {
   const target = await makeTmpDir("pi-agent-doctor-target-");
   const binDir = await makeFakeToolchain([...REQUIRED_COMMANDS, ...OPTIONAL_COMMANDS]);
   try {
@@ -64,28 +64,28 @@ test("outil embarqué gates/pi-prek absent : signalé, optionnel", async () => {
     assert.ok(bundled);
     assert.equal(bundled.ok, false);
     assert.equal(bundled.required, false);
-    assert.equal(result.ok, true, "outil embarqué manquant n'est pas requis hors --strict");
+    assert.equal(result.ok, true, "a missing bundled tool is not required outside --strict");
   } finally {
     await rm(target, { recursive: true, force: true });
     await rm(binDir, { recursive: true, force: true });
   }
 });
 
-test("ne lit ni n'expose le contenu de auth.json", async () => {
+test("never reads or exposes the content of auth.json", async () => {
   const target = await makeTmpDir("pi-agent-doctor-target-");
-  await writeFile(join(target, "auth.json"), '{"secret":"ne-jamais-afficher"}\n');
+  await writeFile(join(target, "auth.json"), '{"secret":"never-display"}\n');
   const binDir = await makeFakeToolchain([...REQUIRED_COMMANDS, ...OPTIONAL_COMMANDS]);
   try {
     const result = await runDoctor({ target, env: { PATH: binDir } });
     const serialized = JSON.stringify(result);
-    assert.doesNotMatch(serialized, /ne-jamais-afficher/);
+    assert.doesNotMatch(serialized, /never-display/);
   } finally {
     await rm(target, { recursive: true, force: true });
     await rm(binDir, { recursive: true, force: true });
   }
 });
 
-test("node:sqlite et la version de node sont vérifiés", async () => {
+test("node:sqlite and the node version are checked", async () => {
   const target = await makeTmpDir("pi-agent-doctor-target-");
   try {
     const result = await runDoctor({ target, env: { PATH: "" } });

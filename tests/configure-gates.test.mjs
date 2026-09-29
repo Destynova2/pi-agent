@@ -10,7 +10,7 @@ import {
 } from "../scripts/configure-gates.mjs";
 import { makeTmpDir } from "./fixtures/build.mjs";
 
-test("chemin heureux : écrit root réel + required, mode 0600, dossiers 0700", async () => {
+test("happy path: writes real root + required, mode 0600, dirs 0700", async () => {
   const project = await makeTmpDir("pi-cg-project-");
   const homeDir = await makeTmpDir("pi-cg-home-");
   try {
@@ -39,35 +39,35 @@ test("chemin heureux : écrit root réel + required, mode 0600, dossiers 0700", 
   }
 });
 
-test("--commands JSON invalide est refusé", () => {
-  assert.throws(() => parseRequiredCommands("not json"), /JSON valide/);
+test("--commands invalid JSON is refused", () => {
+  assert.throws(() => parseRequiredCommands("not json"), /valid JSON/);
 });
 
-test("--commands schéma invalide est refusé : pas un tableau", async () => {
-  assert.throws(() => parseRequiredCommands('{"a":1}'), /tableau JSON non vide/);
+test("--commands invalid schema is refused: not an array", async () => {
+  assert.throws(() => parseRequiredCommands('{"a":1}'), /non-empty JSON array/);
 });
 
-test("--commands schéma invalide est refusé : tableau vide", async () => {
-  assert.throws(() => parseRequiredCommands("[]"), /tableau JSON non vide/);
+test("--commands invalid schema is refused: empty array", async () => {
+  assert.throws(() => parseRequiredCommands("[]"), /non-empty JSON array/);
 });
 
-test("--commands schéma invalide est refusé : argv vide", async () => {
-  assert.throws(() => parseRequiredCommands("[[]]"), /tableau non vide de chaînes/);
+test("--commands invalid schema is refused: empty argv", async () => {
+  assert.throws(() => parseRequiredCommands("[[]]"), /non-empty array of non-empty strings/);
 });
 
-test("--commands schéma invalide est refusé : chaîne vide dans argv", async () => {
-  assert.throws(() => parseRequiredCommands('[["npm",""]]'), /tableau non vide de chaînes/);
+test("--commands invalid schema is refused: empty string in argv", async () => {
+  assert.throws(() => parseRequiredCommands('[["npm",""]]'), /non-empty array of non-empty strings/);
 });
 
-test("--commands schéma invalide est refusé : élément non-tableau", async () => {
-  assert.throws(() => parseRequiredCommands('["npm"]'), /tableau non vide de chaînes/);
+test("--commands invalid schema is refused: non-array element", async () => {
+  assert.throws(() => parseRequiredCommands('["npm"]'), /non-empty array of non-empty strings/);
 });
 
-test("--commands schéma invalide est refusé : élément non-chaîne", async () => {
-  assert.throws(() => parseRequiredCommands("[[1,2]]"), /tableau non vide de chaînes/);
+test("--commands invalid schema is refused: non-string element", async () => {
+  assert.throws(() => parseRequiredCommands("[[1,2]]"), /non-empty array of non-empty strings/);
 });
 
-test("refuse d'écraser une politique existante, fichier inchangé", async () => {
+test("refuses to overwrite an existing policy, file unchanged", async () => {
   const project = await makeTmpDir("pi-cg-project-");
   const homeDir = await makeTmpDir("pi-cg-home-");
   try {
@@ -85,7 +85,7 @@ test("refuse d'écraser une politique existante, fichier inchangé", async () =>
           commandsJson: '[["npm","run","other"]]',
           homeDir,
         }),
-      /refus d'écraser/,
+      /refuse to overwrite/,
     );
 
     const after = await readFile(first.path, "utf8");
@@ -96,7 +96,7 @@ test("refuse d'écraser une politique existante, fichier inchangé", async () =>
   }
 });
 
-test("refuse un symlink à l'emplacement de la politique, rien n'est écrit à travers lui", async () => {
+test("refuses a symlink at the policy location, nothing is written through it", async () => {
   const project = await makeTmpDir("pi-cg-project-");
   const homeDir = await makeTmpDir("pi-cg-home-");
   const elsewhere = await makeTmpDir("pi-cg-elsewhere-");
@@ -114,7 +114,7 @@ test("refuse un symlink à l'emplacement de la politique, rien n'est écrit à t
           commandsJson: '[["npm","test"]]',
           homeDir,
         }),
-      /lien symbolique|refus d'écraser/,
+      /symbolic link|refuse to overwrite/,
     );
 
     await assert.rejects(() => readFile(target, "utf8"));
@@ -125,7 +125,7 @@ test("refuse un symlink à l'emplacement de la politique, rien n'est écrit à t
   }
 });
 
-test("refuse un symlink sur un dossier parent géré (.config/pi-orchestrate)", async () => {
+test("refuses a symlink on a managed parent directory (.config/pi-orchestrate)", async () => {
   const project = await makeTmpDir("pi-cg-project-");
   const homeDir = await makeTmpDir("pi-cg-home-");
   const elsewhere = await makeTmpDir("pi-cg-elsewhere-");
@@ -141,7 +141,7 @@ test("refuse un symlink sur un dossier parent géré (.config/pi-orchestrate)", 
           commandsJson: '[["npm","test"]]',
           homeDir,
         }),
-      /lien symbolique/,
+      /symbolic link/,
     );
 
     const escapedEntries = await lstat(join(elsewhere, "pi-orchestrate")).then(
@@ -153,7 +153,7 @@ test("refuse un symlink sur un dossier parent géré (.config/pi-orchestrate)", 
       () => true,
       () => false,
     );
-    assert.equal(leaked, false, "aucun dossier ne doit avoir été créé à travers le symlink");
+    assert.equal(leaked, false, "no directory should have been created through the symlink");
   } finally {
     await rm(project, { recursive: true, force: true });
     await rm(homeDir, { recursive: true, force: true });
@@ -161,7 +161,7 @@ test("refuse un symlink sur un dossier parent géré (.config/pi-orchestrate)", 
   }
 });
 
-test("--project inexistant est refusé", async () => {
+test("--project nonexistent is refused", async () => {
   const homeDir = await makeTmpDir("pi-cg-home-");
   try {
     await assert.rejects(
@@ -171,21 +171,21 @@ test("--project inexistant est refusé", async () => {
           commandsJson: '[["npm","test"]]',
           homeDir,
         }),
-      /introuvable/,
+      /not found/,
     );
   } finally {
     await rm(homeDir, { recursive: true, force: true });
   }
 });
 
-test("--project vide est refusé", async () => {
+test("--project empty is refused", async () => {
   await assert.rejects(
     () => configureGates({ project: "", commandsJson: '[["npm","test"]]', homeDir: "/tmp" }),
-    /--project est requis/,
+    /--project is required/,
   );
 });
 
-test("racine réelle = realpath (traverse un symlink de projet)", async () => {
+test("real root = realpath (traverses a project symlink)", async () => {
   const tmpProject = await makeTmpDir("pi-cg-real-");
   const realProject = await realpath(tmpProject);
   const homeDir = await makeTmpDir("pi-cg-home-");
@@ -207,14 +207,14 @@ test("racine réelle = realpath (traverse un symlink de projet)", async () => {
   }
 });
 
-test("parseArgs lit --project et --commands, refuse un argument inconnu", () => {
+test("parseArgs reads --project and --commands, refuses an unknown argument", () => {
   const args = parseArgs(["--project", "/x", "--commands", "[]"]);
   assert.equal(args.project, "/x");
   assert.equal(args.commands, "[]");
-  assert.throws(() => parseArgs(["--bogus"]), /argument inconnu/);
+  assert.throws(() => parseArgs(["--bogus"]), /unknown argument/);
 });
 
-test("CLI bout-en-bout : succès puis refus d'écrasement", async () => {
+test("end-to-end CLI: success then refused overwrite", async () => {
   const { spawnSync } = await import("node:child_process");
   const project = await makeTmpDir("pi-cg-project-");
   const homeDir = await makeTmpDir("pi-cg-home-");
@@ -228,11 +228,11 @@ test("CLI bout-en-bout : succès puis refus d'écrasement", async () => {
 
     const first = run(["--project", project, "--commands", '[["npm","run","check"]]']);
     assert.equal(first.status, 0, first.stderr);
-    assert.match(first.stdout, /Politique écrite/);
+    assert.match(first.stdout, /Policy written/);
 
     const second = run(["--project", project, "--commands", '[["npm","test"]]']);
     assert.notEqual(second.status, 0);
-    assert.match(second.stderr, /refus d'écraser/);
+    assert.match(second.stderr, /refuse to overwrite/);
   } finally {
     await rm(project, { recursive: true, force: true });
     await rm(homeDir, { recursive: true, force: true });

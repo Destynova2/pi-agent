@@ -9,13 +9,13 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
-test("installation fraîche copie les ressources gérées et écrit settings.json de la source", async () => {
+test("fresh install copies managed resources and writes the source's settings.json", async () => {
   const source = await buildFixtureSource();
   const target = join(await makeTmpDir("pi-agent-target-"), "agent");
   try {
     const result = await runInstall({ sourceRoot: source, target, noPackages: true });
     assert.equal(result.target, target);
-    assert.equal(result.backupDir, null, "rien à sauvegarder sur une cible neuve");
+    assert.equal(result.backupDir, null, "nothing to back up on a fresh target");
     assert.deepEqual(result.syncedDirs.sort(), [...MANAGED_DIRS].sort());
     for (const dir of MANAGED_DIRS) {
       await readFile(join(target, dir === "agents" ? "agents/worker.md" : dir === "extensions" ? "extensions/demo/index.ts" : dir === "lib" ? "lib/helper.ts" : "gates/pi-prek"), "utf8");
@@ -29,7 +29,7 @@ test("installation fraîche copie les ressources gérées et écrit settings.jso
   }
 });
 
-test("réinstallation conserve les préférences existantes, remplace les paquets gérés par identité, préserve paquets personnels et fichiers hors périmètre", async () => {
+test("reinstall keeps existing preferences, replaces managed packages by identity, preserves personal packages and out-of-scope files", async () => {
   const source = await buildFixtureSource({ settings: { defaultProvider: "anthropic", packages: ["npm:pkg-a@2.0.0"] } });
   const targetParent = await makeTmpDir("pi-agent-target-");
   const target = join(targetParent, "agent");
@@ -39,42 +39,42 @@ test("réinstallation conserve les préférences existantes, remplace les paquet
     `${JSON.stringify({ theme: "dark", packages: ["npm:pkg-a@1.0.0", "npm:perso-pkg"] }, null, 2)}\n`,
   );
   await writeFile(join(target, "keybindings.json"), "{}\n");
-  await writeFile(join(target, "notes-custom.txt"), "à préserver\n");
+  await writeFile(join(target, "notes-custom.txt"), "to preserve\n");
   try {
     const result = await runInstall({ sourceRoot: source, target, noPackages: true });
-    assert.ok(result.backupDir, "une sauvegarde doit être créée quand des ressources existent déjà");
+    assert.ok(result.backupDir, "a backup must be created when resources already exist");
     const backupSettings = await readJson(join(result.backupDir, "settings.json"));
-    assert.deepEqual(backupSettings.packages, ["npm:pkg-a@1.0.0", "npm:perso-pkg"], "la sauvegarde contient l'ancien état");
+    assert.deepEqual(backupSettings.packages, ["npm:pkg-a@1.0.0", "npm:perso-pkg"], "the backup contains the old state");
 
     const settings = await readJson(join(target, "settings.json"));
-    assert.equal(settings.theme, "dark", "préférence existante conservée");
+    assert.equal(settings.theme, "dark", "existing preference kept");
     assert.deepEqual(
       settings.packages,
       ["npm:pkg-a@2.0.0", "npm:perso-pkg"],
-      "paquet géré (même identité) remplacé par la version de la source, paquet personnel préservé",
+      "managed package (same identity) replaced by the source version, personal package preserved",
     );
-    assert.equal(settings.defaultProvider, "anthropic", "clé nouvelle de la source ajoutée");
-    assert.deepEqual(result.packages, ["npm:pkg-a@2.0.0"], "seuls les paquets gérés de la source sont proposés à l'installation");
+    assert.equal(settings.defaultProvider, "anthropic", "new key from the source added");
+    assert.deepEqual(result.packages, ["npm:pkg-a@2.0.0"], "only the source's managed packages are offered for install");
 
-    assert.equal(await readFile(join(target, "notes-custom.txt"), "utf8"), "à préserver\n");
+    assert.equal(await readFile(join(target, "notes-custom.txt"), "utf8"), "to preserve\n");
   } finally {
     await rm(source, { recursive: true, force: true });
     await rm(targetParent, { recursive: true, force: true });
   }
 });
 
-test("secrets et état privés jamais touchés par l'installation", async () => {
+test("secrets and private state are never touched by the installer", async () => {
   const source = await buildFixtureSource();
   const targetParent = await makeTmpDir("pi-agent-target-");
   const target = join(targetParent, "agent");
   await mkdir(join(target, "sessions"), { recursive: true });
-  await writeFile(join(target, "auth.json"), '{"secret":"ne-pas-toucher"}\n');
+  await writeFile(join(target, "auth.json"), '{"secret":"do-not-touch"}\n');
   await writeFile(join(target, "models-store.json"), "{}\n");
   await writeFile(join(target, "trust.json"), "{}\n");
   await writeFile(join(target, "sessions", "s1.jsonl"), "{}\n");
   try {
     await runInstall({ sourceRoot: source, target, noPackages: true });
-    assert.equal(await readFile(join(target, "auth.json"), "utf8"), '{"secret":"ne-pas-toucher"}\n');
+    assert.equal(await readFile(join(target, "auth.json"), "utf8"), '{"secret":"do-not-touch"}\n');
     assert.equal(await readFile(join(target, "models-store.json"), "utf8"), "{}\n");
     assert.equal(await readFile(join(target, "trust.json"), "utf8"), "{}\n");
     assert.equal(await readFile(join(target, "sessions", "s1.jsonl"), "utf8"), "{}\n");
@@ -84,13 +84,13 @@ test("secrets et état privés jamais touchés par l'installation", async () => 
   }
 });
 
-test("skills/ n'est pas géré : un lien symbolique live (ex. checkout cli-code-skills) survit à l'installation sans double activation", async () => {
-  // `skills` est volontairement absent de MANAGED_DIRS/MANAGED_ENTRIES : Pi le scanne
-  // nativement (~/.pi/agent/skills), il ne fait pas partie du contrat de portabilité de
-  // cet installeur. Ce test verrouille ce choix : un lien symbolique existant côté source
-  // et/ou côté cible (ex. skills/cli-code-skills -> checkout personnel) ne doit ni bloquer
-  // l'installation (scanSymlinks ne regarde que MANAGED_ENTRIES) ni être écrasé/dupliqué.
-  assert.ok(!MANAGED_DIRS.includes("skills"), "skills ne doit pas devenir un répertoire géré");
+test("skills/ is not managed: a live symlink (e.g. a cli-code-skills checkout) survives install without double activation", async () => {
+  // `skills` is deliberately absent from MANAGED_DIRS/MANAGED_ENTRIES: Pi scans it
+  // natively (~/.pi/agent/skills), it is not part of this installer's portability
+  // contract. This test locks in that choice: a symlink existing on the source
+  // and/or target side (e.g. skills/cli-code-skills -> personal checkout) must neither block
+  // installation (scanSymlinks only looks at MANAGED_ENTRIES) nor be overwritten/duplicated.
+  assert.ok(!MANAGED_DIRS.includes("skills"), "skills must not become a managed directory");
   const source = await buildFixtureSource();
   const sourceSkillsTarget = await makeTmpDir("pi-agent-source-skills-checkout-");
   await writeFile(join(sourceSkillsTarget, "marker.txt"), "source-checkout\n");
@@ -106,12 +106,12 @@ test("skills/ n'est pas géré : un lien symbolique live (ex. checkout cli-code-
 
   try {
     const result = await runInstall({ sourceRoot: source, target, noPackages: true });
-    assert.ok(!result.syncedDirs.includes("skills"), "skills/ ne doit jamais être synchronisé par l'installeur");
-    // Le lien symbolique côté cible reste inchangé, pas remplacé par celui de la source.
+    assert.ok(!result.syncedDirs.includes("skills"), "skills/ must never be synced by the installer");
+    // The target-side symlink stays unchanged, not replaced by the source's.
     assert.equal(
       await readFile(join(target, "skills", "cli-code-skills", "marker.txt"), "utf8"),
       "target-checkout\n",
-      "le lien symbolique déjà présent côté cible doit être préservé tel quel (pas de double activation silencieuse)",
+      "the symlink already present on the target side must be preserved as-is (no silent double activation)",
     );
   } finally {
     await rm(source, { recursive: true, force: true });
@@ -121,7 +121,7 @@ test("skills/ n'est pas géré : un lien symbolique live (ex. checkout cli-code-
   }
 });
 
-test("refuse une cible qui est un lien symbolique", async () => {
+test("refuses a target that is a symbolic link", async () => {
   const source = await buildFixtureSource();
   const parent = await makeTmpDir("pi-agent-target-");
   const real = join(parent, "real-elsewhere");
@@ -131,36 +131,36 @@ test("refuse une cible qui est un lien symbolique", async () => {
   try {
     await assert.rejects(
       runInstall({ sourceRoot: source, target: link, noPackages: true }),
-      /lien symbolique/,
+      /symbolic link/,
     );
     const entries = await import("node:fs/promises").then((fs) => fs.readdir(real));
-    assert.deepEqual(entries, [], "rien n'a dû être écrit à travers le lien");
+    assert.deepEqual(entries, [], "nothing should have been written through the link");
   } finally {
     await rm(source, { recursive: true, force: true });
     await rm(parent, { recursive: true, force: true });
   }
 });
 
-test("refuse source == cible", async () => {
+test("refuses source == target", async () => {
   const source = await buildFixtureSource();
   try {
-    await assert.rejects(runInstall({ sourceRoot: source, target: source, noPackages: true }), /identique/);
+    await assert.rejects(runInstall({ sourceRoot: source, target: source, noPackages: true }), /identical/);
   } finally {
     await rm(source, { recursive: true, force: true });
   }
 });
 
-test("refuse un chevauchement source/cible", async () => {
+test("refuses an overlapping source/target", async () => {
   const source = await buildFixtureSource();
   const nested = join(source, "nested-target");
   try {
-    await assert.rejects(runInstall({ sourceRoot: source, target: nested, noPackages: true }), /chevauchent/);
+    await assert.rejects(runInstall({ sourceRoot: source, target: nested, noPackages: true }), /overlap/);
   } finally {
     await rm(source, { recursive: true, force: true });
   }
 });
 
-test("un échec pi install pour une source rapporte l'échec sans bloquer la copie des ressources", async () => {
+test("a pi install failure for one source reports the failure without blocking resource copy", async () => {
   const source = await buildFixtureSource({ settings: { packages: ["npm:good", "npm:bad"] } });
   const targetParent = await makeTmpDir("pi-agent-target-");
   const target = join(targetParent, "agent");
@@ -181,7 +181,7 @@ test("un échec pi install pour une source rapporte l'échec sans bloquer la cop
   }
 });
 
-test("la résolution de cible par défaut respecte un env fourni, jamais le HOME réel du process", async () => {
+test("default target resolution respects a provided env, never the process's real HOME", async () => {
   const source = await buildFixtureSource();
   const isolatedHome = await makeTmpDir("pi-agent-fake-home-");
   const target = join(isolatedHome, "agent");
@@ -203,7 +203,7 @@ function require_os_homedir() {
   return process.env.HOME || process.env.USERPROFILE || "";
 }
 
-test("préserve un fichier/dossier ajouté par l'utilisateur dans un répertoire géré (jamais rm(dest))", async () => {
+test("preserves a file/directory added by the user in a managed directory (never rm(dest))", async () => {
   const source = await buildFixtureSource();
   const targetParent = await makeTmpDir("pi-agent-target-");
   const target = join(targetParent, "agent");
@@ -216,12 +216,12 @@ test("préserve un fichier/dossier ajouté par l'utilisateur dans un répertoire
     assert.equal(
       await readFile(join(target, "extensions", "perso", "index.ts"), "utf8"),
       "export const perso = 1;\n",
-      "extension personnelle non gérée doit survivre à la synchronisation",
+      "unmanaged personal extension must survive the sync",
     );
     assert.equal(await readFile(join(target, "agents", "perso.md"), "utf8"), "# perso\n");
     assert.ok(
       await readFile(join(target, "extensions", "demo", "index.ts"), "utf8"),
-      "la ressource gérée de la source doit aussi être présente",
+      "the source's managed resource must also be present",
     );
   } finally {
     await rm(source, { recursive: true, force: true });
@@ -229,29 +229,29 @@ test("préserve un fichier/dossier ajouté par l'utilisateur dans un répertoire
   }
 });
 
-test("refuse un lien symbolique imbriqué dans une ressource gérée de la cible, sans rien écrire", async () => {
+test("refuses a symlink nested inside a managed target resource, writes nothing", async () => {
   const source = await buildFixtureSource();
   const targetParent = await makeTmpDir("pi-agent-target-");
   const target = join(targetParent, "agent");
   const outside = join(targetParent, "outside");
   await mkdir(outside, { recursive: true });
-  await writeFile(join(outside, "escape.txt"), "ne doit jamais être écrit\n");
+  await writeFile(join(outside, "escape.txt"), "must never be written\n");
   await mkdir(join(target, "extensions"), { recursive: true });
   await symlink(outside, join(target, "extensions", "escaped"));
   try {
     await assert.rejects(
       runInstall({ sourceRoot: source, target, noPackages: true }),
-      /lien.*symbolique/,
+      /symbolic link/,
     );
     const entries = await import("node:fs/promises").then((fs) => fs.readdir(target));
-    assert.ok(!entries.includes("settings.json"), "aucune mutation ne doit avoir eu lieu avant le refus");
+    assert.ok(!entries.includes("settings.json"), "no mutation must have happened before the refusal");
   } finally {
     await rm(source, { recursive: true, force: true });
     await rm(targetParent, { recursive: true, force: true });
   }
 });
 
-test("un settings.json cible manquant est traité comme absent (target neuve, pas d'ancêtre requis)", async () => {
+test("a missing target settings.json is treated as absent (fresh target, no required ancestor)", async () => {
   const source = await buildFixtureSource();
   const targetParent = await makeTmpDir("pi-agent-target-");
   const target = join(targetParent, "nested", "agent");
@@ -265,45 +265,45 @@ test("un settings.json cible manquant est traité comme absent (target neuve, pa
   }
 });
 
-test("settings.json source malformé : refus avant toute mutation, cible intacte", async () => {
+test("malformed source settings.json: refused before any mutation, target intact", async () => {
   const source = await buildFixtureSource();
-  await writeFile(join(source, "settings.json"), "{ ceci n'est pas du JSON");
+  await writeFile(join(source, "settings.json"), "{ this is not JSON");
   const targetParent = await makeTmpDir("pi-agent-target-");
   const target = join(targetParent, "agent");
   await mkdir(target, { recursive: true });
   await writeFile(join(target, "settings.json"), `${JSON.stringify({ theme: "dark" }, null, 2)}\n`);
-  await writeFile(join(target, "marker.txt"), "préexistant\n");
+  await writeFile(join(target, "marker.txt"), "pre-existing\n");
   try {
-    await assert.rejects(runInstall({ sourceRoot: source, target, noPackages: true }), /JSON invalide/);
+    await assert.rejects(runInstall({ sourceRoot: source, target, noPackages: true }), /invalid JSON/);
     assert.equal(await readFile(join(target, "settings.json"), "utf8"), `${JSON.stringify({ theme: "dark" }, null, 2)}\n`);
-    assert.equal(await readFile(join(target, "marker.txt"), "utf8"), "préexistant\n");
+    assert.equal(await readFile(join(target, "marker.txt"), "utf8"), "pre-existing\n");
     const entries = await import("node:fs/promises").then((fs) => fs.readdir(target));
-    assert.deepEqual(entries.sort(), ["marker.txt", "settings.json"], "aucune sauvegarde ni copie ne doit avoir été créée");
+    assert.deepEqual(entries.sort(), ["marker.txt", "settings.json"], "no backup or copy should have been created");
   } finally {
     await rm(source, { recursive: true, force: true });
     await rm(targetParent, { recursive: true, force: true });
   }
 });
 
-test("settings.json cible malformé : refus avant toute mutation, ressources gérées cible intactes", async () => {
+test("malformed target settings.json: refused before any mutation, managed target resources intact", async () => {
   const source = await buildFixtureSource();
   const targetParent = await makeTmpDir("pi-agent-target-");
   const target = join(targetParent, "agent");
   await mkdir(join(target, "extensions"), { recursive: true });
   await writeFile(join(target, "extensions", "perso.ts"), "export const x = 1;\n");
-  await writeFile(join(target, "settings.json"), "{ pas du json valide");
+  await writeFile(join(target, "settings.json"), "{ not valid json");
   try {
-    await assert.rejects(runInstall({ sourceRoot: source, target, noPackages: true }), /JSON invalide/);
+    await assert.rejects(runInstall({ sourceRoot: source, target, noPackages: true }), /invalid JSON/);
     assert.equal(await readFile(join(target, "extensions", "perso.ts"), "utf8"), "export const x = 1;\n");
     const backups = (await import("node:fs/promises").then((fs) => fs.readdir(targetParent))).filter((n) => n.includes(".backup-"));
-    assert.deepEqual(backups, [], "pas de sauvegarde créée avant que la validation ait réussi");
+    assert.deepEqual(backups, [], "no backup should be created before validation succeeds");
   } finally {
     await rm(source, { recursive: true, force: true });
     await rm(targetParent, { recursive: true, force: true });
   }
 });
 
-test("packageIdentity : distingue version/sha du reste, préserve les scopes npm", async () => {
+test("packageIdentity: distinguishes version/sha from the rest, preserves npm scopes", async () => {
   const { packageIdentity } = await import("../scripts/install.mjs");
   assert.equal(packageIdentity("npm:pi-simplify@0.2.3"), "npm:pi-simplify");
   assert.equal(

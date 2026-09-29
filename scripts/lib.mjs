@@ -1,4 +1,4 @@
-// Aides partagées par les scripts d'installation/diagnostic. Stdlib Node uniquement.
+// Helpers shared by the install/doctor scripts. Node stdlib only.
 import { lstat, stat } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { delimiter, isAbsolute, join, relative } from "node:path";
@@ -21,14 +21,14 @@ export async function isSymlink(path) {
   }
 }
 
-/** `child` est-il strictement sous `parent` ? (chemins déjà résolus) */
+/** Is `child` strictly under `parent`? (paths already resolved) */
 export function isSubPath(parent, child) {
   if (parent === child) return false;
   const rel = relative(parent, child);
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
-/** Cherche un exécutable dans PATH sans jamais l'exécuter. */
+/** Looks for an executable on PATH without ever running it. */
 export function commandExists(cmd, env = process.env) {
   const pathVar = env.PATH ?? env.Path ?? "";
   const isWin = process.platform === "win32";
@@ -41,7 +41,7 @@ export function commandExists(cmd, env = process.env) {
         const st = statSync(candidate);
         if (st.isFile() && (isWin || (st.mode & 0o111) !== 0)) return true;
       } catch {
-        // pas trouvé à cet emplacement, on continue
+        // not found at this location, keep looking
       }
     }
   }

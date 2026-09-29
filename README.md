@@ -1,64 +1,64 @@
 # pi-agent
 
-Config perso de [pi](https://github.com/earendil-works/pi) : délégation à des sous-agents, prompt « chef » pour l'orchestration, mémoire SQLite partagée entre agents.
+Personal config for [pi](https://github.com/earendil-works/pi): delegation to sub-agents, "chef" prompt for orchestration, SQLite memory shared between agents.
 
-Ce dépôt est une **source** à installer, pas un runtime en place. Voir [INSTALLATION.md](INSTALLATION.md) pour cloner ce dépôt ailleurs et l'installer proprement vers un répertoire agent pi (jamais dans ce dépôt lui-même).
+This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](INSTALLATION.md) to clone this repo elsewhere and install it cleanly into a pi agent directory (never into this repo itself).
 
-## Prérequis
+## Prerequisites
 
-- Node.js `>=22.19` avec `node:sqlite` (voir `package.json`)
-- [`pi`](https://github.com/earendil-works/pi) installé et sur `PATH` (`lastChangelogVersion` dans `settings.json` : `0.87.1`, à vérifier contre votre version réelle)
+- Node.js `>=22.19` with `node:sqlite` (see `package.json`)
+- [`pi`](https://github.com/earendil-works/pi) installed and on `PATH` (`lastChangelogVersion` in `settings.json`: `0.87.1`, check against your actual version)
 - `git`, `curl`
 
-`node scripts/doctor.mjs` diagnostique l'environnement (requis + optionnels : `graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`).
+`node scripts/doctor.mjs` diagnoses the environment (required + optional: `graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`).
 
-## Utiliser
+## Usage
 
-| Quoi | Comment |
+| What | How |
 |---|---|
-| Déléguer une tâche de bout en bout | `/orchestrate <demande>` : le chef réécrit la demande, taille, délègue à scout / worker / reviewer |
-| Déléguer une sous-tâche | outil `subagent` avec `agent: scout\|worker\|reviewer` |
-| Noter une décision sans tour modèle | `/btw decision <texte>` (kinds : plan, decision, done, blocker, lesson, claim) |
-| Parler à un autre agent du projet | `/btw [@agent] <texte>` : routé par @nom, sinon par chemin revendiqué (claim), sinon broadcast ; livré à son prochain tour ou entre deux outils s'il tourne |
-| Retrouver un ancien prompt | `ctrl+r` |
-| Importer l'historique des sessions | `/btw import` |
-| Carte du code | outil `project_graph`, index automatique au démarrage |
-| Surveiller une PR | outil `ci_watch`, réveil sur vert / rouge / mergée |
+| Delegate an end-to-end task | `/orchestrate <request>`: the chef rewrites the request, sizes it, delegates to scout / worker / reviewer |
+| Delegate a subtask | `subagent` tool with `agent: scout\|worker\|reviewer` |
+| Note a decision without a model turn | `/btw decision <text>` (kinds: plan, decision, done, blocker, lesson, claim) |
+| Talk to another project agent | `/btw [@agent] <text>`: routed by @name, otherwise by claimed path, otherwise broadcast; delivered on its next turn or between tool calls if it's running |
+| Find an old prompt | `ctrl+r` |
+| Import session history | `/btw import` |
+| Code map | `project_graph` tool, auto-indexed at startup |
+| Watch a PR | `ci_watch` tool, wakes on green / red / merged |
 
-Les notes vivent dans `<repo>/.agent/notes.db` (jamais commité) et sont mirrorées dans `~/workspace/notes.db`, sauf les prompts bruts.
+Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts.
 
-## Contenu
+## Contents
 
 ```
-settings.json        packages : pi-simplify, ponytail, pi-lsp, background-bash, emilkowalski/skills
-keybindings.json     ctrl+r libéré pour la recherche de prompts
-agents/              scout, worker, reviewer (prompts des sous-agents)
+settings.json        packages: pi-simplify, ponytail, pi-lsp, background-bash, emilkowalski/skills
+keybindings.json     ctrl+r freed for prompt search
+agents/              scout, worker, reviewer (sub-agent prompts)
 extensions/
-  orchestrate/       /orchestrate et le prompt chef ; gates via gates/pi-prek
-  subagent/          outil subagent (single, parallel, chain)
-  notes.ts           mémoire SQLite, /btw, ctrl+r, inbox inter-agents
-  ci-watch/          outil ci_watch
-  graphify/          outil project_graph
+  orchestrate/       /orchestrate and the chef prompt; gates via gates/pi-prek
+  subagent/          subagent tool (single, parallel, chain)
+  notes.ts           SQLite memory, /btw, ctrl+r, inter-agent inbox
+  ci-watch/          ci_watch tool
+  graphify/          project_graph tool
   web/               web_fetch, web_search
-  anthropic-docs-compat/  chemins de la doc pi dans le prompt
-lib/                 helpers communs
+  anthropic-docs-compat/  pi doc paths in the prompt
+lib/                 shared helpers
 gates/
-  pi-prek              wrapper POSIX (résout gates.py par lien symbolique)
+  pi-prek              POSIX wrapper (resolves gates.py via symlink)
   pi-orchestrate/      gates.py, test_gates.py, example-policy.json
-scripts/             install.mjs, doctor.mjs, test.mjs, check.mjs (installeur/diagnostic, stdlib Node)
-tests/               tests des scripts (node:test)
+scripts/             install.mjs, doctor.mjs, test.mjs, check.mjs (installer/diagnostic, Node stdlib)
+tests/               script tests (node:test)
 ```
 
-Non versionné : `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `npm/node_modules`, `git/`, `bin/`, symlink `skills/cli-code-skills` (voir INSTALLATION.md).
+Not versioned: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `npm/node_modules`, `git/`, `bin/`, `skills/cli-code-skills` symlink (see INSTALLATION.md).
 
-## Développement
+## Development
 
 ```bash
-npm run check           # syntaxe .mjs + hygiène espaces + git diff --check
-npm test                # suite standard (node:test), hors *.integration.test.*
-npm run test:integration  # suite complète + gates Python (échoue dur si une dépendance externe manque)
+npm run check           # .mjs syntax + whitespace hygiene + git diff --check
+npm test                # standard suite (node:test), excluding *.integration.test.*
+npm run test:integration  # full suite + Python gates (hard failure if an external dependency is missing)
 ```
 
-Pas de `node_modules` versionné : stdlib Node uniquement pour `scripts/` et `tests/`, `npm ci` n'a rien à installer (aucun `package-lock.json`).
+No versioned `node_modules`: Node stdlib only for `scripts/` and `tests/`, `npm ci` has nothing to install (no `package-lock.json`).
 
-Voir [INSTALLATION.md](INSTALLATION.md) pour le détail de l'installeur, du diagnostic et des gates.
+See [INSTALLATION.md](INSTALLATION.md) for details on the installer, diagnostics, and gates.

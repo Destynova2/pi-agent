@@ -13,12 +13,12 @@ function onPath(name: string): boolean {
 }
 function requireDependency(t: { skip: (msg: string) => void }, name: string): boolean {
 	if (onPath(name)) return true;
-	if (process.env.PI_TEST_INTEGRATION === "1") throw new Error(`${name} absent : requis par PI_TEST_INTEGRATION=1`);
-	t.skip(`${name} absent : test ignoré explicitement`);
+	if (process.env.PI_TEST_INTEGRATION === "1") throw new Error(`${name} missing: required by PI_TEST_INTEGRATION=1`);
+	t.skip(`${name} missing: test explicitly skipped`);
 	return false;
 }
 
-test("racine Git, séparation projets, fichiers ignorés, suppressions et aucune mutation Git", async (t) => {
+test("Git root, project separation, ignored files, deletions and no Git mutation", async (t) => {
 	if (!requireDependency(t, "git") || !requireDependency(t, "graphify")) return;
   const temp = await mkdtemp(join(tmpdir(), "pi-graphify-test-"));
   try {
@@ -44,15 +44,15 @@ test("racine Git, séparation projets, fichiers ignorés, suppressions et aucune
     assert.doesNotMatch(await readFile(updated.graph, "utf8"), /helper/);
     const lock = join(cacheDirectory(root, cache), "index.lock");
     await mkdir(lock);
-    await assert.rejects(projectGraph(repo, "overview", "", undefined, cache), /déjà en cours/);
+    await assert.rejects(projectGraph(repo, "overview", "", undefined, cache), /already in progress/);
     await rm(lock, { recursive: true });
-    await assert.rejects(projectGraph(repo, "explain", "--help", undefined, cache), /symbole/i);
+    await assert.rejects(projectGraph(repo, "explain", "--help", undefined, cache), /symbol/i);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
 });
 
-test("racine la plus proche pour jj imbriqué, Git imbriqué et colocation", async (t) => {
+test("closest root for nested jj, nested Git and colocation", async (t) => {
   if (!requireDependency(t, "git") || !requireDependency(t, "jj")) return;
   const temp = await mkdtemp(join(tmpdir(), "pi-roots-test-"));
   try {
@@ -69,8 +69,8 @@ test("racine la plus proche pour jj imbriqué, Git imbriqué et colocation", asy
   } finally { await rm(temp, { recursive: true, force: true }); }
 });
 
-test("hors dépôt : pas d'initialisation implicite", async () => {
+test("outside a repository: no implicit initialization", async () => {
   const temp = await mkdtemp(join(tmpdir(), "pi-graphify-no-repo-"));
-  try { await assert.rejects(projectRoot(temp), /Aucune racine/); }
+  try { await assert.rejects(projectRoot(temp), /No Git\/jj root/); }
   finally { await rm(temp, { recursive: true, force: true }); }
 });

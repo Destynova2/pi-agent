@@ -28,8 +28,8 @@ export function registerDocsCompat(pi: ExtensionAPI, paths: DocumentationPaths):
     if (!options || !options.sections || typeof options.sections !== "object") {
       if (warned) return;
       warned = true;
-      const message = "anthropic-docs-compat : API de sections Pi indisponible, correctif non appliqué. " +
-        "Mettre à jour cette extension ou la retirer si Pi fournit déjà une aide courte.";
+      const message = "anthropic-docs-compat: Pi sections API unavailable, patch not applied. " +
+        "Update this extension or remove it if Pi already provides short help.";
       if (ctx.hasUI) ctx.ui.notify(message, "warning");
       else console.warn(message);
       return;

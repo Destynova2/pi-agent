@@ -94,7 +94,7 @@ test("incompatible API warns once per session, leaving the input untouched", () 
   h.run(e); h.run(e);
   assert.deepEqual(e, before);
   assert.equal(h.warnings.length, 1);
-  assert.match(h.warnings[0], /correctif non appliqué/);
+  assert.match(h.warnings[0], /patch not applied/);
   h.reset(); h.run(e);
   assert.equal(h.warnings.length, 2);
 });
@@ -114,6 +114,6 @@ test("headless mode reports incompatible API to stderr", (t) => {
   const e = { type: "before_agent_start", prompt: "test", systemPrompt: "unchanged" } as BeforeAgentStartEvent;
   h.run(e); h.run(e);
   assert.equal(warn.mock.calls.length, 1);
-  assert.match(String(warn.mock.calls[0].arguments[0]), /correctif non appliqué/);
+  assert.match(String(warn.mock.calls[0].arguments[0]), /patch not applied/);
   assert.deepEqual(h.warnings, []);
 });

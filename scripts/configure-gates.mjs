@@ -1,47 +1,47 @@
 #!/usr/bin/env node
-// Initialise explicitement la politique de gates d'un projet, sans jamais deviner les
-// commandes requises ni affaiblir gates.py (gates/pi-orchestrate/gates.py). Stdlib only.
+// Explicitly initializes a project's gate policy, never guessing the required
+// commands nor weakening gates.py (gates/pi-orchestrate/gates.py). Stdlib only.
 //
-// Écrit ~/.config/pi-orchestrate/projects/<sha256(root réel)[:20]>.json avec
-// { root, required }. Refuse d'écraser une politique existante (fichier ou symlink,
-// y compris un symlink sur un des dossiers parents gérés).
+// Writes ~/.config/pi-orchestrate/projects/<sha256(real root)[:20]>.json with
+// { root, required }. Refuses to overwrite an existing policy (file or symlink,
+// including a symlink on one of the managed parent directories).
 import { createHash } from "node:crypto";
 import { lstat, mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** sha256 hex tronqué du chemin racine réel, identique à key() dans gates.py. */
+/** Truncated sha256 hex of the real root path, identical to key() in gates.py. */
 export function policyKey(realRoot) {
   return createHash("sha256").update(realRoot).digest("hex").slice(0, 20);
 }
 
-/** Résout le chemin réel (symlinks compris) d'un répertoire de projet existant. */
+/** Resolves the real path (symlinks included) of an existing project directory. */
 export async function resolveProjectRoot(projectPath) {
   if (typeof projectPath !== "string" || projectPath.length === 0) {
-    throw new Error("--project est requis et doit être un chemin non vide");
+    throw new Error("--project is required and must be a non-empty path");
   }
   let real;
   try {
     real = await realpath(projectPath);
   } catch (err) {
-    throw new Error(`--project introuvable : ${projectPath} (${err.code ?? err.message})`);
+    throw new Error(`--project not found: ${projectPath} (${err.code ?? err.message})`);
   }
   const st = await stat(real);
-  if (!st.isDirectory()) throw new Error(`--project doit être un répertoire : ${real}`);
+  if (!st.isDirectory()) throw new Error(`--project must be a directory: ${real}`);
   return real;
 }
 
-/** Valide un JSON de commandes : tableau non vide d'argv (tableaux de chaînes non vides). */
+/** Validates a JSON of commands: non-empty array of argv (arrays of non-empty strings). */
 export function parseRequiredCommands(json) {
   let commands;
   try {
     commands = JSON.parse(json);
   } catch (err) {
-    throw new Error(`--commands n'est pas un JSON valide : ${err.message}`);
+    throw new Error(`--commands is not valid JSON: ${err.message}`);
   }
   if (!Array.isArray(commands) || commands.length === 0) {
-    throw new Error("--commands doit être un tableau JSON non vide de commandes argv");
+    throw new Error("--commands must be a non-empty JSON array of argv commands");
   }
   commands.forEach((argv, i) => {
     const bad =
@@ -49,25 +49,25 @@ export function parseRequiredCommands(json) {
       argv.length === 0 ||
       !argv.every((s) => typeof s === "string" && s.length > 0);
     if (bad) {
-      throw new Error(`--commands[${i}] doit être un tableau non vide de chaînes non vides`);
+      throw new Error(`--commands[${i}] must be a non-empty array of non-empty strings`);
     }
   });
   return commands;
 }
 
-/** Refuse tout lien symbolique sur un chemin existant. */
+/** Refuses any symlink at an existing path. */
 async function refuseSymlink(path) {
   let st;
   try {
     st = await lstat(path);
   } catch {
-    return null; // n'existe pas
+    return null; // does not exist
   }
-  if (st.isSymbolicLink()) throw new Error(`refus : ${path} est un lien symbolique`);
+  if (st.isSymbolicLink()) throw new Error(`refuse: ${path} is a symbolic link`);
   return st;
 }
 
-/** Crée (mode 0700) ~/.config/pi-orchestrate/projects sans jamais suivre un symlink parent. */
+/** Creates (mode 0700) ~/.config/pi-orchestrate/projects without ever following a parent symlink. */
 async function securedProjectsDir(homeDir) {
   await refuseSymlink(homeDir);
   let cur = homeDir;
@@ -75,7 +75,7 @@ async function securedProjectsDir(homeDir) {
     cur = join(cur, seg);
     const st = await refuseSymlink(cur);
     if (st) {
-      if (!st.isDirectory()) throw new Error(`refus : ${cur} n'est pas un répertoire`);
+      if (!st.isDirectory()) throw new Error(`refuse: ${cur} is not a directory`);
     } else {
       await mkdir(cur, { mode: 0o700 });
     }
@@ -84,8 +84,8 @@ async function securedProjectsDir(homeDir) {
 }
 
 /**
- * Écrit la politique de gates pour un projet. N'écrase jamais un fichier existant
- * (création exclusive, refuse aussi tout symlink en place ou sur un dossier parent géré).
+ * Writes the gate policy for a project. Never overwrites an existing file
+ * (exclusive creation, also refuses any symlink in place or on a managed parent directory).
  */
 export async function configureGates({ project, commandsJson, homeDir = homedir() }) {
   const root = await resolveProjectRoot(project);
@@ -95,12 +95,12 @@ export async function configureGates({ project, commandsJson, homeDir = homedir(
   const path = join(projectsDir, `${key}.json`);
   await refuseSymlink(path);
   const existing = await stat(path).catch(() => null);
-  if (existing) throw new Error(`refus d'écraser une politique existante : ${path}`);
+  if (existing) throw new Error(`refuse to overwrite an existing policy: ${path}`);
   const data = { root, required };
   try {
     await writeFile(path, JSON.stringify(data, null, 2) + "\n", { flag: "wx", mode: 0o600 });
   } catch (err) {
-    if (err.code === "EEXIST") throw new Error(`refus d'écraser une politique existante : ${path}`);
+    if (err.code === "EEXIST") throw new Error(`refuse to overwrite an existing policy: ${path}`);
     throw err;
   }
   return { path, key, root, required };
@@ -113,7 +113,7 @@ export function parseArgs(argv) {
     if (a === "--help" || a === "-h") args.help = true;
     else if (a === "--project") args.project = argv[++i];
     else if (a === "--commands") args.commands = argv[++i];
-    else throw new Error(`argument inconnu : ${a}`);
+    else throw new Error(`unknown argument: ${a}`);
   }
   return args;
 }
@@ -123,9 +123,9 @@ function printHelp() {
     [
       "Usage: node scripts/configure-gates.mjs --project <path> --commands '<json argv[][]>'",
       "",
-      "Écrit ~/.config/pi-orchestrate/projects/<sha256(root réel)[:20]>.json.",
-      "Exemple : --commands '[[\"npm\",\"run\",\"check\"]]'",
-      "Refuse d'écraser une politique existante ; jamais de création automatique.",
+      "Writes ~/.config/pi-orchestrate/projects/<sha256(real root)[:20]>.json.",
+      "Example: --commands '[[\"npm\",\"run\",\"check\"]]'",
+      "Refuses to overwrite an existing policy; never creates one automatically.",
     ].join("\n"),
   );
 }
@@ -144,13 +144,13 @@ async function main() {
     return;
   }
   if (!args.project || !args.commands) {
-    console.error("configure-gates: --project et --commands sont requis (--help pour l'usage)");
+    console.error("configure-gates: --project and --commands are required (--help for usage)");
     process.exitCode = 1;
     return;
   }
   try {
     const result = await configureGates({ project: args.project, commandsJson: args.commands });
-    console.log(`Politique écrite : ${result.path}`);
+    console.log(`Policy written: ${result.path}`);
   } catch (err) {
     console.error(`configure-gates: ${err.message}`);
     process.exitCode = 1;

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Lance les tests `node:test` du dépôt (*.test.ts et *.test.mjs), hors répertoires vendorisés.
-// Par défaut : suite standard (fichiers *.integration.test.* exclus). `--integration` : lance
-// la suite ENTIÈRE (rien n'est exclu) avec PI_TEST_INTEGRATION=1, qui transforme chaque skip
-// explicite pour dépendance externe absente (git/jj/graphify/Pi installé...) en échec dur, puis
-// exécute en plus `python3 -m unittest test_gates` (gates/pi-orchestrate) si python3 est
-// disponible. Jamais de succès fictif : une dépendance manquante fait échouer, pas passer.
+// Runs the repo's `node:test` tests (*.test.ts and *.test.mjs), excluding vendored dirs.
+// By default: standard suite (*.integration.test.* files excluded). `--integration`: runs
+// the ENTIRE suite (nothing excluded) with PI_TEST_INTEGRATION=1, which turns every explicit
+// skip for a missing external dependency (git/jj/graphify/Pi installed...) into a hard failure,
+// then also runs `python3 -m unittest test_gates` (gates/pi-orchestrate) if python3 is
+// available. Never a fake pass: a missing dependency fails, it does not pass silently.
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,9 +17,9 @@ const BOOTSTRAP_PATH = resolve(SCRIPT_DIR, "..", "tests", "resolve-pi.mjs");
 const GATES_TEST_SCRIPT = resolve(SCRIPT_DIR, "..", "gates", "pi-orchestrate", "test_gates.py");
 
 /**
- * `all: true` ignore la distinction standard/intégration et renvoie tous les fichiers de test :
- * utilisé par `--integration`, qui doit exécuter la suite entière, pas seulement les fichiers
- * nommés `*.integration.test.*`.
+ * `all: true` ignores the standard/integration distinction and returns every test file:
+ * used by `--integration`, which must run the entire suite, not just the files
+ * named `*.integration.test.*`.
  */
 export function collectTests(root, { integration = false, all = false } = {}) {
   const files = [];
@@ -42,9 +42,9 @@ export function collectTests(root, { integration = false, all = false } = {}) {
 }
 
 /**
- * Le bootstrap (redirection des imports vers l'installation Pi r\u00e9elle) n'a de sens que pour ce
- * d\u00e9p\u00f4t r\u00e9el : une suite point\u00e9e sur un r\u00e9pertoire fixture (--dir, utilis\u00e9 par les tests du
- * runner lui-m\u00eame) ne doit pas le charger sans qu'on le demande explicitement (--bootstrap).
+ * The bootstrap (redirecting imports to the real Pi install) only makes sense for this
+ * real repo: a suite pointed at a fixture directory (--dir, used by the runner's own
+ * tests) must not load it without being asked explicitly (--bootstrap).
  */
 export function shouldBootstrap({ dir, bootstrap = false } = {}) {
   return dir === undefined || bootstrap;
@@ -57,23 +57,23 @@ function parseArgs(argv) {
     if (arg === "--integration") out.integration = true;
     else if (arg === "--dir") out.dir = argv[++i];
     else if (arg === "--bootstrap") out.bootstrap = true;
-    else throw new Error(`option inconnue : ${arg}`);
+    else throw new Error(`unknown option: ${arg}`);
   }
   return out;
 }
 
 /**
- * Exécute `python3 -m unittest test_gates` (gates/pi-orchestrate/test_gates.py). Ignoré
- * explicitement (avec un message, pas un succès silencieux) si python3 ou le script sont
- * absents ; sinon exécuté pour de vrai, y compris ses propres échecs.
+ * Runs `python3 -m unittest test_gates` (gates/pi-orchestrate/test_gates.py). Skipped
+ * explicitly (with a message, not a silent pass) if python3 or the script are
+ * missing; otherwise run for real, including its own failures.
  */
 function runPythonGates(env) {
   if (!existsSync(GATES_TEST_SCRIPT)) {
-    console.log("test: gates/pi-orchestrate/test_gates.py absent, ignoré explicitement");
+    console.log("test: gates/pi-orchestrate/test_gates.py missing, explicitly skipped");
     return 0;
   }
   if (!commandExists("python3", env)) {
-    console.log("test: python3 absent, gates/pi-orchestrate/test_gates.py ignoré explicitement");
+    console.log("test: python3 missing, gates/pi-orchestrate/test_gates.py explicitly skipped");
     return 0;
   }
   console.log("test: python3 -m unittest test_gates (gates/pi-orchestrate)");
@@ -90,14 +90,14 @@ async function main() {
   const root = resolve(args.dir ?? fileURLToPath(new URL("..", import.meta.url)));
   const files = collectTests(root, { all: args.integration });
   if (files.length === 0) {
-    console.log(args.integration ? "test: aucun test trouvé pour la suite d'intégration" : "test: aucun test trouvé");
+    console.log(args.integration ? "test: no tests found for the integration suite" : "test: no tests found");
     process.exitCode = 0;
     return;
   }
 
   const useBootstrap = shouldBootstrap(args) && existsSync(BOOTSTRAP_PATH);
 
-  console.log(`test: ${files.length} fichier(s)${args.integration ? " (suite complète, PI_TEST_INTEGRATION=1)" : ""}`);
+  console.log(`test: ${files.length} file(s)${args.integration ? " (full suite, PI_TEST_INTEGRATION=1)" : ""}`);
   const nodeArgs = ["--test"];
   if (useBootstrap) nodeArgs.push("--import", BOOTSTRAP_PATH);
   nodeArgs.push(...files);

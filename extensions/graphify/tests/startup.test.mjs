@@ -24,15 +24,15 @@ import registerExtension from '../index.ts';
 // failure instead, so CI cannot silently pass without ever exercising this suite.
 function requireDependency(t, label, found) {
 	if (found) return true;
-	if (process.env.PI_TEST_INTEGRATION === '1') throw new Error(`${label} absent : requis par PI_TEST_INTEGRATION=1`);
-	t.skip(`${label} absent : test ignoré explicitement`);
+	if (process.env.PI_TEST_INTEGRATION === '1') throw new Error(`${label} missing: required by PI_TEST_INTEGRATION=1`);
+	t.skip(`${label} missing: test explicitly skipped`);
 	return false;
 }
 
 const gitFound = (process.env.PATH ?? '').split(delimiter).some((dir) => existsSync(join(dir, 'git')));
 
 for (const nested of [false, true]) {
-  test(nested ? 'startup réel : sous-dépôt annoncé, refus = aucun graphe' : 'startup réel : dépôt simple indexé automatiquement', async (t) => {
+  test(nested ? 'real startup: nested sub-repository, refusal = no graph' : 'real startup: simple repository indexed automatically', async (t) => {
     if (!requireDependency(t, 'git', gitFound)) return;
     const root = await realpath(await mkdtemp(join(tmpdir(), 'pi-auto-startup-')));
     const events = new Map();
@@ -46,7 +46,7 @@ for (const nested of [false, true]) {
     const ctx = { cwd: root, hasUI: true, ui: {
       select: async (title, options) => { questions++; notifications.push(title); return options[0]; },
       notify: (text) => notifications.push(text),
-      setStatus: (_key, text) => { if (text !== 'Indexation AST en arrière-plan…') { finalStatus = text; finish(); } },
+      setStatus: (_key, text) => { if (text !== 'AST indexing in background…') { finalStatus = text; finish(); } },
     } };
     let deadline;
     try {
@@ -58,14 +58,14 @@ for (const nested of [false, true]) {
       }
       registerExtension({ on: (name, handler) => events.set(name, handler), registerTool: () => {}, registerCommand: () => {} });
       await events.get('session_start')({ reason: 'startup' }, ctx);
-      await Promise.race([done, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(notifications.join('\n') || 'Indexation non terminée')), 30000); })]);
+      await Promise.race([done, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(notifications.join('\n') || 'Indexing not finished')), 30000); })]);
       if (nested) {
         assert.equal(questions, 1);
-        assert.match(notifications[0], /imbriqué/);
+        assert.match(notifications[0], /nested/);
         await assert.rejects(access(join(cacheDirectory(root), 'graphify-out/graph.json')));
       } else {
         assert.equal(questions, 0);
-        assert.match(finalStatus, /Graphify prêt/);
+        assert.match(finalStatus, /Graphify ready/);
         await access(join(cacheDirectory(root), 'graphify-out/graph.json'));
       }
     } finally {

@@ -9,7 +9,7 @@ import register from "../index.ts";
 type Handler = Parameters<ExtensionAPI["registerCommand"]>[1]["handler"];
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("commande orchestrate : transmet des consignes sans simuler le LLM", async () => {
+test("orchestrate command: forwards instructions without simulating the LLM", async () => {
   let handler: Handler | undefined;
   const messages: string[] = [];
   const notifications: string[] = [];
@@ -21,28 +21,28 @@ test("commande orchestrate : transmet des consignes sans simuler le LLM", async 
   assert.ok(handler);
   const ctx = { ui: { notify: (text: string) => { notifications.push(text); } } } as unknown as Parameters<Handler>[1];
 
-  await handler("corrige le prompt", ctx);
+  await handler("fix the prompt", ctx);
   assert.equal(messages.length, 1);
   const prompt = messages[0];
-  assert.match(prompt, /explorer en lecture seule.*avant de deviner/s);
-  assert.match(prompt, /ambiguïté substantielle d'intention/);
+  assert.match(prompt, /read-only before guessing/s);
+  assert.match(prompt, /substantial ambiguity of intent/);
   assert.match(prompt, /openai-codex\/gpt-6-astra.*anthropic\/claude-fable-5-1/s);
-  assert.match(prompt, /accord n'est pas une preuve/);
-  assert.match(prompt, /chef est interdit comme worker.*même si le chef est Fable/s);
-  assert.match(prompt, /ne requalifie pas une tâche M\/L en S/);
-  assert.match(prompt, /n'est ni snapshot ni sauvegarde/);
-  assert.match(prompt, /n'emploie jamais \`git checkout\` comme rollback/);
+  assert.match(prompt, /agreement is not proof/);
+  assert.match(prompt, /forbidden as worker.*even if the chef is Fable/s);
+  assert.match(prompt, /do not downgrade an M\/L task to S/);
+  assert.match(prompt, /is neither a snapshot nor a backup/);
+  assert.match(prompt, /never use \`git checkout\` as a rollback/);
 
   await handler("status", ctx);
   await handler("cancel", ctx);
-  assert.ok(notifications.some((text) => text.includes("Aucun gate local en cours. Statut des gates locales uniquement")));
-  assert.ok(notifications.includes("Aucun gate en cours."));
+  assert.ok(notifications.some((text) => text.includes("No local gate in progress. Local gates status only")));
+  assert.ok(notifications.includes("No gate in progress."));
 });
 
 for (const method of ["cancel", "session_shutdown", "session_before_switch", "session_before_fork", "session_before_tree", "session_start"]) {
-  test(`commande orchestrate : exclusion concurrente et ${method}`, async () => {
-    // Fixture isolée : PI_GATES_BIN pointe le runtime vers un binaire de test, sans dépendre
-    // de HOME ni d'un chemin d'installation réel (voir extensions/orchestrate/index.ts).
+  test(`orchestrate command: concurrent exclusion and ${method}`, async () => {
+    // Isolated fixture: PI_GATES_BIN points the runtime to a test binary, without depending
+    // on HOME or a real install path (see extensions/orchestrate/index.ts).
     const home = await mkdtemp(join(tmpdir(), "pi-orchestrate-lifecycle-"));
     const oldGatesBin = process.env.PI_GATES_BIN;
     let handler: Handler | undefined;
@@ -74,12 +74,12 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
       }
       assert.equal(await readFile(ready, "utf8").catch(() => "missing"), "ready", notifications.join("\n"));
       await handler("gates full", ctx);
-      assert.ok(notifications.some((text) => text.includes("déjà en cours")));
+      assert.ok(notifications.some((text) => text.includes("already in progress")));
       await handler("status", ctx);
-      assert.ok(notifications.some((text) => text.includes("Gates locales en cours.")));
+      assert.ok(notifications.some((text) => text.includes("Local gates in progress.")));
       if (method === "cancel") {
         await handler("cancel", ctx);
-        assert.ok(notifications.some((text) => text.includes("Annulation des gates")));
+        assert.ok(notifications.some((text) => text.includes("Canceling gates")));
       } else {
         const transition = events.get(method);
         assert.ok(transition);
@@ -87,10 +87,10 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
       }
       await job;
       await delay(2100);
-      assert.ok(notifications.some((text) => text.includes("BLOQUÉS")));
+      assert.ok(notifications.some((text) => text.includes("BLOCKED")));
       await assert.rejects(access(marker));
       await handler("cancel", ctx);
-      assert.ok(notifications.includes("Aucun gate en cours."));
+      assert.ok(notifications.includes("No gate in progress."));
     } finally {
       await events.get("session_shutdown")?.();
       await job;

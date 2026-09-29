@@ -1,36 +1,36 @@
 # Installation
 
-Ce document décrit comment récupérer ce dépôt ailleurs que dans un répertoire agent pi vivant, puis l'installer.
+This document describes how to fetch this repo somewhere other than a live pi agent directory, then install it.
 
-## Source vs cible
+## Source vs target
 
-Ce dépôt (`pi-agent`, remote `https://github.com/Destynova2/pi-agent.git`) est une **source de configuration**, pas un état installé. `scripts/install.mjs` refuse explicitement toute cible identique ou imbriquée avec la source (chemins comparés en forme canonique, liens symboliques résolus) : source et cible doivent être deux répertoires distincts et non imbriqués, sinon l'installeur s'arrête avant toute écriture.
+This repo (`pi-agent`, remote `https://github.com/Destynova2/pi-agent.git`) is a **configuration source**, not an installed state. `scripts/install.mjs` explicitly refuses any target that is identical to or nested with the source (paths compared in canonical form, symlinks resolved): source and target must be two distinct, non-nested directories, otherwise the installer stops before any write.
 
-Cloner dans un répertoire séparé, jamais directement dans le répertoire agent visé :
+Clone into a separate directory, never directly into the target agent directory:
 
 ```bash
 git clone https://github.com/Destynova2/pi-agent.git ~/src/pi-agent
 cd ~/src/pi-agent
 ```
 
-## Prérequis
+## Prerequisites
 
-- Node.js `>=22.19` (`package.json` → `engines.node`). `node:sqlite` doit être disponible (vérifié par `doctor`, natif depuis Node 22.5+, actif par défaut à partir de 22.19).
-- [`pi`](https://github.com/earendil-works/pi) installé et sur `PATH`. `settings.json` de ce dépôt indique `lastChangelogVersion: 0.87.1` — vérifiez votre version réelle avec `pi --version` avant d'installer les packages listés (peut différer).
+- Node.js `>=22.19` (`package.json` → `engines.node`). `node:sqlite` must be available (checked by `doctor`, native since Node 22.5+, enabled by default from 22.19).
+- [`pi`](https://github.com/earendil-works/pi) installed and on `PATH`. This repo's `settings.json` states `lastChangelogVersion: 0.87.1` — check your actual version with `pi --version` before installing the listed packages (may differ).
 - `git`, `curl`.
-- Optionnels, diagnostiqués mais non bloquants : `graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`.
+- Optional, diagnosed but non-blocking: `graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`.
 
-Ce dépôt n'a **aucune dépendance npm** (`scripts/` et `tests/` sont en stdlib Node pur, voir description de `package.json`). Il n'y a pas de `package-lock.json` : `npm ci` échouerait faute de lockfile et n'a de toute façon rien à installer.
+This repo has **no npm dependencies** (`scripts/` and `tests/` are pure Node stdlib, see `package.json` description). There is no `package-lock.json`: `npm ci` would fail for lack of a lockfile and has nothing to install anyway.
 
 ## Quickstart
 
 ```bash
-node scripts/doctor.mjs            # diagnostic avant d'installer quoi que ce soit
-node scripts/install.mjs --target ~/.pi/agent-test   # installe vers une cible de test, jamais la source
+node scripts/doctor.mjs            # diagnostic before installing anything
+node scripts/install.mjs --target ~/.pi/agent-test   # install to a test target, never the source
 node scripts/doctor.mjs --target ~/.pi/agent-test
 ```
 
-Pour installer vers la cible par défaut de `pi` (`$PI_CODING_AGENT_DIR` ou `~/.pi/agent`) :
+To install to pi's default target (`$PI_CODING_AGENT_DIR` or `~/.pi/agent`):
 
 ```bash
 node scripts/install.mjs
@@ -38,86 +38,86 @@ node scripts/install.mjs
 
 ## `scripts/install.mjs`
 
-Idempotent, stdlib Node uniquement. Avant toute mutation :
+Idempotent, Node stdlib only. Before any mutation:
 
-- refuse si la cible est un lien symbolique, si source == cible, ou si l'une contient l'autre (comparaison sur chemins canoniques, alias système légitimes comme `/tmp` ↔ `/private/tmp` sur macOS résolus, pas rejetés) ;
-- refuse si un lien symbolique existe n'importe où sous une ressource gérée (source ou cible) — éviterait une écriture hors cible pendant la copie ;
-- valide le schéma JSON minimal de `settings.json` (source et cible) avant toute écriture.
+- refuses if the target is a symlink, if source == target, or if one contains the other (comparison on canonical paths, legitimate system aliases such as `/tmp` ↔ `/private/tmp` on macOS resolved, not rejected);
+- refuses if a symlink exists anywhere under a managed resource (source or target) — would allow a write outside the target during the copy;
+- validates the minimal JSON schema of `settings.json` (source and target) before any write.
 
-Répertoires/fichiers gérés (`MANAGED_DIRS`/`MANAGED_FILES` dans `scripts/install.mjs`) : `agents/`, `extensions/`, `lib/`, `tools/`, `keybindings.json`, `settings.json`. **Jamais touchés** : `auth.json`, `sessions/`, `models-store.json`, `trust.json`, ni aucun fichier hors de cette liste (y compris `skills/`, voir plus bas).
+Managed directories/files (`MANAGED_DIRS`/`MANAGED_FILES` in `scripts/install.mjs`): `agents/`, `extensions/`, `lib/`, `tools/`, `keybindings.json`, `settings.json`. **Never touched**: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, nor any file outside this list (including `skills/`, see below).
 
-Séquence : sauvegarde de la cible existante dans `<cible>.backup-<horodatage>/` (créé avec permissions `0700`), puis copie fichier par fichier (jamais de suppression de répertoire cible : tout ajout personnel dans un répertoire géré survit à une réinstallation), puis fusion de `settings.json` (les paquets gérés par la source remplacent leur équivalent par identité — sans le suffixe `@version`/`@sha` — dans la cible ; les paquets personnels de la cible sans équivalent source sont conservés), puis `pi install <source> --no-approve` pour chaque paquet listé.
+Sequence: back up the existing target into `<target>.backup-<timestamp>/` (created with `0700` permissions), then copy file by file (never deletes a target directory: any personal addition in a managed directory survives a reinstall), then merge `settings.json` (packages managed by the source replace their counterpart by identity — without the `@version`/`@sha` suffix — in the target; personal target packages with no source counterpart are kept), then `pi install <source> --no-approve` for each listed package.
 
-Options :
+Options:
 
 ```bash
-node scripts/install.mjs --target <chemin>   # défaut: $PI_CODING_AGENT_DIR ou ~/.pi/agent
-node scripts/install.mjs --no-packages        # copie les fichiers, n'invoque pas `pi install` (mode hors-ligne)
+node scripts/install.mjs --target <path>   # default: $PI_CODING_AGENT_DIR or ~/.pi/agent
+node scripts/install.mjs --no-packages        # copies files, does not invoke `pi install` (offline mode)
 ```
 
-Un échec d'un paquet individuel (`pi install`) est rapporté mais ne bloque pas la copie des autres ressources ; la sortie précise alors de ne pas considérer l'installation comme un succès complet.
+A failure of an individual package (`pi install`) is reported but does not block the copy of other resources; the output then makes clear not to treat the installation as a full success.
 
-### Restauration après un problème
+### Recovering after a problem
 
-La sauvegarde précédente reste dans `<cible>.backup-<horodatage>/` — restaurez-la manuellement (`cp -a <backup>/<entrée> <cible>/<entrée>`), entrée par entrée si besoin. Ce n'est **pas** un `git checkout` ni un `jj restore` : la cible d'installation n'est pas nécessairement un dépôt Git/jj, et l'installeur ne suppose jamais qu'elle en est un.
+The previous backup remains at `<target>.backup-<timestamp>/` — restore it manually (`cp -a <backup>/<entry> <target>/<entry>`), entry by entry if needed. This is **not** a `git checkout` nor a `jj restore`: the install target is not necessarily a Git/jj repo, and the installer never assumes it is one.
 
 ## `scripts/doctor.mjs`
 
 ```bash
-node scripts/doctor.mjs [--target <chemin>] [--strict]
+node scripts/doctor.mjs [--target <path>] [--strict]
 ```
 
-Vérifie la version de Node (contre `engines.node` de `package.json`), la disponibilité de `node:sqlite`, les commandes requises (`git`, `curl`, `pi`) et optionnelles (`graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`), ainsi que la présence exécutable de `gates/pi-prek` dans la cible. `--strict` fait échouer aussi sur un outil optionnel manquant (par défaut, avertissement seulement). Ne lit ni n'affiche jamais `auth.json`.
+Checks the Node version (against `engines.node` in `package.json`), `node:sqlite` availability, required commands (`git`, `curl`, `pi`) and optional ones (`graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`), as well as the executable presence of `gates/pi-prek` in the target. `--strict` also fails on a missing optional tool (warning only by default). Never reads or displays `auth.json`.
 
 ## Tests
 
 ```bash
-npm run check            # syntaxe .mjs (node --check) + hygiène espaces + git diff --check
-npm test                 # suite node:test standard, exclut *.integration.test.*
-npm run test:integration # suite complète (rien exclu) + python3 -m unittest test_gates
+npm run check            # .mjs syntax (node --check) + whitespace hygiene + git diff --check
+npm test                 # standard node:test suite, excludes *.integration.test.*
+npm run test:integration # full suite (nothing excluded) + python3 -m unittest test_gates
 ```
 
-`npm test` charge `tests/resolve-pi.mjs` via `node --import` pour la suite réelle du dépôt : ce fichier redirige uniquement les specifiers `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui` et `typebox` vers l'installation `pi` réellement trouvée sur `PATH` (ou `PI_PACKAGE_JSON`), via `node:module.registerHooks` (hook synchrone, même thread — pas de `data:` URL, pas d'`eval`, pas de lien symbolique temporaire). Le nom du `package.json` trouvé est vérifié (`@earendil-works/pi-coding-agent`) avant tout usage.
+`npm test` loads `tests/resolve-pi.mjs` via `node --import` for the repo's real suite: this file only redirects the specifiers `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, and `typebox` to the `pi` installation actually found on `PATH` (or `PI_PACKAGE_JSON`), via `node:module.registerHooks` (synchronous hook, same thread — no `data:` URL, no `eval`, no temporary symlink). The found `package.json`'s name is verified (`@earendil-works/pi-coding-agent`) before any use.
 
-En mode `--integration`, chaque dépendance externe absente (git, jj, graphify, `pi` installé…) fait échouer un test explicitement plutôt que de le sauter silencieusement (`PI_TEST_INTEGRATION=1`) ; le nombre de tests et leur statut dépendent donc de l'environnement d'exécution — ne pas figer de chiffre ici, lire la sortie réelle de la commande.
+In `--integration` mode, each missing external dependency (git, jj, graphify, installed `pi`…) explicitly fails a test rather than silently skipping it (`PI_TEST_INTEGRATION=1`); the number of tests and their status therefore depend on the execution environment — do not hardcode a figure here, read the command's actual output.
 
-`npm run test:integration` exécute en plus `python3 -m unittest test_gates -v` dans `gates/pi-orchestrate/` si `python3` et `test_gates.py` sont présents ; sinon, l'absence est annoncée explicitement (pas un succès silencieux).
+`npm run test:integration` also runs `python3 -m unittest test_gates -v` in `gates/pi-orchestrate/` if `python3` and `test_gates.py` are present; otherwise, the absence is explicitly reported (not a silent success).
 
 ## Gates (`gates/pi-prek`, `gates/pi-orchestrate/gates.py`)
 
-`extensions/orchestrate/index.ts` invoque le binaire `gates/pi-prek` copié dans le répertoire agent (résolu via `getAgentDir()`), sauf si la variable d'environnement `PI_GATES_BIN` est définie (échappatoire pour les tests ou une installation alternative du binaire de gates).
+`extensions/orchestrate/index.ts` invokes the `gates/pi-prek` binary copied into the agent directory (resolved via `getAgentDir()`), unless the `PI_GATES_BIN` environment variable is set (escape hatch for tests or an alternative gates binary installation).
 
-`gates/pi-prek` est un wrapper POSIX (`#!/bin/sh`) qui résout son propre emplacement réel (liens symboliques compris) puis exécute `python3 gates/pi-orchestrate/gates.py` à côté de lui — aucun `$HOME` ni nom d'utilisateur codé en dur.
+`gates/pi-prek` is a POSIX wrapper (`#!/bin/sh`) that resolves its own real location (symlinks included) then runs `python3 gates/pi-orchestrate/gates.py` next to it — no hardcoded `$HOME` or username.
 
-`gates.py` exige :
+`gates.py` requires:
 
-- un dépôt colocaté **jj + Git** (`.git` en répertoire, pas en fichier gitlink) ;
-- une politique par projet dans `~/.config/pi-orchestrate/projects/<sha256(chemin_racine_réel)[:20]>.json`, avec `root` (chemin absolu réel de la racine, doit correspondre exactement, `realpath` compris) et `required` (liste non vide de commandes obligatoires en mode `full`) — voir `gates/pi-orchestrate/example-policy.json`, qui documente le format mais n'est **jamais lu ni créé automatiquement** ; copiez-le manuellement et adaptez-le ;
-- `prek` et `gitleaks` installés (diagnostiqués comme optionnels par `doctor`, mais requis pour que les gates fonctionnent) ;
-- aucune variable de contournement (`SKIP`, `PREK_SKIP`, `PRE_COMMIT_ALLOW_NO_CONFIG`, `GITLEAKS_CONFIG`, `GITLEAKS_CONFIG_TOML`) dans l'environnement.
+- a colocated **jj + Git** repo (`.git` as a directory, not a gitlink file);
+- a per-project policy at `~/.config/pi-orchestrate/projects/<sha256(real_root_path)[:20]>.json`, with `root` (real absolute path of the root, must match exactly, `realpath` included) and `required` (non-empty list of mandatory commands in `full` mode) — see `gates/pi-orchestrate/example-policy.json`, which documents the format but is **never read or created automatically**; copy it manually and adapt it;
+- `prek` and `gitleaks` installed (diagnosed as optional by `doctor`, but required for the gates to work);
+- no bypass environment variable (`SKIP`, `PREK_SKIP`, `PRE_COMMIT_ALLOW_NO_CONFIG`, `GITLEAKS_CONFIG`, `GITLEAKS_CONFIG_TOML`) set.
 
-Trois modes : `quick` (hooks `pre-commit` seulement), `full` (tous les stages + commandes de la politique, exécutés dans une copie clonée à part, produit un reçu `approved.json` dans le cache si tout passe), `dry-run`. **`dry-run` n'est pas sans effet** : il exécute réellement `prek run --all-files --stage <stage> --dry-run` sur la racine du dépôt elle-même (pas une copie isolée), contrairement au mode `full` qui travaille sur un clone jetable — ne pas le considérer comme une simulation totalement inerte.
+Three modes: `quick` (`pre-commit` hooks only), `full` (all stages + policy commands, run in a separate cloned copy, produces an `approved.json` receipt in the cache if everything passes), `dry-run`. **`dry-run` is not a no-op**: it actually runs `prek run --all-files --stage <stage> --dry-run` on the repo root itself (not an isolated copy), unlike `full` mode which works on a disposable clone — do not treat it as a fully inert simulation.
 
-## `skills/cli-code-skills` : dépendance externe non fournie, restauration manuelle
+## `skills/cli-code-skills`: unbundled external dependency, manual restore
 
-`settings.json` (clé `packages`) **ne peut pas** déclarer `cli-code-skills` : ce dépôt externe n'a ni `skills/` à sa racine ni manifeste `package.json` reconnu par la découverte de paquets de `pi` (`hasAnyDir=false`, vérifié empiriquement — 0 skill chargé via `pi install`). La seule intégration qui fonctionne est un répertoire (ou lien symbolique) sous le répertoire conventionnel de skills de l'agent (`skills/`). `scripts/install.mjs` ne gère jamais `skills/` (absent de `MANAGED_DIRS`) : un lien symbolique existant y survit intact à toute installation/réinstallation, sans double activation.
+`settings.json` (`packages` key) **cannot** declare `cli-code-skills`: this external repo has neither a `skills/` directory at its root nor a `package.json` manifest recognized by `pi`'s package discovery (`hasAnyDir=false`, verified empirically — 0 skills loaded via `pi install`). The only integration that works is a directory (or symlink) under the agent's conventional skills directory (`skills/`). `scripts/install.mjs` never manages `skills/` (absent from `MANAGED_DIRS`): an existing symlink there survives any install/reinstall intact, without double activation.
 
-Ce dépôt ne fournit **aucun instantané** de `cli-code-skills` et l'installeur ne l'installe pas automatiquement. Si vous voulez ces skills, restaurez-les manuellement depuis le dépôt connu, épinglé à un commit précis, sous la garde que la destination n'existe pas déjà :
+This repo ships **no snapshot** of `cli-code-skills` and the installer does not install it automatically. If you want these skills, restore them manually from the known repo, pinned to a specific commit, guarding that the destination does not already exist:
 
 ```bash
-DEST="<répertoire agent cible>/skills/cli-code-skills"
+DEST="<target agent directory>/skills/cli-code-skills"
 if [ -e "$DEST" ] || [ -L "$DEST" ]; then
-  echo "refus : $DEST existe déjà (fichier, dossier ou lien symbolique) — ne pas écraser" >&2
+  echo "refused: $DEST already exists (file, directory, or symlink) — will not overwrite" >&2
 else
   git clone https://github.com/Destynova2/cli-code-skills.git "$DEST"
   git -C "$DEST" checkout --detach 7541b6938e18ffc78065800060444bb623aecd3c
 fi
 ```
 
-Remplacez `<répertoire agent cible>` par votre propre chemin d'installation ; ne copiez pas un chemin `/Users/...` d'une machine tierce. Cette étape est une dépendance externe déclarée dans cette documentation, pas une garantie livrée avec le dépôt : l'installation décrite plus haut ne l'exécute pas pour vous.
+Replace `<target agent directory>` with your own install path; do not copy a `/Users/...` path from a third-party machine. This step is an external dependency declared in this documentation, not a guarantee shipped with the repo: the installation described above does not run it for you.
 
-## Ce que cette documentation ne garantit pas
+## What this documentation does not guarantee
 
-- **Portabilité Linux** : non validée. Une tentative d'exécution dans un conteneur type « e2e-runner » a échoué faute d'image Node téléchargée ; seule une exécution macOS a été vérifiée de bout en bout pour ce document. Considérez Linux comme non testé tant qu'une validation explicite n'a pas été faite.
-- **Automatisation complète** : cette installation copie des fichiers et invoque `pi install`, elle ne configure pas l'authentification aux modèles (gérée par `pi` lui-même, jamais par un export de ce dépôt) ni les dépendances externes déclarées mais non fournies (`skills/cli-code-skills` ci-dessus).
-- **Restauration** : en cas de problème, restaurez depuis la sauvegarde `<cible>.backup-<horodatage>/` créée par l'installeur, jamais par un `git checkout`/`jj restore` de la cible (qui peut ne pas être un dépôt versionné).
+- **Linux portability**: not validated. An attempt to run in an "e2e-runner"-type container failed for lack of a downloaded Node image; only a macOS run has been verified end to end for this document. Treat Linux as untested until an explicit validation has been done.
+- **Full automation**: this installation copies files and invokes `pi install`, it does not configure model authentication (handled by `pi` itself, never by an export from this repo) nor declared-but-unbundled external dependencies (`skills/cli-code-skills` above).
+- **Recovery**: in case of a problem, restore from the `<target>.backup-<timestamp>/` backup created by the installer, never via a `git checkout`/`jj restore` of the target (which may not be a versioned repo).

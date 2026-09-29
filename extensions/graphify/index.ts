@@ -26,16 +26,16 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     await reset();
     if (process.env.PI_GRAPHIFY_AUTO === "0") return;
-    ctx.ui.setStatus("graphify", "Indexation AST en arrière-plan…");
+    ctx.ui.setStatus("graphify", "AST indexing in background…");
     automatic.start(
       async (signal) => {
         const root = await pickRoot(ctx, signal);
         return root ? projectGraph(root, "overview", "", signal) : undefined;
       },
-      (result) => ctx.ui.setStatus("graphify", result ? `Graphify prêt : ${result.root}` : undefined),
+      (result) => ctx.ui.setStatus("graphify", result ? `Graphify ready: ${result.root}` : undefined),
       (error) => {
         ctx.ui.setStatus("graphify", undefined);
-        ctx.ui.notify(`Indexation automatique indisponible : ${error instanceof Error ? error.message : String(error)}. /graphify permet de réessayer.`, "warning");
+        ctx.ui.notify(`Automatic indexing unavailable: ${error instanceof Error ? error.message : String(error)}. /graphify allows retrying.`, "warning");
       },
     );
   });
@@ -49,36 +49,36 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => { await Promise.all([tasks.close(), automatic.close()]); });
   pi.registerTool({
     name: "project_graph",
-    label: "Carte du projet (Graphify)",
-    description: "Indexation automatique en début de session Git/jj ; cet outil rafraîchit la carte via AST local, puis montre les symboles centraux ou les relations d'un symbole. Aucun appel LLM supplémentaire. Cache extérieur au dépôt, séparé par worktree. Respecte les ignores Graphify/Git.",
-    promptSnippet: "Carte AST du projet Git/jj : symboles, appels et impacts.",
-    promptGuidelines: ["Pour explorer un projet, project_graph peut cibler les lectures ; vérifier les sources avant de modifier. Ce graphe est incomplet et ne remplace pas les tests."],
+    label: "Project map (Graphify)",
+    description: "Automatic indexing at the start of a Git/jj session; this tool refreshes the map via local AST, then shows central symbols or a symbol's relations. No extra LLM call. Cache outside the repository, separated per worktree. Respects Graphify/Git ignores.",
+    promptSnippet: "AST map of the Git/jj project: symbols, calls and impacts.",
+    promptGuidelines: ["To explore a project, project_graph can target reads; verify sources before modifying. This graph is incomplete and does not replace tests."],
     parameters: Type.Object({
       action: Type.Union([Type.Literal("overview"), Type.Literal("explain"), Type.Literal("affected")]),
-      symbol: Type.Optional(Type.String({ description: "Symbole requis pour explain/affected." })),
+      symbol: Type.Optional(Type.String({ description: "Symbol required for explain/affected." })),
     }),
     execute: async (_id, params, signal, _update, ctx) => {
       const result = await tasks.run(async (owned) => {
         await automatic.wait();
         owned.throwIfAborted();
         const root = await pickRoot(ctx, owned);
-        if (!root) throw new Error("Aucune racine autorisée : indexation annulée.");
+        if (!root) throw new Error("No authorized root: indexing canceled.");
         return projectGraph(root, params.action, params.symbol, owned);
       }, signal);
       return { content: [{ type: "text", text: result.text }], details: { root: result.root, graph: result.graph } };
     },
   });
   pi.registerCommand("graphify", {
-    description: "Indexe la racine Git/jj (AST local). /graphify [symbole à expliquer]",
+    description: "Indexes the Git/jj root (local AST). /graphify [symbol to explain]",
     handler: async (args, ctx) => {
-      ctx.ui.setStatus("graphify", "Indexation AST locale…");
+      ctx.ui.setStatus("graphify", "Local AST indexing…");
       try {
         const symbol = args.trim();
         const result = await tasks.run(async (owned) => {
           await automatic.wait();
           owned.throwIfAborted();
           const root = await pickRoot(ctx, owned);
-          if (!root) throw new Error("Aucune racine autorisée : indexation annulée.");
+          if (!root) throw new Error("No authorized root: indexing canceled.");
           return projectGraph(root, symbol ? "explain" : "overview", symbol, owned);
         }, ctx.signal);
         ctx.ui.notify(result.text, "info");

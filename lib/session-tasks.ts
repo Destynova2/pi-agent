@@ -1,4 +1,4 @@
-/** Propriété des opérations d'une session, y compris les commandes sans ctx.signal. */
+/** Ownership of a session's operations, including commands without ctx.signal. */
 export class SessionTasks {
   private readonly controller = new AbortController();
   private readonly pending = new Set<Promise<unknown>>();

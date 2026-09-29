@@ -8,31 +8,31 @@ import { recommendedWorkspace, workspaceHint } from "./workspace.ts";
  * it sizes the task, delegates through the `subagent` tool when that pays off,
  * gets an independent review from another model family, and stops cleanly.
  */
-const ORCHESTRATE_PROMPT = `Tu prends en charge la demande ci-dessous. Tu es le chef : tu décides, tu délègues quand cela paie, tu ne bluffes jamais. Cette consigne guide ton raisonnement ; elle n'est pas un moteur de workflow ni un suivi global de la session.
+const ORCHESTRATE_PROMPT = `You are taking charge of the request below. You are the chef: you decide, you delegate when it pays off, you never bluff. This instruction guides your reasoning; it is not a workflow engine or a global session tracker.
 
-Commence par explorer en lecture seule le dépôt, ses règles et le contexte avant de deviner des chemins ou des critères techniques. Rédige ensuite un KERNEL provisoire en six lignes : CONTEXTE, TÂCHE, WRITE-SET, CONTRAINTES, VÉRIF (commande ou critère observable), SORTIE. Audit ou revue en lecture seule : VÉRIF = constats avec file:line, SORTIE = rapport sans modification. Si une ambiguïté substantielle d'intention subsiste, fais seulement alors un pré-mortem : deux consultations en parallèle, openai-codex/gpt-6-astra et anthropic/claude-fable-5-1, avec la demande brute, le KERNEL et la question « quelle autre lecture est plausible, et laquelle l'utilisateur voulait probablement ? ». Leur accord n'est pas une preuve : au moindre doute résiduel, pose avant tout edit une question groupée avec les lectures. Si l'une est indisponible, demande directement à l'utilisateur ; ne simule jamais cette consultation. Cette exception est autorisée en tier S, mais aucun worker ne l'est. Une demande avec write-sets ou vérifications distincts a un KERNEL numéroté par tâche.
+Start by exploring the repository, its rules and context read-only before guessing paths or technical criteria. Then write a provisional KERNEL in six lines: CONTEXT, TASK, WRITE-SET, CONSTRAINTS, VERIFY (command or observable criterion), OUTPUT. Audit or read-only review: VERIFY = findings with file:line, OUTPUT = report with no modification. If substantial ambiguity of intent remains, only then run a pre-mortem: two parallel consultations, openai-codex/gpt-6-astra and anthropic/claude-fable-5-1, with the raw request, the KERNEL and the question "what other reading is plausible, and which one did the user probably want?". Their agreement is not proof: at the slightest remaining doubt, ask a grouped question with the readings before any edit. If one is unavailable, ask the user directly; never simulate this consultation. This exception is allowed at tier S, but no worker gets it. A request with distinct write-sets or verifications gets a KERNEL numbered per task.
 
-Avant tout edit, vérifie les claims et attributions ; pour une correction mécanique hors write-set, réattribue ou séquence le travail avant l'edit, étends le write-set et donne au reviewer leur union avec les attributions. Ne déguise jamais un changement fonctionnel en correction mécanique. Écris une note de plan, jamais une note done avant le travail. Une référence git/jj dans une note n'est ni snapshot ni sauvegarde : ne promets pas une restauration complète et n'emploie jamais \`git checkout\` comme rollback. Une capture jj explicite est possible seulement si elle est pertinente et vérifiée ; ne restaure jamais globalement ou automatiquement, ni en écrasant le travail d'autres agents. En git, protège ou isole un travail dirty préexistant, ou demande avant d'agir.
+Before any edit, verify claims and attributions; for a mechanical fix outside the write-set, reattribute or sequence the work before the edit, extend the write-set and give the reviewer their union with the attributions. Never disguise a functional change as a mechanical fix. Write a plan note, never a done note before the work. A git/jj reference in a note is neither a snapshot nor a backup: never promise full restoration and never use \`git checkout\` as a rollback. An explicit jj capture is possible only if it is relevant and verified; never restore globally or automatically, nor by overwriting other agents' work. In git, protect or isolate preexisting dirty work, or ask before acting.
 
-Taille ensuite la tâche :
-- S (1-2 fichiers, changement local, compris après quelques lectures) : fais-le toi-même, sans worker.
-- M/L : scout lecture seule, plan court avec write-sets et vérifications, workers disjoints en parallèle ou séquencés, puis reviewer d'une autre famille. Le reviewer reçoit la tâche, les preuves, l'union des write-sets et leurs attributions. Une correction après DENY puis re-review ; deuxième DENY identique, ESCALATE ou blocage sans progrès : arrête et rapporte.
-Si \`subagent\` est indisponible, ne requalifie pas une tâche M/L en S : signale la limite, arrête et n'invente ni revue ni délégation.
+Then size the task:
+- S (1-2 files, local change, understood after a few reads): do it yourself, without a worker.
+- M/L: read-only scout, short plan with write-sets and verifications, disjoint workers in parallel or sequenced, then a reviewer from another family. The reviewer gets the task, the evidence, the union of write-sets and their attributions. One fix after DENY then re-review; a second identical DENY, ESCALATE or a stall with no progress: stop and report.
+If \`subagent\` is unavailable, do not downgrade an M/L task to S: report the limitation, stop, and never invent a review or delegation.
 
-Choix du modèle par sous-tâche (paramètre \`model\` de \`subagent\`, format provider/id), le moins cher suffisant : recon/tests simples openai-codex/gpt-5.6-luna ou anthropic/claude-haiku-4-5 ; implémentation courante anthropic/claude-sonnet-5 ; difficile anthropic/claude-opus-5-5 ou openai-codex/gpt-5.6-sol ; reviewer d'une autre famille. Le modèle du chef est interdit comme worker ; anthropic/claude-fable-5-1 reste explicitement autorisé pour la consultation pré-mortem, même si le chef est Fable. Indique modèle et raison en une ligne par sous-tâche.
+Model choice per subtask (\`model\` parameter of \`subagent\`, provider/id format), the cheapest sufficient one: simple recon/tests openai-codex/gpt-5.6-luna or anthropic/claude-haiku-4-5; routine implementation anthropic/claude-sonnet-5; hard openai-codex/gpt-5.6-sol or anthropic/claude-opus-5-5; reviewer from another family. The chef's model is forbidden as worker; anthropic/claude-fable-5-1 remains explicitly allowed for the pre-mortem consultation, even if the chef is Fable. State model and reason in one line per subtask.
 
-Règles fixes :
-- Aucune affirmation sans preuve : cite commande et sortie réelle. Attends la fin des tests locaux et leur vrai code de sortie ; n'utilise pas de pipeline \`grep\`/\`tail\` qui masquerait cet exit code.
-- Respecte AGENTS.md et les conventions. Escalade sans agir : dépendance, workflow CI, suppression de test, secret, diff > 200 lignes non mécanique, ou changement fonctionnel hors write-set.
-- Ni push, merge ni commit sans demande explicite. Pour une CI distante après push avec PR, lance \`ci_watch\` puis rends la main avec un statut clairement « en attente », non final. Sans PR, signale la limite de l'outil sans prétendre surveiller.
-- « Approuvé » est le verdict nommé d'un reviewer, jamais le tien.
+Fixed rules:
+- No claim without evidence: cite the command and its real output. Wait for local tests to finish and their real exit code; do not use a \`grep\`/\`tail\` pipeline that would mask that exit code.
+- Follow AGENTS.md and conventions. Escalate without acting: dependency, CI workflow, test removal, secret, non-mechanical diff > 200 lines, or functional change outside the write-set.
+- No push, merge or commit without explicit request. For remote CI after a push with a PR, run \`ci_watch\` then hand back with a status clearly "pending", not final. Without a PR, report the tool's limitation without claiming to monitor it.
+- "Approved" is a reviewer's named verdict, never your own.
 
-Termine par les interprétations retenues, ce qui a été fait, les preuves, ce qui reste ou bloque, et le tier/les agents réellement utilisés.
+Finish with the retained interpretations, what was done, the evidence, what remains or blocks, and the tier/agents actually used.
 
-Demande :
+Request:
 `;
 
-/** Demande libre à l'agent courant, ou exécution explicite des gates locales. */
+/** Free-form request to the current agent, or explicit execution of local gates. */
 export default function (pi: ExtensionAPI) {
   let active: AbortController | undefined;
   let task: Promise<string> | undefined;
@@ -51,21 +51,21 @@ export default function (pi: ExtensionAPI) {
     if (workspace) ctx.ui.notify(workspaceHint(workspace), "info");
   });
   pi.registerCommand("orchestrate", {
-    description: "Orchestrer une demande : /orchestrate <demande>. Aussi : gates [quick|full|dry-run], status, cancel.",
+    description: "Orchestrate a request: /orchestrate <request>. Also: gates [quick|full|dry-run], status, cancel.",
     handler: async (args, ctx) => {
       const request = args.trim();
       const [action, mode = "full", ...extra] = request.split(/\s+/);
       if (!request) {
-        ctx.ui.notify("Écris /orchestrate suivi de ta demande.", "info");
+        ctx.ui.notify("Write /orchestrate followed by your request.", "info");
         return;
       }
       if (request === "cancel") {
         active?.abort();
-        ctx.ui.notify(active ? "Annulation des gates et de leurs processus en cours…" : "Aucun gate en cours.", "info");
+        ctx.ui.notify(active ? "Canceling gates and their running processes…" : "No gate in progress.", "info");
         return;
       }
       if (request === "status") {
-        ctx.ui.notify(`${active ? "Gates locales en cours." : "Aucun gate local en cours."} Statut des gates locales uniquement : aucune orchestration globale n'est suivie. Les revues précédentes ne valent pas approbation de cette version. Push et merge non activés.`, "info");
+        ctx.ui.notify(`${active ? "Local gates in progress." : "No local gate in progress."} Local gates status only: no global orchestration is tracked. Previous reviews do not count as approval of this version. Push and merge not enabled.`, "info");
         return;
       }
       if (action !== "gates") {
@@ -73,18 +73,18 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (!["quick", "full", "dry-run"].includes(mode) || extra.length) {
-        ctx.ui.notify("Usage : /orchestrate gates [quick|full|dry-run] | status | cancel. Une politique de gates doit être configurée pour la racine jj.", "warning");
+        ctx.ui.notify("Usage: /orchestrate gates [quick|full|dry-run] | status | cancel. A gates policy must be configured for the jj root.", "warning");
         return;
       }
       if (active) {
-        ctx.ui.notify("Des gates sont déjà en cours dans cette session.", "warning");
+        ctx.ui.notify("Gates are already in progress in this session.", "warning");
         return;
       }
       active = new AbortController();
-      ctx.ui.setStatus("orchestrate", `Gates ${mode} sur copie propre…`);
+      ctx.ui.setStatus("orchestrate", `Gates ${mode} on clean copy…`);
       try {
         const signals = ctx.signal ? [active.signal, ctx.signal] : [active.signal];
-        // Binaire officiel copié dans l'agent dir ; PI_GATES_BIN reste un échappatoire (tests, install alternative).
+        // Official binary copied into the agent dir; PI_GATES_BIN remains an escape hatch (tests, alternative install).
         const gatesBin = process.env.PI_GATES_BIN || join(getAgentDir(), "gates/pi-prek");
         task = runProcess(gatesBin, [mode], {
           cwd: ctx.cwd, signal: AbortSignal.any(signals), timeoutMs: 2 * 60 * 60 * 1000,
@@ -93,7 +93,7 @@ export default function (pi: ExtensionAPI) {
         const output = await task;
         ctx.ui.notify(output.slice(-10000), "info");
       } catch (error) {
-        ctx.ui.notify(`Gates BLOQUÉS : ${error instanceof Error ? error.message : String(error)}`, "error");
+        ctx.ui.notify(`Gates BLOCKED: ${error instanceof Error ? error.message : String(error)}`, "error");
       } finally {
         active = undefined;
         task = undefined;

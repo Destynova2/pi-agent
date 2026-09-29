@@ -5,30 +5,30 @@ import { delimiter, join } from "node:path";
 import { findPiPackageJson, EXPECTED_PACKAGE_NAME } from "./resolve-pi.mjs";
 import { makeTmpDir } from "./fixtures/build.mjs";
 
-test("PI_PACKAGE_JSON : accepté seulement si le nom du paquet correspond", async () => {
+test("PI_PACKAGE_JSON: accepted only if the package name matches", async () => {
   const dir = await makeTmpDir("pi-agent-resolve-");
   const good = join(dir, "good.json");
   const bad = join(dir, "bad.json");
   const malformed = join(dir, "malformed.json");
   await writeFile(good, JSON.stringify({ name: EXPECTED_PACKAGE_NAME, main: "./index.js" }));
-  await writeFile(bad, JSON.stringify({ name: "npm:un-autre-paquet", main: "./index.js" }));
-  await writeFile(malformed, "{ pas du json");
+  await writeFile(bad, JSON.stringify({ name: "npm:some-other-package", main: "./index.js" }));
+  await writeFile(malformed, "{ not json");
   try {
     assert.equal(findPiPackageJson({ PI_PACKAGE_JSON: good }), good);
-    assert.equal(findPiPackageJson({ PI_PACKAGE_JSON: bad }), undefined, "nom de paquet non validé => refusé");
-    assert.equal(findPiPackageJson({ PI_PACKAGE_JSON: malformed }), undefined, "JSON invalide => refusé, pas d'exception");
+    assert.equal(findPiPackageJson({ PI_PACKAGE_JSON: bad }), undefined, "unvalidated package name => refused");
+    assert.equal(findPiPackageJson({ PI_PACKAGE_JSON: malformed }), undefined, "invalid JSON => refused, no exception");
     assert.equal(findPiPackageJson({ PI_PACKAGE_JSON: join(dir, "absent.json") }), undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("recherche sur PATH : ignore un exécutable dont le package.json le plus proche n'est pas Pi", async () => {
+test("PATH lookup: ignores an executable whose closest package.json is not Pi", async () => {
   const binDir = await makeTmpDir("pi-agent-resolve-bin-");
   const piPath = join(binDir, "pi");
   await writeFile(piPath, "#!/bin/sh\nexit 0\n");
   await chmod(piPath, 0o755);
-  await writeFile(join(binDir, "package.json"), JSON.stringify({ name: "npm:pas-pi" }));
+  await writeFile(join(binDir, "package.json"), JSON.stringify({ name: "npm:not-pi" }));
   try {
     assert.equal(findPiPackageJson({ PATH: binDir }), undefined);
   } finally {
@@ -36,7 +36,7 @@ test("recherche sur PATH : ignore un exécutable dont le package.json le plus pr
   }
 });
 
-test("recherche sur PATH : trouve le package.json Pi en remontant depuis le binaire", async () => {
+test("PATH lookup: finds Pi's package.json by walking up from the binary", async () => {
   const root = await makeTmpDir("pi-agent-resolve-pkg-");
   await mkdir(join(root, "bin"), { recursive: true });
   await writeFile(join(root, "package.json"), JSON.stringify({ name: EXPECTED_PACKAGE_NAME, main: "./index.js" }));
@@ -51,6 +51,6 @@ test("recherche sur PATH : trouve le package.json Pi en remontant depuis le bina
   }
 });
 
-test("PATH vide ou pi absent : aucun package.json trouvé", async () => {
+test("empty PATH or missing pi: no package.json found", async () => {
   assert.equal(findPiPackageJson({ PATH: "" }), undefined);
 });

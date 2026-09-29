@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Config pi versionnée : installeur portable, doctor, tests. Stdlib Node uniquement.",
+  "description": "Versioned pi config: portable installer, doctor, tests. Node stdlib only.",
   "engines": {
     "node": ">=22.19"
   },

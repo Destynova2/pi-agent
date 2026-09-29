@@ -1,6 +1,6 @@
 import { SessionTasks } from "../../lib/session-tasks.ts";
 
-/** Une indexation en arrière-plan par session, annulable avant toute transition. */
+/** One background indexing task per session, cancelable before any transition. */
 export class AutomaticIndex<T> {
   private tasks = new SessionTasks();
   private pending: Promise<T> | undefined;

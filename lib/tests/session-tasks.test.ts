@@ -17,7 +17,7 @@ test("fermeture de session : annuler et attendre les nettoyages concurrents", as
   await assert.rejects(tasks.run(work));
 });
 
-test("signal externe déjà annulé : ne lancer aucune opération", async () => {
+test("external signal already aborted: never start an operation", async () => {
   const tasks = new SessionTasks();
   const controller = new AbortController();
   controller.abort();

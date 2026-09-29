@@ -4,7 +4,7 @@ import { NoProjectError, projectRoot } from "./core.ts";
 
 const excluded = new Set([".git", ".jj", "node_modules", "target", ".venv", "__pycache__", ".cache"]);
 
-/** Ne suit aucun symlink ni les métadonnées/caches techniques. Limites explicites. */
+/** Follows no symlinks or technical metadata/caches. Explicit limits. */
 export async function nestedRepositories(root: string, signal?: AbortSignal, maxDirectories = 2000, maxDepth = 8) {
   const queue = [{ directory: root, depth: 0 }];
   const roots: string[] = [];
@@ -38,7 +38,7 @@ export async function nestedRepositories(root: string, signal?: AbortSignal, max
 
 export type ChooseRoot = (title: string, choices: string[], signal?: AbortSignal) => Promise<string | undefined>;
 
-/** Toute extension du périmètre détectée redemande un accord, même dans la session. */
+/** Any detected scope extension re-requests approval, even within the session. */
 export async function chooseIndexRoot(cwd: string, approved: Set<string>, choose?: ChooseRoot, signal?: AbortSignal): Promise<string | undefined> {
   let base: string;
   let isRepository = true;
@@ -53,19 +53,19 @@ export async function chooseIndexRoot(cwd: string, approved: Set<string>, choose
     if (!found.roots.length && !found.incomplete) return isRepository ? base : undefined;
     const signature = JSON.stringify([base, found.roots, found.incomplete]);
     if (isRepository && approved.has(signature) && !found.incomplete) return base;
-    if (!choose) throw new Error(`Confirmation requise : dépôts imbriqués ou exploration incomplète dans ${base}. Ouvre /graphify en mode interactif.`);
-    const current = `Indexer la racine ${base} (sous-dépôts potentiellement inclus)`;
+    if (!choose) throw new Error(`Confirmation required: nested repositories or incomplete exploration in ${base}. Open /graphify in interactive mode.`);
+    const current = `Index root ${base} (sub-repositories potentially included)`;
     const candidates = found.roots.slice(0, 40);
-    const choices = ["Ne pas indexer", ...(isRepository ? [current] : []), ...candidates.map((root) => `Choisir ${root}`)];
-    const warning = found.incomplete ? " — exploration partielle, d’autres dépôts peuvent exister" : "";
-    const selected = await choose(`${found.roots.length} dépôt(s) imbriqué(s) dans ${base}${warning}. ${found.roots.length > 40 ? '40 premiers proposés. ' : ''}Quelle racine cartographier ?`, choices, signal);
+    const choices = ["Do not index", ...(isRepository ? [current] : []), ...candidates.map((root) => `Choose ${root}`)];
+    const warning = found.incomplete ? " — partial exploration, other repositories may exist" : "";
+    const selected = await choose(`${found.roots.length} nested repositor${found.roots.length === 1 ? 'y' : 'ies'} in ${base}${warning}. ${found.roots.length > 40 ? 'First 40 proposed. ' : ''}Which root to map?`, choices, signal);
     signal?.throwIfAborted();
     if (isRepository && selected === current) { approved.add(signature); return base; }
-    const target = candidates.find((root) => selected === `Choisir ${root}`);
+    const target = candidates.find((root) => selected === `Choose ${root}`);
     if (!target) return undefined;
-    if (await projectRoot(target, signal) !== target) throw new Error(`Marqueur Git/jj non valide dans ${target} : aucun repli vers le dépôt parent.`);
+    if (await projectRoot(target, signal) !== target) throw new Error(`Invalid Git/jj marker in ${target}: no fallback to the parent repository.`);
     base = target;
     isRepository = true;
   }
-  throw new Error("Trop de niveaux de dépôts imbriqués : ouvrir directement le projet souhaité.");
+  throw new Error("Too many levels of nested repositories: open the desired project directly.");
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Diagnostic d'environnement pour un répertoire agent pi. Stdlib Node uniquement.
-// Ne lit ni n'affiche jamais le contenu de auth.json : présence de secrets non validée ici.
+// Environment diagnostic for a pi agent directory. Node stdlib only.
+// Never reads or displays the content of auth.json: presence of secrets is not validated here.
 import { access, constants as fsConstants, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -23,7 +23,7 @@ async function checkNodeVersion() {
     const pkg = JSON.parse(await readFile(join(SCRIPT_DIR, "..", "package.json"), "utf8"));
     if (pkg.engines?.node) required = pkg.engines.node;
   } catch {
-    // package.json manquant ou invalide : on garde le défaut annoncé
+    // package.json missing or invalid: keep the announced default
   }
   const match = /(\d+)\.(\d+)/.exec(required);
   const minMajor = match ? Number(match[1]) : 22;
@@ -48,13 +48,13 @@ async function checkBundledTool(target, relPath) {
     await access(p, fsConstants.X_OK);
     return { name: relPath, required: false, ok: true };
   } catch {
-    return { name: relPath, required: false, ok: false, detail: `absent ou non exécutable (${p})` };
+    return { name: relPath, required: false, ok: false, detail: `missing or not executable (${p})` };
   }
 }
 
 /**
- * Exécute les vérifications d'environnement. `strict: true` fait échouer aussi les
- * outils optionnels manquants ; par défaut ils ne produisent qu'un avertissement.
+ * Runs the environment checks. `strict: true` also fails on missing
+ * optional tools; by default they only produce a warning.
  */
 export async function runDoctor({ target, strict = false, env = process.env } = {}) {
   const resolvedTarget = resolve(target ?? defaultTarget(env));
@@ -86,31 +86,31 @@ function parseArgs(argv) {
     if (arg === "--target") out.target = argv[++i];
     else if (arg === "--strict") out.strict = true;
     else if (arg === "-h" || arg === "--help") out.help = true;
-    else throw new Error(`option inconnue : ${arg}`);
+    else throw new Error(`unknown option: ${arg}`);
   }
   return out;
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/doctor.mjs [--target <chemin>] [--strict]
+  console.log(`Usage: node scripts/doctor.mjs [--target <path>] [--strict]
 
-  --target <chemin>   Répertoire agent à diagnostiquer (défaut: $PI_CODING_AGENT_DIR ou ~/.pi/agent)
-  --strict            Échoue aussi si un outil optionnel manque
+  --target <path>     Agent directory to diagnose (default: $PI_CODING_AGENT_DIR or ~/.pi/agent)
+  --strict            Also fail if an optional tool is missing
 `);
 }
 
 function printReport(result) {
-  console.log(`doctor: cible ${result.target}`);
+  console.log(`doctor: target ${result.target}`);
   for (const r of result.results) {
-    const label = r.required ? "requis  " : "optionnel";
-    const status = r.ok ? "ok" : "manquant";
-    console.log(`  [${status === "ok" ? "OK" : "!!"}] ${label} ${r.name} : ${status}${r.detail ? ` (${r.detail})` : ""}`);
+    const label = r.required ? "required " : "optional";
+    const status = r.ok ? "ok" : "missing";
+    console.log(`  [${status === "ok" ? "OK" : "!!"}] ${label} ${r.name}: ${status}${r.detail ? ` (${r.detail})` : ""}`);
   }
   if (result.missingRequired.length > 0) {
-    console.error(`doctor: outils requis manquants : ${result.missingRequired.map((r) => r.name).join(", ")}`);
+    console.error(`doctor: missing required tools: ${result.missingRequired.map((r) => r.name).join(", ")}`);
   }
   if (result.missingOptional.length > 0) {
-    console.log(`doctor: outils optionnels manquants : ${result.missingOptional.map((r) => r.name).join(", ")}${result.strict ? " (échec en mode --strict)" : ""}`);
+    console.log(`doctor: missing optional tools: ${result.missingOptional.map((r) => r.name).join(", ")}${result.strict ? " (fails in --strict mode)" : ""}`);
   }
 }
 

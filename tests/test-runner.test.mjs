@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { collectTests, shouldBootstrap } from "../scripts/test.mjs";
 import { makeTmpDir } from "./fixtures/build.mjs";
 
-test("collecte les .test.ts et .test.mjs hors vendor, exclut les .integration.test.* par défaut", async () => {
+test("collects .test.ts and .test.mjs outside vendor, excludes .integration.test.* by default", async () => {
   const root = await makeTmpDir("pi-agent-testrunner-");
   await mkdir(join(root, "sub", "node_modules"), { recursive: true });
   await writeFile(join(root, "a.test.mjs"), "");
@@ -28,15 +28,15 @@ test("collecte les .test.ts et .test.mjs hors vendor, exclut les .integration.te
     assert.deepEqual(
       all.map((f) => f.replace(`${root}/`, "")).sort(),
       ["a.test.mjs", "sub/b.test.ts", "sub/c.integration.test.mjs"],
-      "--integration exécute la suite ENTIÈRE, rien n'est exclu ni filtré",
+      "--integration runs the ENTIRE suite, nothing is excluded or filtered",
     );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("shouldBootstrap : dépôt réel par défaut, jamais une fixture sans le demander explicitement", () => {
-  assert.equal(shouldBootstrap({}), true, "pas de --dir => dépôt réel => bootstrap");
-  assert.equal(shouldBootstrap({ dir: "/tmp/fixture" }), false, "--dir sans --bootstrap => pas de bootstrap");
-  assert.equal(shouldBootstrap({ dir: "/tmp/fixture", bootstrap: true }), true, "--dir --bootstrap => explicite, autorisé");
+test("shouldBootstrap: real repo by default, never a fixture without asking explicitly", () => {
+  assert.equal(shouldBootstrap({}), true, "no --dir => real repo => bootstrap");
+  assert.equal(shouldBootstrap({ dir: "/tmp/fixture" }), false, "--dir without --bootstrap => no bootstrap");
+  assert.equal(shouldBootstrap({ dir: "/tmp/fixture", bootstrap: true }), true, "--dir --bootstrap => explicit, allowed");
 });
