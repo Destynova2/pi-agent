@@ -16,8 +16,10 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 
 | What | How |
 |---|---|
-| Delegate an end-to-end task | `/orchestrate <request>`: effort scales with risk; direct work or bounded scout / worker / reviewer delegation |
-| Delegate a subtask | `subagent` tool with `agent: scout\|worker\|reviewer` |
+| Adapt delegation automatically | Ask normally: work starts direct and splits when useful; `/orchestrate <request>` remains optional |
+| Delegate or resume a subtask | `subagent` with `agent: scout\|worker\|reviewer`; reuse the returned `resume` ID for a follow-up |
+| Inspect tool permissions | `/tool-policy`: startup allow/ask/deny rules; shell and unknown tools ask by default |
+| Inspect Git without general shell access | `git_inspect`: status, diff, log or files |
 | Note a decision without a model turn | `/btw decision <text>` (kinds: plan, decision, done, blocker, lesson, claim) |
 | Talk to another project agent | `/btw [@agent] <text>`: routed by @name, otherwise by claimed path, otherwise broadcast; delivered on its next turn or between tool calls if it's running |
 | Find an old prompt | `ctrl+r` |
@@ -27,7 +29,9 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 
 Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts.
 
-See [Orchestration on large projects](docs/ORCHESTRATION.md) for checkpoints, context limits, recoverable reports and what the harness does not enforce.
+See [Orchestration on large projects](docs/ORCHESTRATION.md) for adaptive splitting, native session resumption, permissions and limits. Headless workers cannot approve shell commands under the default policy; the parent must perform those approved checks. Tool authorization is not an OS sandbox.
+
+See [Latency and context](docs/PERFORMANCE.md) for measured startup/context costs, Jcode comparisons, and native batching of queued follow-ups.
 
 ## Contents
 
@@ -37,7 +41,9 @@ keybindings.json     ctrl+r freed for prompt search
 agents/              scout, worker, reviewer (sub-agent prompts)
 extensions/
   orchestrate/       /orchestrate and the chef prompt; gates via gates/pi-prek
-  subagent/          subagent tool (single, parallel, chain)
+  subagent/          bounded single/parallel/chain delegation and native session resume
+  tool-policy/       pre-execution authorization, /tool-policy
+  git-inspect/       fixed-argument Git inspection
   notes.ts           SQLite memory, /btw, ctrl+r, inter-agent inbox
   ci-watch/          ci_watch tool
   graphify/          project_graph tool

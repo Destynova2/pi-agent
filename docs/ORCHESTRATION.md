@@ -1,16 +1,17 @@
 # Orchestration on large projects
 
-For maintainers using `/orchestrate` and the `subagent` tool. These are bounded delegations, not an autonomous project scheduler.
+Ordinary requests now receive adaptive delegation guidance when the root agent has the `subagent` tool. `/orchestrate` remains an explicit shortcut. These are bounded delegations, not an autonomous project scheduler.
 
 ## Working method
 
-- Keep simple tasks direct. For larger work, preserve the original objective and split it into independently verifiable slices.
+- Start direct for simple or tightly coupled tasks. Split progressively when a useful subtask has a clear boundary, independent write-set or independent-review purpose. Keep coupled edits together/sequential and consolidate when coordination costs outweigh the benefit.
+- The model chooses the split from the request and observed code, without an extra planner call, fixed agent counts or file-count thresholds. This is automatic guidance, not a deterministic router or a guarantee of an optimal split.
 - Give each worker the goal, relevant paths, allowed changes, constraints and acceptance check. Children have isolated context: they do not inherit the caller's conversation.
 - Use disjoint write-sets or run dependent edits sequentially. The write-set remains an instruction, not a filesystem sandbox.
 - Record checkpoints in shared notes: completed slice, files, check command and exit code, remaining requirements, blockers, next step. Re-read the worktree when resuming; notes are not proof or snapshots.
 - Review the combined diff and run integration checks before claiming the full task is complete. Per-worker success does not establish cross-module correctness.
 
-Scout and reviewer can read `note_list`; they cannot call `note_add`. The notes extension only advertises note tools that are actually active. Their read-only policy is not an OS sandbox: they still have `bash` for inspection.
+Scout and reviewer can read `note_list`; they cannot call `note_add` and no longer receive general `bash`. They use `git_inspect` for fixed-argument status, diffs, file lists and recent commits. Its helper-disabling flags and tests reduce Git configuration hazards; this is not an OS sandbox. Git must support `--no-lazy-fetch` (tested with 2.55.0); older versions fail explicitly rather than silently ignoring the protection. The notes extension only advertises tools that are active.
 
 ## Runtime limits and handoffs
 
@@ -33,17 +34,59 @@ A failed chain stops before starting its next step. A parallel result is marked 
 
 ## Retained artifacts
 
-Each started run has a private directory under `<agent-dir>/subagent-runs/run-*`:
+Each child has a private directory under `<agent-dir>/subagent-runs/run-*`:
 
-- `task.md`: complete task text;
-- `report.md`: final answer, or failure and partial answer;
-- `trace.jsonl`: stdout events received before completion or the output limit.
+- `session.jsonl`: the native Pi session, including finalized context and compaction entries;
+- `owner.json`: parent session, role, working directory and capability ceiling;
+- `active.lock`: exclusive invocation lock, removed after supervised cleanup;
+- `attempt-*/task.md`, `report.md`, `trace.jsonl`: separate task, answer and stdout artifacts for each invocation.
 
-Reports and traces are returned as readable paths after the child stops, including on process failure. New run directories use mode 0700 and files mode 0600. A trace is diagnostic data, **not** a resumable Pi session or a backup of edited files. If saving a report fails, the run is reported as failed rather than advertising a nonexistent report.
+Reports and traces are returned as readable paths after the child stops, including on process failure. New run directories use mode 0700 and files mode 0600. A trace is diagnostic data, **not** a resumable session or a backup of edited files. Only the separate native `session.jsonl` supplies resumed context. If saving a report fails, the run is reported as failed rather than advertising a nonexistent report.
 
 These files can contain source code, prompts, tool output or sensitive data. They are outside the project, are not uploaded by this feature, and have no automatic retention policy. Review and remove completed run directories manually when no longer needed; never delete a live run. Disk usage grows with retained runs.
 
 The deadline and process supervision target Linux/macOS. Process groups do not sandbox commands or reliably contain a descendant that deliberately creates a new session; existing gate runners supervise their own hook groups.
+
+## Resume a child
+
+Pass the returned `Resume: run-XXXXXX` value in `resume` alongside `agent` and the next `task`. Single calls and individual parallel/chain items accept it. The same parent Pi session, agent file/name and canonical working directory are required. If the original call set `cwd`, pass that same directory again. Restarting Pi with the same parent session preserves ownership; an unrelated or forked parent does not acquire the child.
+
+Pi opens the existing native session through `--session`; it owns history reconstruction and compaction. No transcript replay engine or automatic retry of tool side effects is added. Each follow-up gets a fresh artifact directory. Another invocation of the same child is rejected while locked. Permissions can only narrow across resumes.
+
+Missing, corrupt, oversized (64 MiB) or incomplete session files are rejected without automatic repair. Current session format support is Pi v3. After a hard supervisor crash, a lock is deliberately not stolen: inspect `active.lock` and processes using that session path, confirm no child remains, back up the run directory, then remove only that stale lock manually. Do not delete a session or lock just to silence an error.
+
+## Tool authorization
+
+`extensions/tool-policy` gates model tool calls before execution, including extension tools. `/tool-policy` shows the startup snapshot and errors. `<agent-dir>/tool-policy.json` is optional, user-owned, never loaded from the project, and not replaced by the installer.
+
+- Built-in defaults allow read/search/list, edit/write, notes, graph inspection, `git_inspect` and `subagent`. Shell, network and other unlisted tools require one-shot human approval.
+- A configured file fully replaces those defaults. Values are `allow`, `ask` or `deny`; `*` supplies the fallback (otherwise `ask`). Invalid files block every model tool; the human command remains available for diagnosis.
+- `ask` without a UI is denied. Parallel confirmations are serialized; refusal, cancellation or an unavailable approval mechanism never becomes permission.
+- Built-in edit/write cannot modify the agent directory, including via existing symlinks or symlinked ancestors. Approved arguments are frozen so later tool-call handlers cannot silently mutate them.
+- Children get the intersection of role tools, current parent-active tools and the parent's startup `allow` rules, minus recursive delegation. `ask` is not inherited as permission. Empty/malformed role lists grant no tools. Project agents always require human approval, even with general Pi project trust; use user-level definitions for headless runs. A model-supplied `confirmProjectAgents: false` cannot bypass this.
+- Child processes ignore project executable resources (`--no-approve`) and explicitly load the policy extension. A resumed child's saved capability ceiling also applies.
+
+For example, a user-authored read-oriented policy:
+
+```json
+{
+  "read": "allow",
+  "grep": "allow",
+  "find": "allow",
+  "ls": "allow",
+  "git_inspect": "allow",
+  "note_list": "allow",
+  "subagent": "allow",
+  "edit": "ask",
+  "write": "ask",
+  "bash": "deny",
+  "*": "ask"
+}
+```
+
+Restart Pi after editing the policy. With defaults, a headless worker cannot run shell-based tests; it must report this and the parent performs the approved checks. Explicitly allowing `bash` in the user policy enables shell-capable workers when the parent/role also permits it, but grants arbitrary shell capabilities. Do not enable it merely to suppress a denial.
+
+This is authorization of model-facing calls, not process isolation. User-started commands, trusted extension internals and allowed shell/custom tools are outside the path guard. Another same-user process can race filesystem checks. A broken or deliberately disabled extension loader cannot enforce this extension. Use a container, VM or OS sandbox for adversarial code and credentials; do not treat scoped tools as a substitute.
 
 ## Sources and independent opinion
 
@@ -55,17 +98,23 @@ Claude Opus 5.5 was consulted through Pi. The consultation recommended reusing t
 
 ### DeepSeek Harness comparison
 
-Compared the public [architecture](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/docs/architecture.md), [subagent contract](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/docs/subsystems/subagent.md) and [tool pipeline](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/docs/tool-execution-pipeline.md) at revision `639ed015`. This comparison followed the changes above; no DeepSeek code or runtime was imported.
+Compared the public [architecture](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/docs/architecture.md), [subagent contract](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/docs/subsystems/subagent.md) and [tool pipeline](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/docs/tool-execution-pipeline.md) at revision `639ed015`. These documents informed the subsequent adaptations; no DeepSeek code or runtime was imported.
 
 | Idea | Status here |
 |---|---|
 | Extend through plugins rather than another agent loop | Already uses Pi extensions and the shared process supervisor; no Cordis layer needed |
 | Explicit cancellation and visible failure | Implemented for delegated runs; not equivalent to DeepSeek's full provider-capability validation |
 | Align instructions with available capabilities | Implemented for notes tools; role restrictions are not a security sandbox |
-| Durable child conversations with cold resume | Not implemented: `--no-session` children leave diagnostic artifacts, not resumable sessions |
-| Authoritative session log and enforced tool guards | Not ported: a stdout trace is not a replay contract, and project gates are not a general tool-authorization pipeline |
+| Durable child conversations with cold resume | Implemented with native Pi sessions, parent ownership and exclusive invocation; no resident-agent/team scheduler |
+| Authoritative session log and enforced tool guards | Pi owns persisted context; this extension adds name-based pre-execution authorization and child capability ceilings, not DeepSeek's whole registry/policy framework |
 
-The useful next candidates are native Pi child-session resumption and enforceable tool-scope checks, if those needs are confirmed. They require their own failure and authorization tests, not more prompt text. This comparison is not a benchmark or a reason to replace Pi's runtime.
+No DeepSeek runtime code was copied. This is not a benchmark or a claim of feature parity.
+
+### Progressive splitting (Model Mitosis analogy)
+
+The user suggested [Model Mitosis: ne plus se tromper entre les microservices et le monolithe](https://www.youtube.com/watch?v=HNQJW5iMZgQ), Julien Topcu and Josian Chevalier, Devoxx France 2024. Its public description discusses evolving software boundaries and splitting models incrementally without unnecessary coupling or scale costs. The transcript was unavailable; no claim of having watched the full talk is made.
+
+The analogy here applies to work decomposition, not service architecture: start cohesive, split only at useful boundaries, then reassess. The automatic root guidance expresses that policy; runtime authorization, concurrency limits and verification remain separate controls.
 
 ## Validation
 
@@ -76,4 +125,4 @@ npm run test:integration
 
 If `pi` on PATH is a shell wrapper, set `PI_PACKAGE_JSON` to the installed `@earendil-works/pi-coding-agent/package.json` when running tests (see the test bootstrap in `tests/resolve-pi.mjs`).
 
-Offline subprocess tests cover large task/file transport, a 1.2 MB UTF-8 report and chain handoff, cancellation, deadlines, signal/nonzero exits, incomplete answers, mixed parallel outcomes, and bounded UI history. Shared-supervisor tests cover streaming, output limits, callback failure and descendant cleanup. These tests establish harness behavior, not end-to-end project completion quality. That requires representative multi-module tasks and observation of the model's actual decisions.
+Offline subprocess tests cover large task/file transport, a 1.2 MB UTF-8 report and chain handoff, cancellation, deadlines, signal/nonzero exits, incomplete answers, mixed parallel outcomes, bounded UI history, native resume ownership/locking/corruption and permission narrowing. Deterministic real-Pi CLI tests verify denied tools never execute, protected paths, downstream argument mutation and the authoritative subagent error flag without network or provider credentials. Git tests use hostile local helpers and a promisor remote sentinel. Shared-supervisor tests cover streaming, output limits, callback failure and descendant cleanup. These tests establish harness behavior, not end-to-end project completion quality. That requires representative multi-module tasks and observation of the model's actual decisions.
