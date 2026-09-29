@@ -50,7 +50,7 @@ class DunstServer {
 	}
 
 	private async spawn(): Promise<void> {
-		const proc = spawn("dunst-mcp", ["serve"], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+		const proc = spawn("dunst-mcp", ["serve"], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DUNST_MCP_ENABLE_APPROVE_TOOL: "1" } });
 		this.proc = proc;
 		proc.on("exit", () => {
 			for (const p of this.pending.values()) p.reject(new Error("dunst-mcp exited"));
