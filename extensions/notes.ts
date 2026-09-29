@@ -46,7 +46,7 @@ function gitRoot(cwd: string): string {
 	}
 }
 
-/** Restore point: jj operation id (`jj op restore <id>`) if the repo uses jj, else git HEAD (`git checkout <sha>`). */
+/** Revision recorded on each note for provenance only, not a restore point: jj operation id (`jj op restore <id>`) if the repo uses jj, else git HEAD (`git checkout <sha>`). */
 function currentRev(root: string): string | undefined {
 	const cmd = fs.existsSync(path.join(root, ".jj")) ? "jj op log --no-graph -n1 -T 'self.id().short(12)'" : "git rev-parse --short=12 HEAD";
 	try {
@@ -139,15 +139,22 @@ export default function notes(pi: ExtensionAPI) {
 		const ask = event.prompt.trim().split("\n")[0]?.slice(0, 200);
 		if (ask) add("ask", ask);
 		const inbox = readInbox();
-		event.systemPromptOptions.sections.shared_notes = [
-			`Shared SQLite memory for agents working on project "${project}" (you are "${agent}").`,
-			"- Start of a non-trivial task: call note_list to see what humans asked other agents (kind=ask, recorded automatically) and what those agents planned, claimed, decided or got blocked on.",
-			"- Before touching a file or area another agent may also touch: note_add kind=claim with the paths. Do not edit a path another agent claimed.",
-			"- Record decisions (kind=decision), completed work (kind=done), blockers (kind=blocker) and reusable lessons (kind=lesson) as one short line each. No status chatter.",
-			"- Every note stores the repo revision at write time, shown as (jj:<op id>) or (git:<sha>) in note_list for reference; it is not a rollback mechanism.",
-			"- Subagents load this same extension and share the same DB; write your plan (kind=plan) before delegating so they can read it.",
-			"- To talk to another agent: note_add kind=msg, body starting with \"@<agent> \" for one agent or plain text for all. Messages arrive at their next turn as an <agent_inbox> message; answer with kind=msg too.",
-		].join("\n");
+		// Only instruct the model to use tools it can actually call: a scout/reviewer run with
+		// --tools excluding note_add (or note_list) must not be told to claim, write or list notes
+		// it has no tool for.
+		const active = pi.getActiveTools();
+		const hasList = active.includes("note_list");
+		const hasAdd = active.includes("note_add");
+		if (hasList || hasAdd) {
+			const lines = [`Shared SQLite memory for agents working on project "${project}" (you are "${agent}").`];
+			if (hasList) lines.push("- Start of a non-trivial task: call note_list to see what humans asked other agents (kind=ask, recorded automatically) and what those agents planned, claimed, decided or got blocked on.");
+			if (hasAdd) lines.push("- Before touching a file or area another agent may also touch: note_add kind=claim with the paths. Do not edit a path another agent claimed.");
+			if (hasAdd) lines.push("- Record decisions (kind=decision), completed work (kind=done), blockers (kind=blocker) and reusable lessons (kind=lesson) as one short line each. No status chatter.");
+			if (hasList) lines.push("- Every note stores the repo revision at write time, shown as (jj:<op id>) or (git:<sha>) in note_list for reference; it is not a rollback mechanism.");
+			if (hasAdd) lines.push("- Subagents load this same extension and share the same DB; write your plan (kind=plan) before delegating so they can read it.");
+			if (hasAdd) lines.push("- To talk to another agent: note_add kind=msg, body starting with \"@<agent> \" for one agent or plain text for all. Messages arrive at their next turn as an <agent_inbox> message; answer with kind=msg too.");
+			event.systemPromptOptions.sections.shared_notes = lines.join("\n");
+		}
 		if (inbox) return { message: { customType: "agent_inbox", content: inbox, display: true } };
 	});
 
