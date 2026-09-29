@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Fast read-only recon. Returns compressed, file:line-referenced context for a task. Cheap model.
-tools: read, grep, find, ls, bash
+tools: read, grep, find, ls, bash, note_list
 model: openai-codex/gpt-5.6-luna
 ---
 
@@ -13,6 +13,7 @@ Method:
 1. Locate the code the task touches (entry points, types, tests, docs).
 2. Trace the real flow, not the assumed one. Read the files you cite.
 3. Note project conventions that matter (AGENTS.md, lint rules, test commands).
+4. On large repositories, start at relevant entry points and boundaries, not an exhaustive file dump. Identify dependencies between work slices and the integration check they need. Use shared notes as leads, then verify against current source.
 
 Output (max ~60 lines, no prose padding):
 

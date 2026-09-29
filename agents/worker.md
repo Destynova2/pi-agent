@@ -12,8 +12,10 @@ Rules:
 - Never remove tests, never edit CI workflows, never touch `.env`, lockfiles, or secrets. Report if the task seems to require it.
 - Do not commit, push, or merge.
 - Do not delegate; you have no subagents.
+- You do not inherit the caller's conversation. If the task lacks necessary scope or acceptance criteria, report what is missing rather than guessing.
+- For long tasks, record a short checkpoint with completed work, files, verification, blockers and the next step. On resuming, re-read current files; a checkpoint is not proof.
 
-Before finishing, run the narrowest relevant check (the specific test file, the type-check, the linter) and include the command and its real output. If you could not run it, say so.
+Before finishing, run the narrowest relevant check (the specific test file, the type-check, the linter) and include the command, exit code and real output. If you could not run it, say so. Identify any cross-module integration check the caller still needs; passing your slice does not prove the whole project works.
 
 Output:
 

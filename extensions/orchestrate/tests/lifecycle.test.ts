@@ -36,6 +36,10 @@ test("orchestrate command: forwards instructions without simulating the LLM", as
   assert.match(prompt, /complexity and risk, not file count/);
   assert.match(prompt, /low-risk task directly.*without.*mandatory delegation/);
   assert.match(prompt, /independent reviewer for risky changes/);
+  assert.match(prompt, /children do not inherit this conversation/);
+  assert.match(prompt, /checkpoint in shared notes/);
+  assert.match(prompt, /inspect the current worktree; notes are hints, not proof/);
+  assert.match(prompt, /verify the combined change and map each requirement to evidence/);
   assert.match(prompt, /configured agent models; verify availability/);
   assert.match(prompt, /ask whether to continue solo; wait for the user's answer/);
   assert.match(prompt, /Never present solo work as independently reviewed/);

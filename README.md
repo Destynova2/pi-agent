@@ -16,7 +16,7 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 
 | What | How |
 |---|---|
-| Delegate an end-to-end task | `/orchestrate <request>`: the chef rewrites the request, sizes it, delegates to scout / worker / reviewer |
+| Delegate an end-to-end task | `/orchestrate <request>`: effort scales with risk; direct work or bounded scout / worker / reviewer delegation |
 | Delegate a subtask | `subagent` tool with `agent: scout\|worker\|reviewer` |
 | Note a decision without a model turn | `/btw decision <text>` (kinds: plan, decision, done, blocker, lesson, claim) |
 | Talk to another project agent | `/btw [@agent] <text>`: routed by @name, otherwise by claimed path, otherwise broadcast; delivered on its next turn or between tool calls if it's running |
@@ -26,6 +26,8 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 | Watch a PR | `ci_watch` tool, wakes on green / red / merged |
 
 Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts.
+
+See [Orchestration on large projects](docs/ORCHESTRATION.md) for checkpoints, context limits, recoverable reports and what the harness does not enforce.
 
 ## Contents
 
