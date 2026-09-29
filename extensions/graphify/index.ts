@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { projectGraph } from "./core.ts";
+import { NoProjectError, projectGraph, projectRoot } from "./core.ts";
 import { chooseIndexRoot } from "./repositories.ts";
 import { AutomaticIndex } from "./automatic.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
@@ -10,9 +10,9 @@ export default function (pi: ExtensionAPI) {
   let automatic = new AutomaticIndex<Awaited<ReturnType<typeof projectGraph>> | undefined>();
   let selectedRoot: string | undefined;
   const approved = new Set<string>();
-  const pickRoot = async (ctx: ExtensionContext, signal?: AbortSignal) => {
+  const pickRoot = async (ctx: ExtensionContext, signal?: AbortSignal, includeNested = false) => {
     const root = await chooseIndexRoot(selectedRoot ?? ctx.cwd, approved,
-      ctx.hasUI ? (title, choices, owned) => ctx.ui.select(title, choices, { signal: owned }) : undefined, signal);
+      ctx.hasUI ? (title, choices, owned) => ctx.ui.select(title, choices, { signal: owned }) : undefined, signal, includeNested);
     selectedRoot = root;
     return root;
   };
@@ -29,8 +29,11 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus("graphify", "AST indexing in background…");
     automatic.start(
       async (signal) => {
-        const root = await pickRoot(ctx, signal);
-        return root ? projectGraph(root, "overview", "", signal) : undefined;
+        let root: string;
+        try { root = await projectRoot(ctx.cwd, signal); }
+        catch (error) { if (error instanceof NoProjectError) return undefined; throw error; }
+        selectedRoot = root;
+        return projectGraph(root, "overview", "", signal);
       },
       (result) => ctx.ui.setStatus("graphify", result ? `Graphify ready: ${result.root}` : undefined),
       (error) => {
@@ -69,17 +72,18 @@ export default function (pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("graphify", {
-    description: "Indexes the Git/jj root (local AST). /graphify [symbol to explain]",
+    description: "Indexes the current Git/jj worktree. /graphify [--include-nested] [symbol to explain]",
     handler: async (args, ctx) => {
       ctx.ui.setStatus("graphify", "Local AST indexing…");
       try {
-        const symbol = args.trim();
+        const includeNested = /^--include-nested(?:\s|$)/.test(args.trim());
+        const symbol = args.trim().replace(/^--include-nested(?:\s+|$)/, "");
         const result = await tasks.run(async (owned) => {
           await automatic.wait();
           owned.throwIfAborted();
-          const root = await pickRoot(ctx, owned);
+          const root = await pickRoot(ctx, owned, includeNested);
           if (!root) throw new Error("No authorized root: indexing canceled.");
-          return projectGraph(root, symbol ? "explain" : "overview", symbol, owned);
+          return projectGraph(root, symbol ? "explain" : "overview", symbol, owned, undefined, includeNested);
         }, ctx.signal);
         ctx.ui.notify(result.text, "info");
       } catch (error) {

@@ -69,6 +69,47 @@ test("closest root for nested jj, nested Git and colocation", async (t) => {
   } finally { await rm(temp, { recursive: true, force: true }); }
 });
 
+test("worktree-only extraction excludes nested repositories, internal worktrees and unexplored subtrees, including warm caches", async (t) => {
+  if (!requireDependency(t, "git") || !requireDependency(t, "graphify")) return;
+  const temp = await mkdtemp(join(tmpdir(), "pi-graph-scope-"));
+  try {
+    const root = join(temp, "repo");
+    const cache = join(temp, "cache");
+    await mkdir(join(root, "src"), { recursive: true });
+    await command("git", ["init", "-q"], root);
+    await writeFile(join(root, "src/main.rs"), "pub fn current_root_fixture() {}\n");
+    await command("git", ["add", "src/main.rs"], root);
+    await command("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], root);
+    const child = join(root, "child [repo]");
+    await mkdir(child);
+    await writeFile(join(child, "lib.rs"), "pub fn nested_root_fixture() {}\n");
+    const initial = await projectGraph(root, "overview", "", undefined, cache);
+    assert.match(await readFile(initial.graph, "utf8"), /nested_root_fixture/);
+    await command("git", ["init", "-q"], child);
+    const worktree = join(root, ".claude/worktrees/agent");
+    await command("git", ["worktree", "add", "--detach", worktree, "HEAD"], root);
+    await writeFile(join(worktree, "src/main.rs"), "pub fn other_worktree_fixture() {}\n");
+    const deep = join(root, ...Array.from({ length: 10 }, () => "deep"));
+    await mkdir(deep, { recursive: true });
+    await writeFile(join(deep, "lib.rs"), "pub fn beyond_scope_fixture() {}\n");
+    const before = await command("git", ["status", "--porcelain"], root);
+    const scoped = await projectGraph(root, "overview", "", undefined, cache);
+    const graph = await readFile(scoped.graph, "utf8");
+    assert.match(graph, /current_root_fixture/);
+    assert.doesNotMatch(graph, /nested_root_fixture|other_worktree_fixture|beyond_scope_fixture/);
+    assert.match(scoped.text, /partial scope scan, unexplored subtrees excluded/);
+    const broader = await projectGraph(root, "overview", "", undefined, cache, true);
+    assert.match(await readFile(broader.graph, "utf8"), /nested_root_fixture/);
+    assert.doesNotMatch(await readFile(broader.graph, "utf8"), /other_worktree_fixture|beyond_scope_fixture/);
+    const narrowed = await projectGraph(root, "overview", "", undefined, cache);
+    assert.doesNotMatch(await readFile(narrowed.graph, "utf8"), /nested_root_fixture/);
+    const ownWorktree = await projectGraph(worktree, "overview", "", undefined, cache);
+    assert.match(await readFile(ownWorktree.graph, "utf8"), /other_worktree_fixture/);
+    assert.notEqual(ownWorktree.graph, scoped.graph);
+    assert.equal(await command("git", ["status", "--porcelain"], root), before);
+  } finally { await rm(temp, { recursive: true, force: true }); }
+});
+
 test("outside a repository: no implicit initialization", async () => {
   const temp = await mkdtemp(join(tmpdir(), "pi-graphify-no-repo-"));
   try { await assert.rejects(projectRoot(temp), /No Git\/jj root/); }

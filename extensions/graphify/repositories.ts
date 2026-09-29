@@ -1,45 +1,11 @@
-import { readdir, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { realpath } from "node:fs/promises";
+import { nestedRepositories } from "./scope.ts";
 import { NoProjectError, projectRoot } from "./core.ts";
-
-const excluded = new Set([".git", ".jj", "node_modules", "target", ".venv", "__pycache__", ".cache"]);
-
-/** Follows no symlinks or technical metadata/caches. Explicit limits. */
-export async function nestedRepositories(root: string, signal?: AbortSignal, maxDirectories = 2000, maxDepth = 8) {
-  const queue = [{ directory: root, depth: 0 }];
-  const roots: string[] = [];
-  let incomplete = false;
-  let visited = 0;
-  const deadline = Date.now() + 3000;
-  while (queue.length) {
-    signal?.throwIfAborted();
-    if (visited++ >= maxDirectories || Date.now() > deadline) { incomplete = true; break; }
-    const item = queue.shift();
-    if (!item) break;
-    try {
-      const entries = await readdir(item.directory, { withFileTypes: true });
-      if (item.directory !== root && entries.some((entry) => entry.name === ".git" || entry.name === ".jj")) {
-        roots.push(item.directory);
-        continue;
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory() || excluded.has(entry.name)) continue;
-        if (item.depth >= maxDepth) { incomplete = true; continue; }
-        queue.push({ directory: join(item.directory, entry.name), depth: item.depth + 1 });
-      }
-    } catch (error) {
-      signal?.throwIfAborted();
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") incomplete = true;
-    }
-  }
-  signal?.throwIfAborted();
-  return { roots: roots.sort(), incomplete };
-}
 
 export type ChooseRoot = (title: string, choices: string[], signal?: AbortSignal) => Promise<string | undefined>;
 
-/** Any detected scope extension re-requests approval, even within the session. */
-export async function chooseIndexRoot(cwd: string, approved: Set<string>, choose?: ChooseRoot, signal?: AbortSignal): Promise<string | undefined> {
+/** The current worktree needs no approval; explicitly including other repositories does. */
+export async function chooseIndexRoot(cwd: string, approved: Set<string>, choose?: ChooseRoot, signal?: AbortSignal, includeNested = false): Promise<string | undefined> {
   let base: string;
   let isRepository = true;
   try { base = await projectRoot(cwd, signal); }
@@ -49,6 +15,7 @@ export async function chooseIndexRoot(cwd: string, approved: Set<string>, choose
     isRepository = false;
   }
   for (let level = 0; level < 32; level++) {
+    if (isRepository && !includeNested) return base;
     const found = await nestedRepositories(base, signal);
     if (!found.roots.length && !found.incomplete) return isRepository ? base : undefined;
     const signature = JSON.stringify([base, found.roots, found.incomplete]);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -30,17 +30,20 @@ function requireDependency(t, label, found) {
 }
 
 const gitFound = (process.env.PATH ?? '').split(delimiter).some((dir) => existsSync(join(dir, 'git')));
+const graphifyFound = (process.env.PATH ?? '').split(delimiter).some((dir) => existsSync(join(dir, 'graphify')));
 
-for (const nested of [false, true]) {
-  test(nested ? 'real startup: nested sub-repository, refusal = no graph' : 'real startup: simple repository indexed automatically', async (t) => {
+for (const mode of ['simple', 'nested', 'outside']) {
+  const nested = mode !== 'simple';
+  test(`startup/reload: ${mode} has no automatic root-selection prompt`, async (t) => {
     if (!requireDependency(t, 'git', gitFound)) return;
+    if (mode !== 'outside' && !requireDependency(t, 'graphify', graphifyFound)) return;
     const root = await realpath(await mkdtemp(join(tmpdir(), 'pi-auto-startup-')));
     const events = new Map();
     const notifications = [];
     let questions = 0;
     let finalStatus;
     let finish;
-    const done = new Promise((resolve) => { finish = resolve; });
+    let graphifyCommand;
     const previous = process.env.PI_GRAPHIFY_AUTO;
     delete process.env.PI_GRAPHIFY_AUTO;
     const ctx = { cwd: root, hasUI: true, ui: {
@@ -50,23 +53,39 @@ for (const nested of [false, true]) {
     } };
     let deadline;
     try {
-      await command('git', ['init', '-q'], root);
+      if (mode !== 'outside') await command('git', ['init', '-q'], root);
       await writeFile(join(root, 'lib.rs'), 'pub fn automatic_fixture() -> usize { 42 }\n');
       if (nested) {
         await mkdir(join(root, 'child'));
         await command('git', ['init', '-q'], join(root, 'child'));
+        await writeFile(join(root, 'child/lib.rs'), 'pub fn excluded_child_fixture() {}\n');
+        await mkdir(join(root, '.claude/worktrees/agent/.git'), { recursive: true });
+        await mkdir(join(root, ...Array.from({ length: 10 }, () => 'deep')), { recursive: true });
       }
-      registerExtension({ on: (name, handler) => events.set(name, handler), registerTool: () => {}, registerCommand: () => {} });
-      await events.get('session_start')({ reason: 'startup' }, ctx);
-      await Promise.race([done, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(notifications.join('\n') || 'Indexing not finished')), 30000); })]);
-      if (nested) {
+      for (const reason of ['startup', 'reload']) {
+        if (reason === 'reload') await events.get('session_shutdown')({}, ctx);
+        const done = new Promise(resolve => { finish = resolve; });
+        registerExtension({ on: (name, handler) => events.set(name, handler), registerTool: () => {}, registerCommand: (_name, command) => { graphifyCommand = command; } });
+        await events.get('session_start')({ reason }, ctx);
+        await Promise.race([done, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(notifications.join('\n') || 'Indexing not finished')), 30000); })]);
+        clearTimeout(deadline);
+        assert.equal(questions, 0);
+        if (mode === 'outside') {
+          assert.equal(finalStatus, undefined);
+          await assert.rejects(access(join(cacheDirectory(root), 'graphify-out/graph.json')));
+        } else {
+          assert.match(finalStatus, /Graphify ready/);
+          await access(join(cacheDirectory(root), 'graphify-out/graph.json'));
+        }
+      }
+      if (mode === 'nested') {
+        const graphPath = join(cacheDirectory(root), 'graphify-out/graph.json');
+        const before = await readFile(graphPath, 'utf8');
+        assert.doesNotMatch(before, /excluded_child_fixture/);
+        await graphifyCommand.handler('--include-nested', ctx);
         assert.equal(questions, 1);
         assert.match(notifications[0], /nested/);
-        await assert.rejects(access(join(cacheDirectory(root), 'graphify-out/graph.json')));
-      } else {
-        assert.equal(questions, 0);
-        assert.match(finalStatus, /Graphify ready/);
-        await access(join(cacheDirectory(root), 'graphify-out/graph.json'));
+        assert.equal(await readFile(graphPath, 'utf8'), before, 'refusal must not widen or replace the automatic graph');
       }
     } finally {
       clearTimeout(deadline);
