@@ -1,6 +1,7 @@
 {
   "lastChangelogVersion": "0.87.1",
   "theme": "light",
+  "followUpMode": "all",
   "defaultProvider": "anthropic",
   "defaultModel": "claude-fable-5-1",
   "packages": [

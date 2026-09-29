@@ -147,7 +147,7 @@ export default function notes(pi: ExtensionAPI) {
 		const hasAdd = active.includes("note_add");
 		if (hasList || hasAdd) {
 			const lines = [`Shared SQLite memory for agents working on project "${project}" (you are "${agent}").`];
-			if (hasList) lines.push("- Start of a non-trivial task: call note_list to see what humans asked other agents (kind=ask, recorded automatically) and what those agents planned, claimed, decided or got blocked on.");
+			if (hasList) lines.push("- Start of a non-trivial task: call note_list to see what humans asked other agents (kind=ask is a project-only first-line excerpt, not the full request) and what those agents planned, claimed, decided or got blocked on.");
 			if (hasAdd) lines.push("- Before touching a file or area another agent may also touch: note_add kind=claim with the paths. Do not edit a path another agent claimed.");
 			if (hasAdd) lines.push("- Record decisions (kind=decision), completed work (kind=done), blockers (kind=blocker) and reusable lessons (kind=lesson) as one short line each. No status chatter.");
 			if (hasList) lines.push("- Every note stores the repo revision at write time, shown as (jj:<op id>) or (git:<sha>) in note_list for reference; it is not a rollback mechanism.");
@@ -221,7 +221,7 @@ export default function notes(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "note_list",
 		label: "note_list",
-		description: "Read recent notes from the shared SQLite memory. scope=project (default) reads this project; scope=all reads every project from ~/workspace/notes.db.",
+		description: "Read recent notes from shared SQLite memory. scope=project (default) includes ask excerpts; scope=all reads the central mirror, which excludes asks. Ask records are first-line excerpts, not full requests: recover full requirements from session history or referenced task artifacts.",
 		parameters: Type.Object({
 			kind: Type.Optional(Type.Union(KINDS.map((k) => Type.Literal(k)))),
 			scope: Type.Optional(Type.Union([Type.Literal("project"), Type.Literal("all")])),

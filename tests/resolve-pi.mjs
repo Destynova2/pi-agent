@@ -29,6 +29,7 @@ export const EXPECTED_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 // and absent from its own npm dependencies: they live in the installed Pi package.
 export const REDIRECTED_SPECIFIERS = [
   "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-agent-core",
   "@earendil-works/pi-ai",
   "@earendil-works/pi-tui",
   "typebox",
