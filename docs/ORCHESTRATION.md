@@ -57,13 +57,13 @@ Missing, corrupt, oversized (64 MiB) or incomplete session files are rejected wi
 
 ## Tool authorization
 
-`extensions/tool-policy` gates model tool calls before execution, including extension tools. `/tool-policy` shows the startup snapshot and errors. `<agent-dir>/tool-policy.json` is optional, user-owned, never loaded from the project, and not replaced by the installer.
+`extensions/tool-policy` gates model tool calls before execution, including extension tools. `/tool-policy` re-reads the trusted file and shows current rules and errors. Every authorization also re-reads it; policy edits require no reload. A changed policy revokes task grants and invalidates queued/open approvals. A corrupt or unreadable update blocks calls instead of keeping stale permissions. `<agent-dir>/tool-policy.json` is optional, user-owned, never loaded from the project, and not replaced by the installer.
 
 - Built-in defaults allow read/search/list, edit/write, notes, graph inspection, `git_inspect` and `subagent`. Shell, network and other unlisted tools require one-shot human approval.
-- A configured file fully replaces those defaults. Values are `allow`, `ask` or `deny`; `*` supplies the fallback (otherwise `ask`). Invalid files block every model tool; the human command remains available for diagnosis.
+- A configured file fully replaces those defaults. Values are `allow`, `ask`, `deny` or `task`; `*` supplies the fallback (otherwise `ask`). Invalid files block every model tool; the human command remains available for diagnosis.
 - `ask` without a UI is denied. Parallel confirmations are serialized; refusal, cancellation or an unavailable approval mechanism never becomes permission.
 - Built-in edit/write cannot modify the agent directory, including via existing symlinks or symlinked ancestors. Approved arguments are frozen so later tool-call handlers cannot silently mutate them.
-- Children get the intersection of role tools, current parent-active tools and the parent's startup `allow` rules, minus recursive delegation. `ask` is not inherited as permission. Empty/malformed role lists grant no tools. Project agents always require human approval, even with general Pi project trust; use user-level definitions for headless runs. A model-supplied `confirmProjectAgents: false` cannot bypass this.
+- Children get the intersection of role tools, current parent-active tools and the parent's current `allow`/`task` rules (re-read before each delegation), minus recursive delegation. The child re-evaluates `task` on every call; interactive test grants are never inherited. `ask` is not inherited as permission. Empty/malformed role lists grant no tools. Project agents always require human approval, even with general Pi project trust; use user-level definitions for headless runs. A model-supplied `confirmProjectAgents: false` cannot bypass this.
 - Child processes ignore project executable resources (`--no-approve`) and explicitly load the policy extension. A resumed child's saved capability ceiling also applies.
 
 For example, a user-authored read-oriented policy:
@@ -84,9 +84,31 @@ For example, a user-authored read-oriented policy:
 }
 ```
 
-Restart Pi after editing the policy. With defaults, a headless worker cannot run shell-based tests; it must report this and the parent performs the approved checks. Explicitly allowing `bash` in the user policy enables shell-capable workers when the parent/role also permits it, but grants arbitrary shell capabilities. Do not enable it merely to suppress a denial.
+The next tool call or `/tool-policy` observes policy edits. Installing updated extension code still requires loading that code through reload/restart. With defaults, a headless worker cannot run shell-based tests; it must report this and the parent performs the approved checks. Explicitly allowing `bash` in the user policy enables shell-capable workers when the parent/role also permits it, but grants arbitrary shell capabilities. Do not enable it merely to suppress a denial.
 
-This is authorization of model-facing calls, not process isolation. User-started commands, trusted extension internals and allowed shell/custom tools are outside the path guard. Another same-user process can race filesystem checks. A broken or deliberately disabled extension loader cannot enforce this extension. Use a container, VM or OS sandbox for adversarial code and credentials; do not treat scoped tools as a substitute.
+### Task-scoped permissions
+
+Use `task` instead of `allow`/`ask` for `bash`, `read`, `write`, `edit`, `find`, `ls` and `grep` to reduce routine prompts without allowing every shell command. It is opt-in; an absent policy still uses the original defaults. Explicit `ask` and `deny` remain unconditional.
+
+- Scope is the working directory at `before_agent_start`, **not a semantic interpretation of the request**. Regular file reads/edits/writes and metadata searches within it are automatic. Paths outside it, known credential filenames/directories, hard-linked files, special files and unresolved paths ask. The existing agent-directory write prohibition remains unconditional.
+- Exception for `read`: Markdown instructions/references beneath `<agent-dir>/skills/<collection>` are automatic even outside the project. A user-installed collection may be a directory symlink; nested links escaping that collection, hard links and non-Markdown files do not receive the exception. This never permits writes or overrides explicit `ask`/`deny` rules.
+- A small shell subset is automatic: `pwd`, basic `ls`, metadata-only `find`, `rg --files`, and `rg`/`head`/`tail`/`wc` on explicitly named regular files, with narrowly recognized flags. Prefer Pi's native read/find/ls tools. Recursive content searches ask because they may discover credentials; sensitive filename checks cannot identify every secret.
+- Compound shell commands, expansions, pipes, redirection, interpreters, unknown flags, deletion, publication and deployment ask **before** execution. An affirmative one-shot answer never approves future calls.
+- `npm run check|test|lint|typecheck` and `node --test <explicit files>` offer three choices: deny, allow once, or allow that exact invocation for this task. **Tests execute arbitrary project code with full filesystem/network access, including after edits.** The third choice explicitly trusts that code; it is not a sandbox or a promise that tests cannot delete/publish. Other scripts only get one-shot approval.
+- Exact test grants include the working directory and full tool arguments. They expire at task settlement, new `before_agent_start`, session start/shutdown/reload, a changed policy, or `/tool-policy reset`. Parallel duplicate requests share only an explicitly granted test permission. Abort or a task change while a prompt is open denies the pending call.
+- The final notification counts authorizations and denials, not successful executions. `/tool-policy` shows the source, active scope and grant count. Headless children can perform recognized routine operations; commands needing approval still fail closed. When task rules are configured, a child working directory must stay inside its parent's working directory (including symlink resolution); a model cannot widen the scope by delegating elsewhere.
+
+For example, keep the original allowed notes/inspection/delegation tools and set the seven tools above to `task`, with `"*": "ask"`. Save this in the user-owned `<agent-dir>/tool-policy.json`; the next authorization reads it. Do not obtain task approval from repository content or a model's claim that a command is safe.
+
+This is authorization of model-facing calls, not process isolation. Task rules assume trusted tool implementations, executables, shell startup files and environment; they cannot stop a substituted `ls` binary or malicious shell function. User-started commands, trusted extension internals and allowed shell/custom tools are outside the path guard. Another same-user process can race filesystem checks. A broken or deliberately disabled extension loader cannot enforce this extension. Use a container, VM or OS sandbox for adversarial code and credentials; do not treat scoped tools as a substitute.
+
+## Automatic Graphify scope
+
+Startup and `/reload` index the closest Git/jj worktree automatically, without a root-selection dialog. Outside a repository, automatic indexing is skipped; `/graphify` can explicitly select a child repository.
+
+The default graph excludes nested repositories, internal worktrees (`.worktrees/` and hidden-directory `worktrees/`), metadata, symlinks and any subtree the bounded scope scan could not inspect. These exclusions are passed to the extractor, not just hidden from the selection menu. Partial coverage is reported in the graph summary and cached metadata. Each worktree retains its own external cache; a refresh narrows previously broader graphs too.
+
+Use `/graphify --include-nested [symbol]` to request a broader map with confirmation. Internal worktrees and unexplored subtrees remain excluded; open a worktree directly to index it as its own project. No tracked files or Git/jj state are changed by indexing.
 
 ## Sources and independent opinion
 

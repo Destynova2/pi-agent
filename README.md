@@ -18,7 +18,7 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 |---|---|
 | Adapt delegation automatically | Ask normally: work starts direct and splits when useful; `/orchestrate <request>` remains optional |
 | Delegate or resume a subtask | `subagent` with `agent: scout\|worker\|reviewer`; reuse the returned `resume` ID for a follow-up |
-| Inspect tool permissions | `/tool-policy`: startup allow/ask/deny rules; shell and unknown tools ask by default |
+| Inspect tool permissions | `/tool-policy`: current allow/ask/deny/task rules, re-read before each authorization; shell and unknown tools ask by default |
 | Inspect Git without general shell access | `git_inspect`: status, diff, log or files |
 | Note a decision without a model turn | `/btw decision <text>` (kinds: plan, decision, done, blocker, lesson, claim) |
 | Talk to another project agent | `/btw [@agent] <text>`: routed by @name, otherwise by claimed path, otherwise broadcast; delivered on its next turn or between tool calls if it's running |
