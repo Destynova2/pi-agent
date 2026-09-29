@@ -14,6 +14,9 @@
 
 import { StringDecoder } from "node:string_decoder";
 import { runProcess } from "../../lib/process.ts";
+import { loadToolPolicy, toolDecision, isValidToolName, type ToolPolicy } from "../tool-policy/core.ts";
+import { openRun } from "./runs.ts";
+import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -162,6 +165,8 @@ interface SingleResult {
 	errorMessage?: string;
 	reportPath?: string;
 	tracePath?: string;
+	resumeId?: string;
+	sessionPath?: string;
 	step?: number;
 }
 
@@ -193,6 +198,8 @@ function getResultOutput(result: SingleResult): string {
 		? output
 		: `${new StringDecoder("utf8").write(bytes.subarray(0, PER_TASK_OUTPUT_CAP))}\n\n[Output truncated; read the full report before relying on omitted details.]`;
 	const artifacts = result.exitCode === -1 ? "" : [
+		result.resumeId && `Resume: ${result.resumeId} (same parent session, agent and cwd)`,
+		result.sessionPath && `Session: ${result.sessionPath}`,
 		result.reportPath && `Report: ${result.reportPath}`,
 		result.tracePath && `Trace: ${result.tracePath}`,
 	].filter(Boolean).join("\n");
@@ -266,6 +273,8 @@ interface DispatchDefaults {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 	timeoutSeconds?: number;
+	parentSession: string;
+	tools: string[];
 }
 
 async function runSingleAgent(
@@ -276,6 +285,7 @@ async function runSingleAgent(
 	task: string,
 	cwd: string | undefined,
 	modelOverride: string | undefined,
+	resume: string | undefined,
 	step: number | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
@@ -297,15 +307,16 @@ async function runSingleAgent(
 		};
 	}
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	const args: string[] = ["--mode", "json", "-p", "--no-approve", "--extension", fileURLToPath(new URL("../tool-policy/index.ts", import.meta.url))];
 	const inheritsDispatchConfig = !modelOverride && !agent.model;
 	const model = modelOverride ?? agent.model ?? dispatchDefaults.model;
 	if (model) args.push("--model", model);
 	if (inheritsDispatchConfig && dispatchDefaults.thinkingLevel) {
 		args.push("--thinking", dispatchDefaults.thinkingLevel);
 	}
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	const tools = [...new Set(agent.tools ?? dispatchDefaults.tools)].filter((name) => dispatchDefaults.tools.includes(name));
 
+	let run: ReturnType<typeof openRun> | undefined;
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
 	let traceFd: number | undefined;
@@ -333,9 +344,13 @@ async function runSingleAgent(
 
 	try {
 		signal?.throwIfAborted();
-		const runsDir = path.join(getAgentDir(), "subagent-runs");
-		await fs.promises.mkdir(runsDir, { recursive: true, mode: 0o700 });
-		const runDir = await fs.promises.mkdtemp(path.join(runsDir, "run-"));
+		run = openRun({ parentSession: dispatchDefaults.parentSession, agent: agent.name, agentFile: agent.filePath,
+			cwd: cwd ?? defaultCwd, tools, resume });
+		const runDir = run.attemptDir;
+		currentResult.resumeId = run.id;
+		currentResult.sessionPath = run.sessionPath;
+		args.push("--session", run.sessionPath, "--session-dir", path.dirname(run.sessionPath));
+		if (run.tools.length) args.push("--tools", run.tools.join(",")); else args.push("--no-tools");
 		const taskPath = path.join(runDir, "task.md");
 		await fs.promises.writeFile(taskPath, `Task: ${task}`, { mode: 0o600 });
 		currentResult.reportPath = path.join(runDir, "report.md");
@@ -380,7 +395,7 @@ async function runSingleAgent(
 				cwd: cwd ?? defaultCwd, signal,
 				timeoutMs: (dispatchDefaults.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
 				maxBytes: MAX_STREAM_BYTES,
-				env: { PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: `${agent.name}-${path.basename(runDir)}` },
+				env: { PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: `${agent.name}-${run.id}` },
 				onStdout: (chunk) => {
 					fs.writeFileSync(traceFd!, chunk);
 					buffer += decoder.write(chunk);
@@ -403,29 +418,31 @@ async function runSingleAgent(
 		currentResult.errorMessage = [...new Set([currentResult.errorMessage, message].filter(Boolean))].join("\n");
 		if (signal?.aborted) currentResult.stopReason = "aborted";
 	} finally {
-		if (traceFd !== undefined) fs.closeSync(traceFd);
-		if (currentResult.reportPath) {
-			const status = isFailedResult(currentResult) ? `FAILED: ${currentResult.errorMessage || currentResult.stopReason}\n\nPartial output:\n` : "";
-			try {
-				fs.writeFileSync(currentResult.reportPath, status + (getFinalOutput(currentResult.messages) || "(no output)"), { mode: 0o600 });
-			} catch (error) {
-				currentResult.exitCode = 1;
-				currentResult.errorMessage = `${currentResult.errorMessage || ""}\nCannot save report: ${String(error)}`.trim();
-				currentResult.reportPath = undefined;
+		try {
+			if (traceFd !== undefined) fs.closeSync(traceFd);
+			if (currentResult.reportPath) {
+				const status = isFailedResult(currentResult) ? `FAILED: ${currentResult.errorMessage || currentResult.stopReason}\n\nPartial output:\n` : "";
+				try {
+					fs.writeFileSync(currentResult.reportPath, status + (getFinalOutput(currentResult.messages) || "(no output)"), { mode: 0o600 });
+				} catch (error) {
+					currentResult.exitCode = 1;
+					currentResult.errorMessage = `${currentResult.errorMessage || ""}\nCannot save report: ${String(error)}`.trim();
+					currentResult.reportPath = undefined;
+				}
 			}
-		}
-		if (tmpPromptPath)
-			try {
-				fs.unlinkSync(tmpPromptPath);
-			} catch {
-				/* ignore */
-			}
-		if (tmpPromptDir)
-			try {
-				fs.rmdirSync(tmpPromptDir);
-			} catch {
-				/* ignore */
-			}
+			if (tmpPromptPath)
+				try {
+					fs.unlinkSync(tmpPromptPath);
+				} catch {
+					/* ignore */
+				}
+			if (tmpPromptDir)
+				try {
+					fs.rmdirSync(tmpPromptDir);
+				} catch {
+					/* ignore */
+				}
+		} finally { run?.release(); }
 	}
 	return currentResult;
 }
@@ -434,11 +451,14 @@ const ModelOverride = Type.Optional(
 	Type.String({ description: 'Model override as "provider/id" (e.g. "anthropic/claude-sonnet-5"). Defaults to the agent file, then the caller model.' }),
 );
 
+const ResumeId = Type.Optional(Type.String({ pattern: "^run-[A-Za-z0-9]{6}$", description: "Resume ID from a previous call in this parent session. Requires the same agent and cwd; only one invocation at a time." }));
+
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task to delegate to the agent" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 	model: ModelOverride,
+	resume: ResumeId,
 });
 
 const ChainItem = Type.Object({
@@ -446,6 +466,7 @@ const ChainItem = Type.Object({
 	task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 	model: ModelOverride,
+	resume: ResumeId,
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -460,20 +481,31 @@ const SubagentParams = Type.Object({
 	chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(
-		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
+		Type.Boolean({ description: "Deprecated: untrusted project agents always require human approval; false cannot bypass it.", default: true }),
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 	model: ModelOverride,
+	resume: ResumeId,
 	timeoutSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 7200, default: DEFAULT_TIMEOUT_SECONDS, description: "Per-child time limit in seconds (all modes). Default 1800, maximum 7200." })),
 });
 
 export default function (pi: ExtensionAPI) {
 	if (process.env.PI_SUBAGENT_CHILD) return;
+	let policy: ToolPolicy | undefined;
+	let policyError: unknown;
+	try { policy = loadToolPolicy(getAgentDir()); } catch (error) { policyError = error; }
+	// Pi marks execute() returns successful even when the object has an isError field.
+	// Preserve rich partial results and set the authoritative flag through its supported result hook.
+	pi.on("tool_result", (event) => {
+		const details = event.details as SubagentDetails | undefined;
+		if (event.toolName === "subagent" && Array.isArray(details?.results) &&
+			(details.results.length === 0 || details.results.some(isFailedResult))) return { isError: true };
+	});
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
 		description: [
-			"Delegate tasks to specialized subagents with isolated context.",
+			"Delegate tasks to specialized subagents. Fresh children have isolated context; resume continues an owned native Pi session.",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
@@ -481,15 +513,18 @@ export default function (pi: ExtensionAPI) {
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			if (!policy) throw new Error(`Cannot delegate: tool policy failed to load (${String(policyError)})`);
 			const agentScope: AgentScope = params.agentScope ?? "user";
+			const parentFile = ctx.sessionManager.getSessionFile();
 			const dispatchDefaults: DispatchDefaults = {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 				thinkingLevel: ctx.thinkingLevel,
 				timeoutSeconds: params.timeoutSeconds,
+				parentSession: JSON.stringify([ctx.sessionManager.getSessionId(), parentFile ? fs.realpathSync(parentFile) : null]),
+				tools: pi.getActiveTools().filter((name) => name !== "subagent" && isValidToolName(name) && toolDecision(policy!, name) === "allow"),
 			};
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
-			const confirmProjectAgents = params.confirmProjectAgents ?? true;
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -505,6 +540,7 @@ export default function (pi: ExtensionAPI) {
 					results,
 				});
 
+			if (params.resume && !hasSingle) throw new Error("Top-level resume requires single mode; use resume on each parallel/chain item instead");
 			if (modeCount !== 1) {
 				const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
 				return {
@@ -518,12 +554,8 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			if (
-				(agentScope === "project" || agentScope === "both") &&
-				confirmProjectAgents &&
-				ctx.hasUI &&
-				!ctx.isProjectTrusted()
-			) {
+			// Pi project trust does not explicitly cover .pi/agents definitions.
+			if (agentScope === "project" || agentScope === "both") {
 				const requestedAgentNames = new Set<string>();
 				if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
 				if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
@@ -536,13 +568,15 @@ export default function (pi: ExtensionAPI) {
 				if (projectAgentsRequested.length > 0) {
 					const names = projectAgentsRequested.map((a) => a.name).join(", ");
 					const dir = discovery.projectAgentsDir ?? "(unknown)";
-					const ok = await ctx.ui.confirm(
+					const ok = ctx.hasUI && !signal?.aborted && await ctx.ui.confirm(
 						"Run project-local agents?",
 						`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+						{ signal },
 					);
-					if (!ok)
+					if (!ok || signal?.aborted)
 						return {
-							content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
+							isError: true,
+							content: [{ type: "text", text: "Canceled: project-local agents require human approval; use a user-level agent for headless runs." }],
 							details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
 						};
 				}
@@ -579,6 +613,7 @@ export default function (pi: ExtensionAPI) {
 						taskWithContext,
 						step.cwd,
 						step.model,
+						step.resume,
 						i + 1,
 						signal,
 						chainUpdate,
@@ -653,6 +688,7 @@ export default function (pi: ExtensionAPI) {
 						t.task,
 						t.cwd,
 						t.model,
+						t.resume,
 						undefined,
 						signal,
 						// Per-task update callback
@@ -698,6 +734,7 @@ export default function (pi: ExtensionAPI) {
 					params.task,
 					params.cwd,
 					params.model,
+					params.resume,
 					undefined,
 					signal,
 					onUpdate,

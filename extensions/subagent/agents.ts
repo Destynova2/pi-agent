@@ -46,17 +46,18 @@ type AgentFrontmatter = {
  *     tools: read, bash        # string
  *     tools: [read, bash]      # array
  *
- * so accept either. Anything else (a number, a map, a nested list) yields no
- * tools rather than throwing: this runs inside agent discovery, where a single
- * bad file must not take down every other agent in the same directory.
+ * so accept either. Absent means inherit; explicitly empty or malformed means
+ * no tools, never an unrestricted fallback.
  */
 function parseToolList(value: unknown): string[] | undefined {
+	if (value === undefined) return undefined;
 	const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+	if (raw.some((item) => typeof item !== "string")) return [];
 	const tools = raw
 		.filter((t): t is string => typeof t === "string")
 		.map((t) => t.trim())
 		.filter(Boolean);
-	return tools.length > 0 ? tools : undefined;
+	return tools;
 }
 
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {

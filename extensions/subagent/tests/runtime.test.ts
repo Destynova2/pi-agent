@@ -46,7 +46,7 @@ if (task.includes('SIGNAL')) {
   const split = bytes.indexOf(Buffer.from('é')) + 1;
   process.stdout.write(bytes.subarray(0,split));
   setTimeout(()=>process.stdout.write(bytes.subarray(split)),30);
-  fs.writeFileSync('child-env',JSON.stringify({child:process.env.PI_SUBAGENT_CHILD,name:process.env.PI_AGENT_NAME}));
+  fs.writeFileSync('child-env',JSON.stringify({child:process.env.PI_SUBAGENT_CHILD,name:process.env.PI_AGENT_NAME,args:process.argv.slice(2)}));
 }
 `;
 
@@ -63,8 +63,8 @@ async function withTool(fn: (execute: (...args: any[]) => Promise<any>, root: st
     process.argv[1] = join(root, "fake-pi.mjs");
     await writeFile(process.argv[1], fixture);
     let tool: any;
-    register({ registerTool: (value: any) => { tool = value; } } as any);
-    const execute = (params: any, signal?: AbortSignal, onUpdate?: any) => tool.execute("test", params, signal, onUpdate, { cwd: root, hasUI: false });
+    register({ on: () => {}, registerTool: (value: any) => { tool = value; }, getActiveTools: () => ["read", "write", "bash", "subagent"] } as any);
+    const execute = (params: any, signal?: AbortSignal, onUpdate?: any) => tool.execute("test", params, signal, onUpdate, { cwd: root, hasUI: false, isProjectTrusted: () => true, sessionManager: { getSessionId: () => "parent-test", getSessionFile: () => undefined } });
     const render = (result: any) => tool.renderResult(result, { expanded: false }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, {}).render(120).join("\n");
     await fn(execute, root, render);
   } finally {
@@ -89,6 +89,15 @@ test("file task transport handles large input, split UTF-8, all text blocks and 
     const env = JSON.parse(await readFile(join(root, "child-env"), "utf8"));
     assert.equal(env.child, "1");
     assert.match(env.name, /^fixture-run-/);
+    assert.ok(env.args.includes("--no-approve"));
+    assert.ok(!env.args.includes("--no-session"));
+    assert.equal(env.args[env.args.indexOf("--tools") + 1], "read,write", "headless children cannot gain ask/deny tools or recurse");
+    assert.equal(env.args[env.args.indexOf("--session") + 1], details.sessionPath);
+    const resumed = await execute({ agent: "fixture", task: "next task", resume: details.resumeId });
+    assert.ok(!resumed.isError);
+    assert.equal(resumed.details.results[0].sessionPath, details.sessionPath);
+    assert.notEqual(resumed.details.results[0].reportPath, details.reportPath);
+    assert.equal(await readFile(details.reportPath, "utf8"), "été\n200006");
   });
 });
 
@@ -178,6 +187,32 @@ test("already canceled parallel requests never spawn queued children", async () 
     assert.equal(result.isError, true);
     assert.equal(result.details.results.length, 8);
     assert.ok(!(await readdir(root)).includes("started"));
+  });
+});
+
+test("explicit empty/malformed role tools do not inherit; requested tools cannot widen the parent policy", async () => {
+  await withTool(async (execute, root) => {
+    for (const value of ["[]", "123", "[read, bash, subagent, hidden_tool]"]) {
+      await writeFile(join(root, "agent/agents/fixture.md"), `---\nname: fixture\ndescription: fixture\ntools: ${value}\n---\nRead only.\n`);
+      const result = await execute({ agent: "fixture", task: "ok" });
+      assert.ok(!result.isError);
+      const { args } = JSON.parse(await readFile(join(root, "child-env"), "utf8"));
+      if (value.startsWith("[read")) assert.equal(args[args.indexOf("--tools") + 1], "read");
+      else assert.ok(args.includes("--no-tools"));
+    }
+  });
+});
+
+test("headless project agents cannot bypass confirmation with flags or general project trust", async () => {
+  await withTool(async (execute, root) => {
+    await mkdir(join(root, ".pi/agents"), { recursive: true });
+    await writeFile(join(root, ".pi/agents/repo.md"), "---\nname: repo\ndescription: repo agent\n---\nDo something.\n");
+    for (const confirmProjectAgents of [true, false]) {
+      const result = await execute({ agent: "repo", task: "ok", agentScope: "project", confirmProjectAgents });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /human approval/);
+      assert.ok(!(await readdir(root)).includes("started"));
+    }
   });
 });
 
