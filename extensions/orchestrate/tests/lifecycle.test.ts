@@ -12,11 +12,12 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 test("orchestrate command: forwards instructions without simulating the LLM", async () => {
   let handler: Handler | undefined;
   const messages: string[] = [];
+  const deliveries: unknown[] = [];
   const notifications: string[] = [];
   register({
     registerCommand: (_name: string, definition: { handler: Handler }) => { handler = definition.handler; },
     on: () => undefined,
-    sendUserMessage: (message: string) => { messages.push(message); },
+    sendUserMessage: (message: string, options: unknown) => { messages.push(message); deliveries.push(options); },
   } as unknown as ExtensionAPI);
   assert.ok(handler);
   const ctx = { ui: { notify: (text: string) => { notifications.push(text); } } } as unknown as Parameters<Handler>[1];
@@ -24,14 +25,26 @@ test("orchestrate command: forwards instructions without simulating the LLM", as
   await handler("fix the prompt", ctx);
   assert.equal(messages.length, 1);
   const prompt = messages[0];
-  assert.match(prompt, /read-only before guessing/s);
-  assert.match(prompt, /substantial ambiguity of intent/);
-  assert.match(prompt, /openai-codex\/gpt-6-astra.*anthropic\/claude-fable-5-1/s);
-  assert.match(prompt, /agreement is not proof/);
-  assert.match(prompt, /forbidden as worker.*even if the chef is Fable/s);
-  assert.match(prompt, /do not downgrade an M\/L task to S/);
-  assert.match(prompt, /is neither a snapshot nor a backup/);
-  assert.match(prompt, /never use \`git checkout\` as a rollback/);
+  assert.deepEqual(deliveries, [{ deliverAs: "followUp" }]);
+  assert.ok(prompt.endsWith("Request:\nfix the prompt"));
+  assert.ok(prompt.length < 3000, "Keep the orchestration prefix concise");
+  assert.doesNotMatch(prompt, /KERNEL|pre-mortem|openai-codex\/|anthropic\//);
+  assert.match(prompt, /not a workflow engine or a global session tracker/);
+  assert.match(prompt, /Read the relevant code.*before editing/);
+  assert.match(prompt, /ask the user directly before acting/);
+  assert.match(prompt, /For audits, stay read-only/);
+  assert.match(prompt, /complexity and risk, not file count/);
+  assert.match(prompt, /low-risk task directly.*without.*mandatory delegation/);
+  assert.match(prompt, /independent reviewer for risky changes/);
+  assert.match(prompt, /configured agent models; verify availability/);
+  assert.match(prompt, /ask whether to continue solo; wait for the user's answer/);
+  assert.match(prompt, /Never present solo work as independently reviewed/);
+  assert.match(prompt, /check other agents' claims and protect preexisting changes/);
+  assert.match(prompt, /git\/jj reference in a note is not a backup/);
+  assert.match(prompt, /wait for completion, preserve exit codes/);
+  assert.match(prompt, /No commit, push, merge or deployment without explicit user authorization/);
+  assert.match(prompt, /review verdict does not authorize deployment/);
+  assert.match(prompt, /pending CI as pending/);
 
   await handler("status", ctx);
   await handler("cancel", ctx);
