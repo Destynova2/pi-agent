@@ -40,7 +40,7 @@ const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 12 * 1024;
 const MAX_STREAM_BYTES = 32 * 1024 * 1024;
-const DEFAULT_TIMEOUT_SECONDS = 1800;
+const DEFAULT_TIMEOUT_SECONDS = 300;
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -493,7 +493,7 @@ const SubagentParams = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 	model: ModelOverride,
 	resume: ResumeId,
-	timeoutSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 7200, default: DEFAULT_TIMEOUT_SECONDS, description: "Per-child time limit in seconds (all modes). Default 1800, maximum 7200." })),
+	timeoutSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 7200, default: DEFAULT_TIMEOUT_SECONDS, description: "Per-child execution deadline in seconds (all modes). Default 300, maximum 7200. Expiry stops the child process group and preserves partial reports; inspect before retrying." })),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -510,7 +510,8 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 		description: [
 			"Delegate tasks to specialized subagents. Fresh children have isolated context; resume continues an owned native Pi session.",
-			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
+			"Modes: single (agent + task), parallel (independent tasks only), chain (dependent steps with {previous} handoff; stops on failure).",
+			"Default execution deadline: 300 seconds per child. Use a scoped acceptance check; inspect returned reports and current changes before any further delegation.",
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),

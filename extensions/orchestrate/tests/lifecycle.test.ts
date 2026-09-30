@@ -37,6 +37,10 @@ test("orchestrate command: forwards instructions without simulating the LLM", as
   assert.match(prompt, /low-risk task directly.*without.*mandatory delegation/);
   assert.match(prompt, /independent reviewer for risky changes/);
   assert.match(prompt, /children do not inherit this conversation/);
+  assert.match(prompt, /first usable, tested slice before broad write delegation/);
+  assert.match(prompt, /Fix contracts before parallel work; use chain for dependencies/);
+  assert.match(prompt, /Set timeoutSeconds/);
+  assert.match(prompt, /without a second correction round by default/);
   assert.match(prompt, /checkpoint in shared notes/);
   assert.match(prompt, /Batch independent investigations and read-only checks/);
   assert.match(prompt, /After compaction, resume the checkpoint/);
@@ -70,7 +74,11 @@ test("ordinary requests get adaptive guidance only when root delegation is avail
     before(event);
     const policy = event.systemPromptOptions.sections.adaptive_delegation;
     assert.match(policy, /Start direct for simple or tightly coupled work/);
-    assert.match(policy, /Split progressively/);
+    assert.match(policy, /Split progressively only after contracts are stable/);
+    assert.match(policy, /first usable, tested slice before broad write delegation/);
+    assert.match(policy, /parallel only for independent tasks/);
+    assert.match(policy, /Set timeoutSeconds explicitly/);
+    assert.match(policy, /no second correction round by default/);
     assert.match(policy, /coordination costs exceed the benefit/);
     assert.match(policy, /Resume an owned child/);
     assert.match(policy, /handle a different useful slice, not their same investigation/);

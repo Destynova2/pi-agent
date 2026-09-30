@@ -102,6 +102,21 @@ test("file task transport handles large input, split UTF-8, all text blocks and 
   });
 });
 
+test("omitting timeoutSeconds supplies a five-minute execution deadline to the supervisor", async (t) => {
+  const delays: Array<number | undefined> = [];
+  const original = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback: () => void, ms?: number) => {
+    delays.push(ms);
+    return original(callback, ms);
+  });
+  await withTool(async execute => {
+    const result = await execute({ agent: "fixture", task: "ok" });
+    assert.ok(!result.isError);
+  });
+  assert.ok(delays.includes(300_000));
+  assert.ok(!delays.includes(1_800_000));
+});
+
 test("single, parallel and chain reports are bounded and complete output is readable", async () => {
   await withTool(async (execute) => {
     for (const params of [{ agent: "fixture", task: "BIG" }, { tasks: [{ agent: "fixture", task: "BIG" }] }]) {
