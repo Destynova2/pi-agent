@@ -4,7 +4,7 @@ Ordinary requests now receive adaptive delegation guidance when the root agent h
 
 ## Working method
 
-- Start direct for simple or tightly coupled tasks. Split progressively when a useful subtask has a clear boundary, independent write-set or independent-review purpose. Keep coupled edits together/sequential and consolidate when coordination costs outweigh the benefit.
+- Start direct for simple or tightly coupled tasks. Deliver a first usable, tested slice before broad write delegation. Stabilize contracts before parallel work; use the existing sequential chain and `{previous}` handoff for dependencies. Integrate the first return directly rather than starting another correction round by default. Report scope growth or lack of a usable result before another long delegation.
 - The model chooses the split from the request and observed code, without an extra planner call, fixed agent counts or file-count thresholds. This is automatic guidance, not a deterministic router or a guarantee of an optimal split.
 - Give each worker the goal, relevant paths, allowed changes, constraints and acceptance check. Children have isolated context: they do not inherit the caller's conversation.
 - Use disjoint write-sets or run dependent edits sequentially. The write-set remains an instruction, not a filesystem sandbox.
@@ -19,7 +19,7 @@ Scout and reviewer can read `note_list`; they cannot call `note_add` and no long
 |---|---|
 | Delegation depth | Children cannot call the `subagent` tool recursively |
 | Parallel execution | At most 8 tasks per call, 4 running children |
-| Child deadline | `timeoutSeconds` on the tool call: default 1800, range 1–7200; applies per child in all modes |
+| Child deadline | `timeoutSeconds` on the tool call: default 300, range 1–7200; applies per child in all modes |
 | Child output | 32 MiB combined stdout/stderr limit; exceeding it fails the child |
 | Inline result | Up to 12 KiB of output per child, plus status and artifact paths; applies to single, parallel and chain |
 | UI history | Last 40 assistant messages; earlier messages and tool results remain in the JSONL trace |
@@ -28,7 +28,7 @@ Scout and reviewer can read `note_list`; they cannot call `note_add` and no long
 | Failure | Nonzero/signal exit, timeout, missing final text or a non-`stop` final response is not success |
 | Leaked processes | Even a zero-exit parent fails if descendants remain in its process group; the supervisor stops them |
 
-A failed chain stops before starting its next step. A parallel result is marked as an error if any task fails; completed siblings remain available. An already canceled call does not start queued children.
+A failed chain stops before starting its next step. A parallel result is marked as an error if any task fails; completed siblings remain available. An already canceled call does not start queued children. A deadline stops the child process group, not just the parent's wait; inspect the preserved partial report and current diff before retrying. This is a per-child limit, not a total-task budget: chains, queued parallel batches and explicit subsequent calls can take longer.
 
 `{previous}` receives the preceding child's bounded output and artifact paths, not an unlimited transcript. Read the full report when details were omitted. The 12 KiB bound reduces maximum inline output; it is not a measured token, latency or cost improvement.
 
@@ -66,6 +66,8 @@ Missing, corrupt, oversized (64 MiB) or incomplete session files are rejected wi
 - Children get the intersection of role tools, current parent-active tools and the parent's current `allow`/`task` rules (re-read before each delegation), minus recursive delegation. The child re-evaluates `task` on every call; interactive test grants are never inherited. `ask` is not inherited as permission. Empty/malformed role lists grant no tools. Project agents always require human approval, even with general Pi project trust; use user-level definitions for headless runs. A model-supplied `confirmProjectAgents: false` cannot bypass this.
 - Child processes ignore project executable resources (`--no-approve`) and explicitly load the policy extension. A resumed child's saved capability ceiling also applies.
 
+The checked-in local `tool-policy.json` explicitly allows `bash` and its separate `bash_process` supervisor (`list`, `peek`, `kill`). Allowing `bash` alone does not authorize the supervisor. Unknown tools still use `*: ask`; these shell permissions are not a sandbox.
+
 For example, a user-authored read-oriented policy:
 
 ```json
@@ -84,7 +86,7 @@ For example, a user-authored read-oriented policy:
 }
 ```
 
-The next tool call or `/tool-policy` observes policy edits. Installing updated extension code still requires loading that code through reload/restart. With defaults, a headless worker cannot run shell-based tests; it must report this and the parent performs the approved checks. Explicitly allowing `bash` in the user policy enables shell-capable workers when the parent/role also permits it, but grants arbitrary shell capabilities. Do not enable it merely to suppress a denial.
+The next tool call or `/tool-policy` observes policy edits once this extension version is loaded. `/tool-policy` shows the actual Pi version, PID, extension load time and working directory, not just the policy file on disk. Installing updated extension code still requires loading that code through reload/restart. Pi refuses the built-in `/reload` during an active response or compaction: its warning is not a successful reload. `/tool-policy reload` waits for idle before requesting a reload without canceling work. Old versions without this command need one successful idle `/reload`, or a restart with the saved session. Reloading extensions does not upgrade an already-running Pi executable. With defaults, a headless worker cannot run shell-based tests; it must report this and the parent performs the approved checks. Explicitly allowing `bash` in the user policy enables shell-capable workers when the parent/role also permits it, but grants arbitrary shell capabilities. Do not enable it merely to suppress a denial.
 
 ### Task-scoped permissions
 
@@ -117,6 +119,16 @@ Compared the public jcode prompts at revision [`ebc402bf`](https://github.com/1j
 Useful ideas: explicit task boundaries, root-owned delegation, current-state inspection, and matching every requirement to evidence before completion. Not adopted: automatic commits, recursive delegation, unlimited mission continuation, or expanding beyond the user's approved scope. These prompts do not establish how jcode performs on large repositories.
 
 Claude Opus 5.5 was consulted through Pi. The consultation recommended reusing the existing supervisor, making truncated reports recoverable, and aligning notes instructions with available tools. No private Claude Code implementation was inspected, and no claim of parity or superiority is made.
+
+### Runtime comparison: Jcode, Codex and Claude Code
+
+Inspected Jcode at [`de65ade`](https://github.com/1jehuang/jcode/tree/de65ade33d514b31a43885318179b3622f321170) and Codex at [`2a34aef`](https://github.com/openai/codex/tree/2a34aef79484bf769b4b225f3f595755f2962170). This is source inspection, not a performance benchmark.
+
+- Jcode's [`dag/schedule.rs`](https://github.com/1jehuang/jcode/blob/de65ade33d514b31a43885318179b3622f321170/crates/jcode-plan/src/dag/schedule.rs) dispatches only after declared dependencies complete and passes their artifacts forward. `comm_session.rs` rejects recursive spawning outside deep mode and enforces live-agent limits. Here, reuse the existing chain and failure stop instead of adding a task-graph engine. Neither implementation can infer an undeclared functional dependency reliably.
+- Codex's [`agent/control/budget.rs`](https://github.com/openai/codex/blob/2a34aef79484bf769b4b225f3f595755f2962170/codex-rs/core/src/agent/control/budget.rs) accounts for shared rollout usage and reports budget exhaustion. Its `multi_agents/wait.rs` returns a timed-out wait without stopping workers. Here, the existing supervisor enforces actual child execution deadlines; no shared token-budget engine was added.
+- Claude Code's [documented subagents](https://code.claude.com/docs/en/sub-agents) expose tool restrictions, resumable context and `maxTurns`. Its public [`feature-dev` command](https://github.com/anthropics/claude-code/blob/main/plugins/feature-dev/commands/feature-dev.md) prescribes separate exploration, architecture and review rounds. Those automatic rounds are not adopted: they can delay the first usable result. The public repository provides plugin sources, not the private core implementation; no private-core inspection is claimed.
+
+Runtime-enforced here: child permissions, no recursive delegation, per-call concurrency, process deadlines and chain failure stops. First-slice priority, stable contracts and avoiding a second correction round are model guidance, not mechanical guarantees.
 
 ### DeepSeek Harness comparison
 
