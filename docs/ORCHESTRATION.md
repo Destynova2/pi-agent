@@ -1,6 +1,6 @@
 # Orchestration on large projects
 
-Ordinary requests now receive adaptive delegation guidance when the root agent has the `subagent` tool. `/orchestrate` remains an explicit shortcut. These are bounded delegations, not an autonomous project scheduler.
+The installed strict sandbox disables `subagent`, shared notes, Graphify, LSP, web and MCP tool calls until they have confined executors. The delegation features below describe the retained implementation, not capabilities available in strict mode. Only file tools and Bash are currently enabled.
 
 ## Working method
 
@@ -57,7 +57,42 @@ Pi opens the existing native session through `--session`; it owns history recons
 
 Missing, corrupt, oversized (64 MiB) or incomplete session files are rejected without automatic repair. Current session format support is Pi v3. After a hard supervisor crash, a lock is deliberately not stolen: inspect `active.lock` and processes using that session path, confirm no child remains, back up the run directory, then remove only that stale lock manually. Do not delete a session or lock just to silence an error.
 
-## Tool authorization
+## Strict tool sandbox
+
+`extensions/tool-policy` now confines `read`, `write`, `edit`, `ls`, `find` and `grep` through `scripts/codex-tool.mjs` under the same Codex OS sandbox as Bash. It reuses Pi's native tool implementations, including edit validation and image handling. File calls are serialized per workspace; each has a 60-second deadline and 32 MiB output ceiling.
+
+`bash` and its `bash_process` supervisor retain the existing sandbox launcher and background lifecycle. `request_network_access` is the only approval tool: it can add exact public hosts, never filesystem permissions. Every other model-facing tool is denied without a prompt, including unknown tools and nested tool calls. The active model tool list is narrowed accordingly. Routine confined commands need no approval; there is no unrestricted fallback. The legacy `tool-policy.json` is ignored by this dispatcher; helper parsers remain only for the retained delegation implementation.
+
+The installer sets `shellPath` and deploys the shell launcher, file worker and shared network-policy module. Restart Pi with `--no-approve` after installation. Project resources are refused through `project_trust`; a session started with trusted project resources blocks all permitted tools too. `/tool-policy` reports configuration, not proof that the backend can run. A missing adapter, changed cwd/shell or backend failure blocks execution.
+
+This is a tool execution boundary, **not a whole-Pi process jail**. Model transport, session persistence, background logs and trusted extension lifecycle handlers remain host-side. Do not load untrusted personal/CLI extensions or toolchains. Outside reads remain allowed, so this is not credential confidentiality isolation. Tests still need to run on a host where Codex can create its OS sandbox; an enclosing sandbox can prohibit nested namespaces.
+
+### Network access
+
+The global baseline automatically permits `github.com`, `api.github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com`, `codeload.github.com` and `registry.npmjs.org`. Other registries, documentation sites and APIs require an additional host grant. This baseline applies to new sessions in every project after installation; it does not validate the projects themselves.
+
+For a different persistent baseline, create the user-owned `<agent-dir>/network-policy.json` outside Pi. This replaces the defaults and is preserved by the installer:
+
+```json
+{
+  "allow": ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
+  "deny": ["blocked.example.com"]
+}
+```
+
+Only exact public DNS names are accepted, not URLs, ports, wildcards or IP literals. An explicit deny cannot be approved. Missing policy uses the defaults; malformed or symlinked policy fails closed. `{"allow":[]}` starts offline, with optional explicit host requests in interactive sessions. Project policy files are ignored.
+
+The agent sees the current allowed hosts and can call `request_network_access` with `hosts` and `reason`. Already permitted hosts do not prompt. One affirmative human answer authorizes the new hosts for subsequent commands in the current workspace/Pi session. Duplicate requests share that grant; a refusal is not repeatedly prompted. Cancellation, session replacement, a new explicit deny or absent UI cannot become permission. Headless automation must use the global baseline. Grants live in private host-owned `<agent-dir>/network-grants/*.json` files and are removed on session shutdown/reload; a crash can leave inert files, which are never auto-loaded by a new Pi session.
+
+Network access uses Codex's native managed proxy, not a home-grown proxy or a network-enabled shell outside the jail. It requires stable Codex >=0.155.1. Both the permission profile and `features.network_proxy=true` are supplied; the filesystem profile inherits Codex's protected metadata paths, keeps shared `/tmp` read-only and permits the private `TMPDIR`. Network-enabled commands also keep `.pi` read-only. Direct sockets to the host or outside network, upstream proxies, SOCKS, Unix-socket forwarding and local/private destinations are not enabled. Linux may allow loopback listeners inside the sandbox's isolated network namespace; this does not expose the host network. Clients must honor the injected HTTP(S) proxy variables; SSH and programs that ignore proxies will fail rather than bypass containment.
+
+A host grant permits proxy traffic to that host, including uploads and authenticated writes; it is not a read-only or per-URL permission. Outside file reads are still allowed: do not treat a domain allowlist as data-loss prevention. Codex documents DNS-rebinding limitations; stronger destination-IP guarantees need a lower-level egress firewall. Running background commands keep their startup proxy policy. Stop them to revoke their existing access; grants only affect newly launched commands. No failed command is automatically retried because earlier steps may already have had effects.
+
+Source: Codex [proxy policy](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/network-proxy/README.md) and [sandbox launcher](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/cli/src/debug_sandbox.rs). The real proxy test requires a host able to create Codex's OS sandbox and reach public HTTPS. It cannot be validated inside a runtime that prohibits nested sandboxing.
+
+### Retired authorization model (historical)
+
+The following approval/task rules describe the old dispatcher only. They are not active and cannot grant exceptions in strict mode.
 
 `extensions/tool-policy` gates model tool calls before execution, including extension tools. `/tool-policy` re-reads the trusted file and shows current rules and errors. Every authorization also re-reads it; policy edits require no reload. A changed policy revokes task grants and invalidates queued/open approvals. A corrupt or unreadable update blocks calls instead of keeping stale permissions. `<agent-dir>/tool-policy.json` is optional, user-owned, never loaded from the project, and not replaced by the installer.
 
@@ -90,26 +125,27 @@ For example, a user-authored read-oriented policy:
 
 The next tool call or `/tool-policy` observes policy edits once this extension version is loaded. `/tool-policy` shows the actual Pi version, PID, extension load time and working directory, not just the policy file on disk. Installing updated extension code still requires loading that code through reload/restart. Pi refuses the built-in `/reload` during an active response or compaction: its warning is not a successful reload. `/tool-policy reload` waits for idle before requesting a reload without canceling work. Old versions without this command need one successful idle `/reload`, or a restart with the saved session. Reloading extensions does not upgrade an already-running Pi executable. With defaults, a headless worker cannot run shell-based tests; it must report this and the parent performs the approved checks. Explicitly allowing `bash` in the user policy enables shell-capable workers when the parent/role also permits it, but grants arbitrary shell capabilities unless an OS sandbox separately confines execution. Do not enable it merely to suppress a denial.
 
-### Codex shell sandbox (macOS)
+### Codex shell sandbox (macOS and Linux)
 
-Set `shellPath` in the user-owned `settings.json` to the absolute path of `scripts/codex-shell.mjs`, then reload Pi while idle. The script must be executable (`chmod +x scripts/codex-shell.mjs`). This adapter uses Pi >=0.99.1, the existing Codex CLI (tested with 0.146.0), and Node >=22.19. It makes no model calls and does not require Codex authentication. The default binary is `~/.local/bin/codex`; a trusted launcher environment can set `PI_CODEX_SANDBOX_BIN` to another installed binary.
+The installer deploys the executable launcher to `<agent-dir>/scripts/codex-shell.mjs` and sets `shellPath` to that absolute path. Restart Pi after installation. This adapter uses Pi >=0.99.1, the existing Codex CLI (>=0.155.1 for managed network access; earlier shell-only validation used macOS 0.146.0 and Linux 0.155.1), and Node >=22.19. It makes no model calls and does not require Codex authentication. The default binary is `~/.local/bin/codex`; a trusted launcher environment can set `PI_CODEX_SANDBOX_BIN` to another installed binary. A symlink at the default path can also point to a trusted package-manager installation.
 
 - Native Bash, user `!` commands, and `@richardgill/pi-background-bash` use Pi's existing shell setting. Foreground/background execution, streaming, exit codes, timeouts and process-group cancellation remain owned by Pi/the background extension. No command-text rewriting or extra approval model is added.
-- Codex applies macOS Seatbelt to Bash and its descendants: writes are limited to the command's initial working directory and a private per-project `TMPDIR`; network access is disabled. `.git`, `.codex` and `.agents` remain protected by Codex. The directory is the session/worker cwd, not an inferred parent repository or all of `~/workspace`. The sandbox guard also rejects single, parallel and chained delegations whose canonical cwd escapes the parent's directory.
-- Outside reads remain allowed. The adapter is not a whole-agent sandbox: native file tools, LSP, Graphify, MCP, extension internals and model transport remain separate. Trusted extensions/toolchains and user configuration are assumed. Do not use another tool to bypass a denied shell action.
+- Codex applies macOS Seatbelt or Linux bubblewrap plus `no_new_privs`/seccomp to Bash and its descendants: writes are limited to the command's initial working directory and a private per-project `TMPDIR`; network access is restricted to allowed hosts through the managed proxy, or disabled when no hosts are allowed. `.git`, `.codex` and `.agents` remain protected by Codex. The directory is the session/worker cwd, not an inferred parent repository or all of `~/workspace`. The sandbox guard also rejects single, parallel and chained delegations whose canonical cwd escapes the parent's directory.
+- Outside reads remain allowed. The strict dispatcher also runs native file tools through this adapter and blocks LSP, Graphify, MCP and other unconfined tools. Model transport and trusted extension internals remain outside the sandbox. Do not use another tool to bypass a denied action.
 - `git commit`, `git push`, dependency downloads, local servers and Podman access can be blocked. A denial is an error, never permission to retry outside the sandbox. The adapter fails closed when the backend is missing, the platform is unsupported or launch fails.
+- Linux requires a kernel/runtime that permits Codex's namespace-based sandbox. An unavailable sandbox is a launch failure, not permission to disable confinement. Fixed `/bin/cat` relays convert Node's captured Unix-socket stdio to pipes: otherwise Codex's network seccomp filter prevents libuv socket inspection and can silently discard Node console output. Only those fixed relays run outside confinement; the model's command remains a literal argument to Codex. Tests cover stdin, stdout, stderr, exit status and cancellation without relaxing network restrictions. This is a non-interactive Pi launcher: stdin must be closed or reach EOF. Do not invoke it from another host with an indefinitely open stdin; the input relay could outlive the command. Pi's normal native/background command paths use ignored stdin. No second sandbox backend or extra model process is added.
 - Codex configuration is isolated under `~/.cache/pi-codex-sandbox/config`, with explicit filesystem/network overrides. Scratch files persist under a cwd-hashed directory in the same cache; they are not committed and have no automatic retention policy. The user's normal Codex profiles, credentials and saved allow rules are not loaded.
 - For model Bash calls, project `shellPath` overrides are refused by `extensions/codex-sandbox` while this global adapter is enabled. Human `!` commands use Pi's resolved shell setting; do not override it in project settings. `/codex-sandbox` reports the shell configured at session load. Updating files does not retrofit an already running shell: reload idle sessions; existing jobs retain their original permissions.
 
 Validate the actual installed backend and background extension without providers:
 
 ```sh
-node --test --import ./tests/resolve-pi.mjs tests/codex-shell.test.mjs tests/codex-sandbox.integration.test.mjs
+node --test --import ./tests/resolve-pi.mjs tests/codex-shell.test.mjs tests/codex-sandbox.integration.test.mjs tests/strict-sandbox.integration.test.mjs tests/codex-network.integration.test.mjs
 ```
 
-Tests exercise project/temp writes, outside writes including symlinks and child processes, protected metadata, network binding denial, preserved outside-read behavior, missing-backend refusal, native/background execution, peek/kill and deadlines. The implementation follows Codex [`exec_policy.rs`](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/core/src/exec_policy.rs) and [`seatbelt.rs`](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/sandboxing/src/seatbelt.rs); it invokes `codex sandbox` directly rather than importing execution-policy allow rules that can bypass confinement.
+Tests exercise project/temp writes, outside writes including symlinks and child processes, protected metadata, host-network isolation, proxy allow/deny decisions and host grants, preserved outside-read behavior, missing-backend refusal, native/background execution, peek/kill and deadlines. The Linux backend is documented in Codex [`linux-sandbox/src/lib.rs`](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/linux-sandbox/src/lib.rs). The macOS implementation follows Codex [`exec_policy.rs`](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/core/src/exec_policy.rs) and [`seatbelt.rs`](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/sandboxing/src/seatbelt.rs); it invokes `codex sandbox` directly rather than importing execution-policy allow rules that can bypass confinement.
 
-### Task-scoped permissions
+### Retired task-scoped permissions (historical, inactive)
 
 Use `task` instead of `allow`/`ask` for `bash`, `read`, `write`, `edit`, `find`, `ls` and `grep` to reduce routine prompts without allowing every shell command. It is opt-in; an absent policy still uses the original defaults. Explicit `ask` and `deny` remain unconditional.
 

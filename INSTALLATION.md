@@ -44,7 +44,9 @@ Idempotent, Node stdlib only. Before any mutation:
 - refuses if a symlink exists anywhere under a managed resource (source or target) — would allow a write outside the target during the copy;
 - validates the minimal JSON schema of `settings.json` (source and target) before any write.
 
-Managed directories/files (`MANAGED_DIRS`/`MANAGED_FILES` in `scripts/install.mjs`): `agents/`, `extensions/`, `lib/`, `tools/`, `keybindings.json`, `settings.json`. **Never touched**: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, nor any file outside this list (including `skills/`, see below).
+Managed directories/files (`MANAGED_DIRS`/`MANAGED_FILES` in `scripts/install.mjs`): `agents/`, `extensions/`, `lib/`, `gates/`, `scripts/codex-shell.mjs`, `scripts/codex-tool.mjs`, `scripts/codex-network.mjs`, `keybindings.json`, `settings.json`. The shell launcher retains its executable mode and is backed up on reinstall; other personal scripts are not managed. **Never touched**: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `tool-policy.json`, `network-policy.json`, nor any file outside this list (including `skills/`, see below).
+
+Installation now enables the [strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox): it replaces `shellPath` with the installed Codex adapter, preserving the previous settings in the backup. Restart Pi with `--no-approve`. File tools and Bash run confined without routine approval prompts. Predefined network hosts are automatic; `request_network_access` asks only for additional public hosts, without widening filesystem access. All other tools remain denied. Stable Codex >=0.155.1 must be installed and its OS sandbox and managed proxy must work. Legacy `tool-policy.json` rules no longer authorize calls.
 
 Sequence: back up the existing target into `<target>.backup-<timestamp>/` (created with `0700` permissions), then copy file by file (never deletes a target directory: any personal addition in a managed directory survives a reinstall), then merge `settings.json` (packages managed by the source replace their counterpart by identity — without the `@version`/`@sha` suffix — in the target; personal target packages with no source counterpart are kept), then `pi install <source> --no-approve` for each listed package.
 
@@ -118,6 +120,6 @@ Replace `<target agent directory>` with your own install path; do not copy a `/U
 
 ## What this documentation does not guarantee
 
-- **Linux portability**: not validated. An attempt to run in an "e2e-runner"-type container failed for lack of a downloaded Node image; only a macOS run has been verified end to end for this document. Treat Linux as untested until an explicit validation has been done.
+- **Every Linux environment**: the installer and full integration suite were validated on native Fedora 44 with Pi 0.99.1, Node 26.9.0 and Codex 0.155.1; Darwin-only tests remain skipped there. This does not validate restricted containers or other kernels. Check the real Codex sandbox before enabling it; unavailable namespace support must remain a failure.
 - **Full automation**: this installation copies files and invokes `pi install`, it does not configure model authentication (handled by `pi` itself, never by an export from this repo) nor declared-but-unbundled external dependencies (`skills/cli-code-skills` above).
 - **Recovery**: in case of a problem, restore from the `<target>.backup-<timestamp>/` backup created by the installer, never via a `git checkout`/`jj restore` of the target (which may not be a versioned repo).

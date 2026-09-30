@@ -1,18 +1,18 @@
+// Pure taskDecision skill-path scoping, still used by extensions/subagent. The "task" action
+// this once fed into ../index.ts's approval prompts has been retired along with tool-policy.json
+// exceptions (strict sandbox denies without asking); see tests/strict-sandbox.integration.test.mjs.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import register from "../index.ts";
 import { taskDecision } from "../task.ts";
 
-test("installed skill Markdown reads are automatic, including linked collections; other permissions stay intact", async () => {
+test("installed skill Markdown reads are recognized by taskDecision, including linked collections; other actions still ask", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-skill-policy-"));
   const agent = join(root, "agent");
   const cwd = join(root, "project");
   const source = join(root, "installed-collection");
-  const previous = process.env.PI_CODING_AGENT_DIR;
   try {
     for (const dir of [cwd, join(agent, "skills/local"), join(source, "example/references")]) mkdirSync(dir, { recursive: true });
     writeFileSync(join(agent, "skills/local/SKILL.md"), "Local skill");
@@ -31,20 +31,7 @@ test("installed skill Markdown reads are automatic, including linked collections
       assert.equal(taskDecision("read", { path }, cwd, agent).action, "ask", path);
     }
     for (const name of ["write", "edit"]) assert.equal(taskDecision(name, { path: skill }, cwd, agent).action, "ask");
-    // Exercise the actual gate: only task rules receive this exception, never ask or deny.
-    type Handler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown | Promise<unknown>;
-    process.env.PI_CODING_AGENT_DIR = agent;
-    for (const action of ["task", "ask", "deny"]) {
-      writeFileSync(join(agent, "tool-policy.json"), JSON.stringify({ read: action }));
-      const handlers = new Map<string, Handler>();
-      register({ on(name: string, handler: Handler) { handlers.set(name, handler); }, registerCommand() {} } as unknown as ExtensionAPI);
-      const ctx = { cwd, hasUI: false } as ExtensionContext;
-      await handlers.get("before_agent_start")!({ systemPromptOptions: { sections: {} } }, ctx);
-      const result = await handlers.get("tool_call")!({ toolName: "read", input: { path: skill } }, ctx);
-      if (action === "task") assert.equal(result, undefined); else assert.ok(result);
-    }
   } finally {
-    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     rmSync(root, { recursive: true, force: true });
   }
 });

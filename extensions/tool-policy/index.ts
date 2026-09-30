@@ -1,190 +1,119 @@
-// Re-reads the trusted tool policy before authorization (deny before execute).
-// Trust boundary: only user-loaded extensions; handlers loaded before this one still see
-// and may mutate input first. Task rules recognize a narrow subset, not an OS sandbox.
-import { getAgentDir, VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { join } from "node:path";
-import { DEFAULT_TOOL_POLICY, isValidToolName, loadToolPolicy, PATH_GUARDED_TOOLS, protectedPathViolation, TOOL_POLICY_FILE, toolDecision, type ToolPolicy } from "./core.ts";
+// Trusted host broker: all file operations execute in Codex; unsupported tools fail closed.
+import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import {
+  createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition,
+  createLsToolDefinition, createFindToolDefinition, createGrepToolDefinition,
+  getAgentDir, getPackageDir, SettingsManager, withFileMutationQueue,
+  type ExtensionAPI, type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
-import { taskDecision } from "./task.ts";
+import { registerNetworkAccess } from "./network.ts";
 
-const MAX_PREVIEW = 4000;
+export const STRICT_TOOLS = new Set(["read", "write", "edit", "ls", "find", "grep", "bash", "bash_process", "request_network_access"]);
+const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const factories = [createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition, createFindToolDefinition, createGrepToolDefinition];
 
-function deepFreeze(value: unknown, seen = new WeakSet<object>()): void {
-  if (typeof value !== "object" || value === null || seen.has(value)) return;
-  seen.add(value);
-  Object.freeze(value); // throws on typed arrays with elements: caller blocks
-  for (const key of Reflect.ownKeys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor && "value" in descriptor) deepFreeze(descriptor.value, seen);
-  }
-}
-
-function currentSignal(ctx: ExtensionContext): AbortSignal | undefined {
-  try {
-    return ctx.signal;
-  } catch {
-    return AbortSignal.abort(); // stale context: treat as aborted
-  }
-}
-
-async function confirmOnce(ctx: ExtensionContext, toolName: string, input: unknown, signal: AbortSignal | undefined, source: string, testGrant = false): Promise<"once" | "task" | false> {
-  if (signal?.aborted) return false;
-  let preview: string;
-  try {
-    preview = JSON.stringify(input, null, 2) ?? "undefined";
-  } catch {
-    return false;
-  }
-  if (preview.length > MAX_PREVIEW) preview = `${preview.slice(0, MAX_PREVIEW)}\n[… ${preview.length - MAX_PREVIEW} more characters]`;
-  let onAbort = () => {};
-  const aborted = new Promise<false>((resolve) => {
-    onAbort = () => resolve(false);
-    signal?.addEventListener("abort", onAbort, { once: true });
+export function runSandboxTool(launcher: string, worker: string, sdk: string, cwd: string, request: unknown, signal?: AbortSignal): Promise<any> {
+  if (signal?.aborted) return Promise.reject(new Error("Sandbox tool aborted"));
+  return new Promise((done, fail) => {
+    const child = spawn(launcher, ["-c", `${quote(process.execPath)} ${quote(worker)} ${quote(sdk)}`], {
+      cwd, detached: true, stdio: ["pipe", "pipe", "pipe"],
+    });
+    let failure: Error | undefined;
+    const stop = (error: Error) => {
+      failure ??= error;
+      if (child.pid) try { process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ }
+    };
+    const abort = () => stop(new Error("Sandbox tool aborted"));
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    const timer = setTimeout(() => stop(new Error("Sandbox tool timed out (60s)")), 60_000);
+    const stdout: Buffer[] = [], stderr: Buffer[] = [];
+    let bytes = 0;
+    const collect = (chunks: Buffer[]) => (data: Buffer) => {
+      bytes += data.length;
+      if (bytes > 32 * 1024 * 1024) stop(new Error("Sandbox tool output exceeds 32 MiB"));
+      else chunks.push(data);
+    };
+    child.stdout.on("data", collect(stdout));
+    child.stderr.on("data", collect(stderr));
+    child.on("error", error => { failure ??= error; });
+    child.stdin.on("error", error => { failure ??= error; });
+    child.on("close", code => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if (failure) return fail(failure);
+      if (code !== 0) return fail(new Error(`Sandbox tool failed (${code}): ${Buffer.concat(stderr).toString().slice(0, 8000)}`));
+      try {
+        const result = JSON.parse(Buffer.concat(stdout).toString());
+        if (!Array.isArray(result.content)) throw new Error("Invalid sandbox tool result");
+        done(result);
+      } catch (error) { fail(error); }
+    });
+    child.stdin.end(JSON.stringify(request));
   });
-  try {
-    const choices = ["Deny", "Allow once", "Allow this exact test command for this task"];
-    const dialog = testGrant
-      ? ctx.ui.select(`Project code has full filesystem/network access, including after edits.\n${source}\n${preview}`, choices, { signal }).then(choice => choice === choices[1] ? "once" as const : choice === choices[2] ? "task" as const : false)
-      : ctx.ui.confirm(`Allow tool "${toolName}"?`, `Policy: ask (${source})\n\n${preview}`, { signal }).then(answer => answer === true ? "once" as const : false);
-    const answer = await Promise.race([dialog, aborted]);
-    return signal?.aborted ? false : answer;
-  } catch {
-    return false;
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
-  }
 }
 
 export default function (pi: ExtensionAPI) {
-  const loadedAt = new Date().toISOString();
-  let agentDir: string | undefined;
-  let policyPath = TOOL_POLICY_FILE;
-  let policy: ToolPolicy | undefined;
-  let loadError: string | undefined;
-  try {
-    agentDir = getAgentDir();
-    policyPath = join(agentDir, TOOL_POLICY_FILE);
-    policy = loadToolPolicy(agentDir);
-  } catch (error) {
-    loadError = error instanceof Error ? error.message : String(error);
+  const agentDir = getAgentDir();
+  const launcher = join(agentDir, "scripts/codex-shell.mjs");
+  const worker = join(agentDir, "scripts/codex-tool.mjs");
+  const sdk = join(getPackageDir(), "dist/index.js");
+  let loadedShell: string | undefined;
+  let root: string | undefined;
+  const shell = (ctx: ExtensionContext) => {
+    const settings = SettingsManager.create(ctx.cwd);
+    const value = ctx.isProjectTrusted() ? settings.getShellPath() : settings.getGlobalSettings().shellPath;
+    return value ? resolve(value.replace(/^~\//, `${homedir()}/`)) : undefined;
+  };
+  const verify = (ctx: ExtensionContext) => {
+    if (ctx.isProjectTrusted()) throw new Error("Strict sandbox requires untrusted project resources. Restart Pi with --no-approve; do not load project extensions on the host.");
+    if (!root || realpathSync(ctx.cwd) !== root || loadedShell !== launcher || shell(ctx) !== launcher) {
+      throw new Error("Strict sandbox not loaded or shellPath/cwd changed. Install the Codex adapter and restart Pi. No unrestricted fallback.");
+    }
+    for (const path of [agentDir, launcher, worker, sdk]) {
+      const rel = relative(root, realpathSync(path));
+      if (rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel))) {
+        throw new Error("Sandbox runtime/configuration must live outside the writable workspace.");
+      }
+    }
+  };
+  registerNetworkAccess(pi, agentDir, verify);
+  // Never load executable project resources from the writable side of the boundary.
+  pi.on("project_trust", () => ({ trusted: "no" }));
+  pi.on("session_start", (_event, ctx) => {
+    root = realpathSync(ctx.cwd);
+    loadedShell = shell(ctx);
+  });
+  pi.on("session_shutdown", () => { root = loadedShell = undefined; });
+  pi.on("tool_call", (event, ctx) => {
+    if (!STRICT_TOOLS.has(event.toolName)) return { block: true, reason: `Strict sandbox: ${event.toolName} has no confined executor; denied without approval or exception.` };
+    try { verify(ctx); } catch (error) { return { block: true, reason: (error as Error).message }; }
+  });
+  for (const factory of factories) {
+    const tool = factory(process.cwd());
+    pi.registerTool({
+      ...tool,
+      async execute(id, input, signal, _onUpdate, ctx) {
+        verify(ctx);
+        const run = () => runSandboxTool(launcher, worker, sdk, ctx.cwd, { name: tool.name, id, input }, signal);
+        // ponytail: serialize file calls per workspace; per-file queues if contention matters.
+        return withFileMutationQueue(ctx.cwd, run);
+      },
+    } as any);
   }
-  let source = policy === DEFAULT_TOOL_POLICY ? `built-in; ${policyPath} absent` : policyPath;
-  let tail: Promise<unknown> = Promise.resolve();
-  const serialize = <T>(task: () => Promise<T>): Promise<T> => {
-    const run = tail.then(task, task);
-    tail = run.catch(() => undefined);
-    return run;
-  };
-  let generation = 0;
-  let taskRoot: string | undefined;
-  const grants = new Set<string>();
-  let automatic = 0;
-  let approvedCount = 0;
-  let deniedCount = 0;
-  const reset = () => {
-    generation++;
-    taskRoot = undefined;
-    grants.clear();
-    automatic = approvedCount = deniedCount = 0;
-  };
-  let hasTaskRules = policy && Object.values(policy).includes("task");
-  const refreshPolicy = () => {
-    const previous = JSON.stringify(policy);
-    const previousError = loadError;
-    try {
-      agentDir ??= getAgentDir();
-      policyPath = join(agentDir, TOOL_POLICY_FILE);
-      policy = loadToolPolicy(agentDir);
-      loadError = undefined;
-    } catch (error) {
-      policy = undefined; // Never keep an old allow rule after an unreadable/corrupt update.
-      loadError = error instanceof Error ? error.message : String(error);
-    }
-    if (JSON.stringify(policy) !== previous || loadError !== previousError) {
-      generation++;
-      grants.clear();
-    }
-    source = policy === DEFAULT_TOOL_POLICY ? `built-in; ${policyPath} absent` : policyPath;
-    hasTaskRules = policy && Object.values(policy).includes("task");
-  };
-  pi.on("session_start", () => { refreshPolicy(); reset(); });
-  pi.on("session_shutdown", reset);
-  pi.on("before_agent_start", (event, ctx) => {
-    refreshPolicy();
-    reset();
-    taskRoot = ctx.cwd;
-    if (hasTaskRules) event.systemPromptOptions.sections.tool_policy = "Task permissions use the current working directory, not inferred user intent. Prefer read/find/ls/grep for routine inspection. Shell scripts, compound commands, sensitive paths and external actions may need approval. Never work around a denial using another tool. Test grants expire when this task settles or new input starts.";
+  pi.on("before_agent_start", event => {
+    pi.setActiveTools(pi.getActiveTools().filter(name => STRICT_TOOLS.has(name)));
+    event.systemPromptOptions.sections.tool_policy = "Strict tool sandbox: file tools and Bash execute inside Codex's OS sandbox. Writes: current workspace and private TMPDIR only; outside reads allowed. Network is restricted to approved hosts through Codex's managed proxy. request_network_access can ask the human for an additional public host, never for filesystem escape. All other tools (including LSP, subagent, MCP, web and shared notes) are denied. No tool-policy.json exceptions or automatic escalation. Model transport, session storage and trusted extension lifecycle code remain host-side.";
   });
-  pi.on("agent_settled", (_event, ctx) => {
-    const report = hasTaskRules && ctx.hasUI && automatic + approvedCount + deniedCount > 0;
-    const summary = `Tool permissions: ${automatic} automatically authorized, ${approvedCount} explicitly authorized, ${deniedCount} blocked. These are permissions, not execution results. Task grants cleared.`;
-    reset(); // Revoke before notifying: a failing UI must not preserve grants.
-    if (report) ctx.ui.notify(summary, "info");
-  });
-  const block = (reason: string) => { deniedCount++; return { block: true, reason }; };
-
-  pi.on("tool_call", async (event, ctx) => {
-    refreshPolicy();
-    if (!policy) return block(`Tool policy failed to load, every tool is blocked: ${loadError}. The user must fix or remove ${policyPath}; the next call re-reads it (/tool-policy shows details).`);
-    const name: unknown = event.toolName;
-    if (!isValidToolName(name)) return block(`Tool name ${JSON.stringify(String(name))} is not valid for the tool policy.`);
-    const signal = currentSignal(ctx);
-    if (signal?.aborted) return block(`Tool "${name}" blocked: the turn was aborted.`);
-    const decision = toolDecision(policy, name);
-    if (decision === "deny") return block(`Tool "${name}" is denied by the tool policy (${source}).`);
-    try {
-      deepFreeze(event.input); // approved input == executed input; later mutation fails closed
-    } catch (error) {
-      return block(`Tool "${name}" input could not be frozen for authorization: ${(error as Error).message}`);
-    }
-    if (PATH_GUARDED_TOOLS.has(name)) {
-      // Checked on the frozen input, whatever the allow/ask rule: the agent dir holds this policy,
-      // agent definitions, extensions and resume metadata a later subagent would trust.
-      const input = event.input as { path?: unknown } | null | undefined;
-      let cwd: unknown;
-      try { cwd = ctx.cwd; } catch { /* stale context */ }
-      const violation = protectedPathViolation(agentDir!, input?.path, cwd);
-      if (violation) return block(`Tool "${name}" blocked by the tool policy: target ${violation}. Edit it yourself outside Pi if intended.`);
-    }
-    if (decision === "allow") return undefined;
-    const epoch = generation;
-    const scoped = decision === "task" && taskRoot === ctx.cwd
-      ? taskDecision(name, event.input as Record<string, unknown>, ctx.cwd, agentDir)
-      : undefined;
-    if (scoped?.action === "allow") { automatic++; return undefined; }
-    const key = JSON.stringify([ctx.cwd, name, event.input]);
-    if (scoped?.action === "test" && grants.has(key)) { automatic++; return undefined; }
-    if (!ctx.hasUI) return block(`Tool "${name}" requires user confirmation and no UI is available; denied. ${scoped?.reason ?? ""}`);
-    return serialize(async () => {
-      refreshPolicy();
-      if (epoch !== generation || signal?.aborted) return block(`Tool "${name}" blocked: task changed or aborted.`);
-      if (scoped?.action === "test" && grants.has(key)) { automatic++; return undefined; }
-      const approved = await confirmOnce(ctx, name, event.input, signal, `${source}${scoped ? `; ${scoped.reason}` : ""}`, scoped?.action === "test");
-      refreshPolicy();
-      if (!approved || epoch !== generation || signal?.aborted) return block(`Tool "${name}" was not approved for the current task.`);
-      if (approved === "task") grants.add(key);
-      approvedCount++;
-      return undefined;
-    });
-  });
-
   pi.registerCommand("tool-policy", {
-    description: "Show live permissions and runtime; reset revokes grants; reload waits for idle before reloading extensions",
-    handler: async (args, ctx) => {
-      if (args.trim() === "reload") {
-        ctx.ui.notify("Extension reload requested. Waiting for idle; active work is not canceled. After reload, run /tool-policy to verify the loaded runtime.", "info");
-        await ctx.waitForIdle();
-        await ctx.reload();
-        return; // The old context is stale after reload.
-      }
-      refreshPolicy();
-      if (args.trim() === "reset") reset();
-      if (!policy) {
-        ctx.ui.notify(`Tool policy: LOAD FAILED, all tools blocked.\n${loadError}\nFix or remove ${policyPath}; the next call re-reads it.`, "error");
-        return;
-      }
-      const lines = Object.keys(policy).sort().map((key) => `  ${key}: ${policy![key]}`);
-      ctx.ui.notify(`Tool policy (live file; re-read before each authorization)\nRuntime: Pi ${VERSION}; PID ${process.pid}; extension loaded ${loadedAt}\nSource: ${source}\nWorking directory: ${ctx.cwd}\nTask scope: ${taskRoot ?? "none"}; exact test grants: ${grants.size}\n${lines.join("\n")}`, "info");
+    description: "Show sandbox status (only additional network hosts require approval)",
+    handler: async (_args, ctx) => {
+      try { verify(ctx); ctx.ui.notify(`Strict sandbox configured: ${[...STRICT_TOOLS].join(", ")}. Other tools denied. Only additional public network hosts can request approval. Restart required after installation.`, "info"); }
+      catch (error) { ctx.ui.notify((error as Error).message, "error"); }
     },
   });
 }

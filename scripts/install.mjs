@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { isSubPath, isSymlink, pathExists } from "./lib.mjs";
 
 export const MANAGED_DIRS = ["agents", "extensions", "lib", "gates"];
-export const MANAGED_FILES = ["keybindings.json"];
+export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs"];
 export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json"];
 
 const DEFAULT_SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -96,8 +96,12 @@ async function assertSafeTarget(sourceRoot, target) {
 
   const symlinkEntries = [];
   for (const entry of MANAGED_ENTRIES) {
-    symlinkEntries.push(...(await scanSymlinks(join(sourceRoot, entry))));
-    symlinkEntries.push(...(await scanSymlinks(join(target, entry))));
+    for (const root of [sourceRoot, target]) {
+      for (let parent = dirname(join(root, entry)); parent !== root; parent = dirname(parent)) {
+        if (await isSymlink(parent)) symlinkEntries.push(parent);
+      }
+      symlinkEntries.push(...(await scanSymlinks(join(root, entry))));
+    }
   }
   if (symlinkEntries.length > 0) {
     throw new Error(
@@ -117,6 +121,7 @@ async function backupExisting(target, entries) {
   await mkdir(backupDir, { recursive: true, mode: 0o700 });
   await chmod(backupDir, 0o700);
   for (const entry of existing) {
+    await mkdir(dirname(join(backupDir, entry)), { recursive: true });
     await cp(join(target, entry), join(backupDir, entry), { recursive: true });
   }
   return backupDir;
@@ -166,6 +171,7 @@ async function syncDir(src, dest) {
 
 async function syncFile(src, dest) {
   if (!(await pathExists(src))) return false;
+  await mkdir(dirname(dest), { recursive: true });
   await rm(dest, { force: true });
   await cp(src, dest);
   return true;
@@ -272,6 +278,8 @@ export async function runInstall({
   const sourceSettings = await readSettings(join(sourceRoot, "settings.json"), "settings.json source");
   const targetSettings = await readSettings(join(resolvedTarget, "settings.json"), "settings.json target");
   const mergedSettings = mergeSettings(sourceSettings, targetSettings);
+  // Strict tool execution has no unrestricted-shell mode.
+  mergedSettings.shellPath = join(resolvedTarget, "scripts/codex-shell.mjs");
 
   await mkdir(resolvedTarget, { recursive: true });
   const backupDir = await backupExisting(resolvedTarget, MANAGED_ENTRIES);
@@ -283,7 +291,10 @@ export async function runInstall({
     }
     const syncedFiles = [];
     for (const file of MANAGED_FILES) {
-      if (await syncFile(join(sourceRoot, file), join(resolvedTarget, file))) syncedFiles.push(file);
+      if (await syncFile(join(sourceRoot, file), join(resolvedTarget, file))) {
+        syncedFiles.push(file);
+        if (file === "scripts/codex-shell.mjs") await chmod(join(resolvedTarget, file), 0o755);
+      }
     }
 
     await writeFile(join(resolvedTarget, "settings.json"), `${JSON.stringify(mergedSettings, null, 2)}\n`);

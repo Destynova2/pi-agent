@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Pi's shellPath adapter. The existing Bash supervisor still owns process groups and logs.
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { networkHosts, networkSandboxArgs, requireNetworkProxyVersion } from "./codex-network.mjs";
 
 export function sandboxArgs(command) {
   return [
@@ -17,7 +19,7 @@ export function sandboxArgs(command) {
 }
 
 export function launch(argv = process.argv.slice(2)) {
-  if (process.platform !== "darwin") throw new Error("Codex shell sandbox currently requires macOS; no unsandboxed fallback.");
+  if (!["darwin", "linux"].includes(process.platform)) throw new Error("Codex shell sandbox requires macOS or Linux; no unsandboxed fallback.");
   if (argv.length !== 2 || argv[0] !== "-c") throw new Error("Codex shell expects exactly: -c <command>.");
   if (typeof process.execve !== "function") throw new Error("Codex shell requires Node with process.execve (Node >=22.19).");
   const cwd = realpathSync(process.cwd());
@@ -41,8 +43,21 @@ export function launch(argv = process.argv.slice(2)) {
   env.TMPDIR = scratch; // A private per-project temp root, not all of /tmp.
   delete env.BASH_ENV;
   delete env.ENV;
-  // Replace this process: cancellation/timeout still kills the original PGID and its descendants.
-  process.execve(codex, [codex, ...sandboxArgs(argv[1])], env);
+  const allowedHosts = networkHosts(agentDir, cwd, env.PI_CODEX_NETWORK_GRANTS);
+  if (allowedHosts.length) requireNetworkProxyVersion(execFileSync(codex, ["--version"], { env, encoding: "utf8", timeout: 5000, maxBuffer: 65536 }));
+  const args = allowedHosts.length ? networkSandboxArgs(argv[1], cwd, scratch, allowedHosts) : sandboxArgs(argv[1]);
+  delete env.PI_CODEX_NETWORK_GRANTS; // Grants are broker state, not a child-controlled channel.
+  // Node captures stdio with Unix sockets; Linux seccomp denies libuv's socket
+  // inspection. Fixed cat relays supply real pipes without relaxing the sandbox.
+  // The command stays an argv value to Codex, never evaluated by this outer shell.
+  if (process.platform === "linux") {
+    process.execve("/bin/bash", ["bash", "--noprofile", "--norc", "-c",
+      'set -o pipefail; "$@" < <(/bin/cat) 2> >(/bin/cat >&2) | /bin/cat',
+      "pi-codex-sandbox", codex, ...args], env);
+  } else {
+    // Keep the original PGID for cancellation/timeout on both platforms.
+    process.execve(codex, [codex, ...args], env);
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

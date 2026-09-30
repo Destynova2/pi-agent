@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runInstall, MANAGED_DIRS } from "../scripts/install.mjs";
 import { buildFixtureSource, makeFakePi, makeTmpDir } from "./fixtures/build.mjs";
@@ -8,6 +8,51 @@ import { buildFixtureSource, makeFakePi, makeTmpDir } from "./fixtures/build.mjs
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
+
+test("sandbox launcher is installed executable, backed up, and refuses symlinked parents", async () => {
+  const source = await buildFixtureSource();
+  const parent = await makeTmpDir("pi-agent-launcher-");
+  const target = join(parent, "agent");
+  const outside = join(parent, "outside");
+  const relative = "scripts/codex-shell.mjs";
+  try {
+    await mkdir(join(source, "scripts"));
+    await writeFile(join(source, relative), "#!/usr/bin/env node\n");
+    await writeFile(join(source, "scripts/codex-tool.mjs"), "// confined file worker\n");
+    await writeFile(join(source, "scripts/codex-network.mjs"), "// managed network policy\n");
+    await chmod(join(source, relative), 0o644); // installer must set executable mode itself
+    await runInstall({ sourceRoot: source, target, noPackages: true });
+    assert.equal((await stat(join(target, relative))).mode & 0o777, 0o755);
+    assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, relative));
+    assert.equal(await readFile(join(target, "scripts/codex-tool.mjs"), "utf8"), "// confined file worker\n");
+    await writeFile(join(target, relative), "previous launcher\n");
+    await writeFile(join(target, "scripts/personal.mjs"), "keep\n");
+    await writeFile(join(target, "tool-policy.json"), '{"bash":"deny"}\n');
+    await writeFile(join(target, "network-policy.json"), '{"allow":[]}\n');
+    await writeFile(join(target, "settings.json"), '{"shellPath":"/bin/bash","theme":"dark"}');
+    const result = await runInstall({ sourceRoot: source, target, noPackages: true });
+    assert.equal(await readFile(join(result.backupDir, relative), "utf8"), "previous launcher\n");
+    assert.equal(await readFile(join(target, relative), "utf8"), "#!/usr/bin/env node\n");
+    assert.equal(await readFile(join(target, "scripts/personal.mjs"), "utf8"), "keep\n");
+    assert.equal(await readFile(join(target, "tool-policy.json"), "utf8"), '{"bash":"deny"}\n');
+    assert.equal(await readFile(join(target, "network-policy.json"), "utf8"), '{"allow":[]}\n');
+    assert.equal(await readFile(join(target, "scripts/codex-network.mjs"), "utf8"), "// managed network policy\n");
+    assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, relative));
+    assert.equal((await readJson(join(result.backupDir, "settings.json"))).shellPath, "/bin/bash");
+    await mkdir(outside);
+    for (const root of [target, source]) {
+      await rm(join(root, "scripts"), { recursive: true });
+      await symlink(outside, join(root, "scripts"));
+      await assert.rejects(runInstall({ sourceRoot: source, target, noPackages: true }), /symbolic link/);
+      await rm(join(root, "scripts"));
+      await mkdir(join(root, "scripts"));
+    }
+    await assert.rejects(readFile(join(outside, "codex-shell.mjs")), { code: "ENOENT" });
+  } finally {
+    await rm(source, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
+  }
+});
 
 test("fresh install copies managed resources and writes the source's settings.json", async () => {
   const source = await buildFixtureSource();

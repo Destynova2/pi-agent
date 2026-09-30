@@ -45,13 +45,13 @@ export default function (pi: ExtensionAPI) {
     }
   });
   pi.on("before_agent_start", (event) => {
-    if (enabled) event.systemPromptOptions.sections.codex_sandbox = "Bash uses the Codex macOS sandbox: writes only in the session working directory and a private per-project TMPDIR; .git/.codex/.agents are protected; network is disabled. Reads outside the project remain possible. Do not retry a denied command outside the sandbox or use another tool to bypass it. Report needed access instead. File tools, LSP and extension internals are not confined by this shell adapter.";
+    if (enabled) event.systemPromptOptions.sections.codex_sandbox = "Bash uses the Codex OS sandbox: writes only in the session working directory and a private per-project TMPDIR; .git/.codex/.agents are protected; network uses a managed proxy restricted to allowed public hosts. Reads outside the project remain possible. The strict tool-policy extension also confines file tools and denies tools without a sandbox executor. For another public host use request_network_access; human approval never disables the filesystem jail.";
   });
   pi.registerCommand("codex-sandbox", {
     description: "Show whether the Codex shell adapter was loaded",
     handler: async (_args, ctx) => {
       const current = shellPath(ctx);
-      ctx.ui.notify(`Codex shell sandbox: ${enabled && loadedShell === launcher && current === launcher ? "configured at session load" : "not loaded / overridden"}\nShell: ${loadedShell ?? "default"}\nWorking directory: ${ctx.cwd}\nWrites: working directory + private TMPDIR. Network: blocked. Outside reads: allowed.\nThis covers Bash, not every Pi tool. Old sessions require an idle reload.`, "info");
+      ctx.ui.notify(`Codex shell sandbox: ${enabled && loadedShell === launcher && current === launcher ? "configured at session load" : "not loaded / overridden"}\nShell: ${loadedShell ?? "default"}\nWorking directory: ${ctx.cwd}\nWrites: working directory + private TMPDIR. Network: host allowlist through the Codex managed proxy; request_network_access for additions. Outside reads: allowed.\nThis command checks the shell adapter only; /tool-policy checks the strict tool dispatcher. Restart Pi after installation.`, "info");
     },
   });
 }
