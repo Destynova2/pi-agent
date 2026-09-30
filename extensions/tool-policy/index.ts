@@ -1,7 +1,7 @@
 // Re-reads the trusted tool policy before authorization (deny before execute).
 // Trust boundary: only user-loaded extensions; handlers loaded before this one still see
 // and may mutate input first. Task rules recognize a narrow subset, not an OS sandbox.
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { DEFAULT_TOOL_POLICY, isValidToolName, loadToolPolicy, PATH_GUARDED_TOOLS, protectedPathViolation, TOOL_POLICY_FILE, toolDecision, type ToolPolicy } from "./core.ts";
 
@@ -56,6 +56,7 @@ async function confirmOnce(ctx: ExtensionContext, toolName: string, input: unkno
 }
 
 export default function (pi: ExtensionAPI) {
+  const loadedAt = new Date().toISOString();
   let agentDir: string | undefined;
   let policyPath = TOOL_POLICY_FILE;
   let policy: ToolPolicy | undefined;
@@ -168,8 +169,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("tool-policy", {
-    description: "Re-read and show current tool permissions; /tool-policy reset revokes task grants",
+    description: "Show live permissions and runtime; reset revokes grants; reload waits for idle before reloading extensions",
     handler: async (args, ctx) => {
+      if (args.trim() === "reload") {
+        ctx.ui.notify("Extension reload requested. Waiting for idle; active work is not canceled. After reload, run /tool-policy to verify the loaded runtime.", "info");
+        await ctx.waitForIdle();
+        await ctx.reload();
+        return; // The old context is stale after reload.
+      }
       refreshPolicy();
       if (args.trim() === "reset") reset();
       if (!policy) {
@@ -177,7 +184,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const lines = Object.keys(policy).sort().map((key) => `  ${key}: ${policy![key]}`);
-      ctx.ui.notify(`Tool policy (live file; re-read before each authorization)\nSource: ${source}\nTask scope: ${taskRoot ?? "none"}; exact test grants: ${grants.size}\n${lines.join("\n")}`, "info");
+      ctx.ui.notify(`Tool policy (live file; re-read before each authorization)\nRuntime: Pi ${VERSION}; PID ${process.pid}; extension loaded ${loadedAt}\nSource: ${source}\nWorking directory: ${ctx.cwd}\nTask scope: ${taskRoot ?? "none"}; exact test grants: ${grants.size}\n${lines.join("\n")}`, "info");
     },
   });
 }

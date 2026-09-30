@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +34,16 @@ test("policy changes take effect in existing handlers; corruption fails closed a
     assert.equal(await call(), undefined);
     await command!.handler("", ctx);
     assert.match(notices.at(-1)!, /live file/);
+    assert.match(notices.at(-1)!, /Runtime: Pi .+; PID \d+; extension loaded /);
+    assert.ok(notices.at(-1)!.includes(`Working directory: ${ctx.cwd}`));
     assert.match(notices.at(-1)!, /bash: allow/);
+    const supervisorCall = (action: string) => handlers.get("tool_call")!({ toolName: "bash_process", input: { action, pgid: 25200 } }, ctx);
+    assert.ok(await supervisorCall("peek"), "an unlisted supervisor still falls back to ask");
+    writeFileSync(file, readFileSync(new URL("../../../tool-policy.json", import.meta.url)));
+    for (const action of ["list", "peek", "kill"]) {
+      assert.equal(await supervisorCall(action), undefined, `the checked-in local profile must authorize bash_process ${action}`);
+    }
+    assert.ok(await handlers.get("tool_call")!({ toolName: "unknown_tool", input: {} }, ctx), "unknown tools still require approval");
     writeFileSync(file, '{"bash":"deny"}');
     assert.ok(await call());
     writeFileSync(file, '{broken');
@@ -67,6 +76,24 @@ test("policy changes take effect in existing handlers; corruption fails closed a
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("reload command waits for idle without canceling work or using a stale context", async () => {
+  let command: { handler(args: string, ctx: ExtensionCommandContext): Promise<void> } | undefined;
+  register({ on() {}, registerCommand(_name: string, registered: typeof command) { command = registered; } } as unknown as ExtensionAPI);
+  const calls: string[] = [];
+  let release = () => {};
+  const idle = new Promise<void>(resolve => { release = resolve; });
+  const ctx = {
+    ui: { notify() { calls.push("notify"); } },
+    async waitForIdle() { calls.push("wait"); await idle; },
+    async reload() { calls.push("reload"); Object.defineProperty(ctx, "ui", { get() { throw new Error("stale context"); } }); },
+  } as unknown as ExtensionCommandContext;
+  const pending = command!.handler("reload", ctx);
+  assert.deepEqual(calls, ["notify", "wait"]);
+  release();
+  await pending;
+  assert.deepEqual(calls, ["notify", "wait", "reload"]);
 });
 
 test("native resource-loader reload and retained handlers both observe the current policy without provider calls", async () => {

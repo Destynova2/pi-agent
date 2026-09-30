@@ -6,6 +6,7 @@
   "edit": "allow",
   "write": "allow",
   "bash": "allow",
+  "bash_process": "allow",
   "note_list": "allow",
   "note_add": "allow",
   "project_graph": "allow",
