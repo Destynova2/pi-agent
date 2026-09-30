@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 
 interface Options {
   cwd: string;
@@ -42,25 +43,34 @@ export function runProcess(program: string, args: string[], options: Options): P
       if (error) reject(error);
       else resolve(Buffer.concat(stdout).toString("utf8").trim());
     };
-    const killGroup = (signal: NodeJS.Signals | 0): boolean => {
+    const killGroup = async (signal: NodeJS.Signals | 0): Promise<boolean> => {
       if (child.pid === undefined) return false;
-      try { process.kill(-child.pid, signal); return true; }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        return false;
+      for (let attempt = 0; ; attempt++) {
+        try { process.kill(-child.pid, signal); return true; }
+        catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ESRCH") return false;
+          // Darwin returns EPERM for zombie-only groups too. Yield so libuv can reap,
+          // then retry the SAME signal once; persistent permission failures still reject.
+          if (process.platform !== "darwin" || code !== "EPERM" || attempt !== 0) throw error;
+          await delay(10);
+          if (settled) return false;
+        }
       }
     };
-    function stop(error: Error) {
+    async function stop(error: Error) {
       if (stopping || settled) return;
       stopping = true;
       stopError = error;
       try {
-        if (!killGroup("SIGTERM") && closed) { finish(error); return; }
+        if (!await killGroup("SIGTERM") && closed) { finish(error); return; }
       } catch (failure) { finish(failure as Error); return; }
+      if (settled) return;
       // Do not cancel the escalation if the parent exits before its descendants.
-      escalation = setTimeout(() => {
+      escalation = setTimeout(async () => {
         try {
-          killGroup("SIGKILL");
+          await killGroup("SIGKILL");
+          if (settled) return;
           killSent = true;
           if (closed) finish(error);
           else reapDeadline = setTimeout(() => finish(new Error(`${program}: close not confirmed after SIGKILL`)), 5000);
@@ -79,12 +89,14 @@ export function runProcess(program: string, args: string[], options: Options): P
     child.stdout.on("data", (chunk: Buffer) => collect(chunk, onStdout ?? ((c) => stdout.push(c))));
     child.stderr.on("data", (chunk: Buffer) => collect(chunk, (c) => stderr.push(c)));
     child.once("error", (error) => finish(error));
-    child.once("close", (code, signal) => {
+    child.once("close", async (code, signal) => {
       closed = true;
       if (stopping) { if (killSent) finish(stopError); return; }
       if (code === 0) {
         try {
-          if (killGroup(0)) stop(new Error(`${program}: parent exited with descendants still alive`));
+          const remaining = await killGroup(0);
+          if (stopping || settled) return;
+          if (remaining) stop(new Error(`${program}: parent exited with descendants still alive`));
           else finish();
         } catch (error) { finish(error as Error); }
       } else stop(new Error(`${program}: code ${code}, signal ${signal ?? "none"}\n${Buffer.concat(stderr).toString("utf8").slice(-2000)}`));
