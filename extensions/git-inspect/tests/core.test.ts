@@ -135,7 +135,7 @@ test("invalid inputs are rejected before git runs", () => {
     { operation: "status", paths: ["a"] }, { operation: "log", paths: ["a"] }, { operation: "files", staged: true },
     { operation: "log", staged: false }, { operation: "diff", staged: "yes" }, { operation: "push" }, { operation: "--exec=x" },
   ];
-  for (const input of bad) assert.throws(() => buildArgs(input), undefined, JSON.stringify(input));
+  for (const input of bad) assert.throws(() => buildArgs(input), JSON.stringify(input));
 });
 
 test("output is bounded to 16 KiB on a UTF-8 boundary with a narrowing notice", async () => {

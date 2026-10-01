@@ -13,7 +13,8 @@ import {
 
 import { registerNetworkAccess } from "./network.ts";
 
-export const STRICT_TOOLS = CONFINED_TOOLS;
+// Dunst is never delegated as a confined tool: its own bridge requires human approval per host action.
+export const STRICT_TOOLS = new Set([...CONFINED_TOOLS, "dunst"]);
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const factories = [createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition, createFindToolDefinition, createGrepToolDefinition];
 
@@ -78,12 +79,12 @@ export default function (pi: ExtensionAPI) {
   }
   pi.on("before_agent_start", event => {
     pi.setActiveTools(pi.getActiveTools().filter(name => STRICT_TOOLS.has(name)));
-    event.systemPromptOptions.sections.confined_tools = "File tools, Bash, Notes, Graphify, Git inspection and web_fetch execute inside Codex's OS sandbox. Writes: current workspace and private TMPDIR; outside reads allowed. Only the fixed Notes worker can also write project note storage, its Git exclude entry and the central notes.db with SQLite sidecars. Network is restricted to approved public hosts; request_network_access never disables filesystem confinement. Subagents inherit active confined tools without recursion or cwd widening; their model transport and private session artifacts remain host-side. LSP, MCP, web_search and other tools without confined executors are denied. Never retry a sandbox denial through an unrestricted tool.";
+    event.systemPromptOptions.sections.confined_tools = "File tools, Bash, Notes, Graphify, Git inspection, LSP, local MCP servers, CI queries and web helpers execute inside Codex's OS sandbox. Writes: current workspace and private TMPDIR; outside reads allowed. Only the fixed Notes worker can also write project note storage, its Git exclude entry and the central notes.db with SQLite sidecars. Network is restricted to approved public hosts; request_network_access never disables filesystem confinement. Subagents inherit active confined tools without recursion or cwd widening; their model transport and private session artifacts remain host-side. Dunst is separate host automation, not confined: every operation requires explicit interactive human confirmation and it is never delegated. MCP only accepts trusted local stdio definitions, not remote server URLs. Other tools without executors are denied. Never retry a sandbox denial through an unrestricted tool.";
   });
   pi.registerCommand("confined-tools", {
-    description: "Show sandbox status (only additional network hosts require approval)",
+    description: "Show confined executors and the separately approved Dunst host tool",
     handler: async (_args, ctx) => {
-      try { verify(ctx); ctx.ui.notify(`Strict sandbox configured: ${[...STRICT_TOOLS].join(", ")}. Other tools denied. Only additional public network hosts can request approval. Restart required after installation.`, "info"); }
+      try { verify(ctx); ctx.ui.notify(`Strict sandbox configured: ${[...CONFINED_TOOLS].join(", ")}. Other tools denied except Dunst. Additional public network hosts require approval. Dunst is host-side and requires human confirmation for each operation. Restart required after installation.`, "info"); }
       catch (error) { ctx.ui.notify((error as Error).message, "error"); }
     },
   });

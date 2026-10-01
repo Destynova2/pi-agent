@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import type { Readable } from "node:stream";
 
 interface Options {
   cwd: string;
@@ -8,9 +9,10 @@ interface Options {
   maxBytes?: number;
   graceMs?: number;
   env?: NodeJS.ProcessEnv;
-  input?: string;
+  input?: string | Readable;
   /** When supplied, stdout chunks stream here instead of being buffered; the resolved value is then empty. */
   onStdout?: (chunk: Buffer) => void;
+  onStderr?: (chunk: Buffer) => void;
 }
 
 /** Executes without a shell and stops the POSIX group before honoring a cancellation. */
@@ -41,6 +43,10 @@ export function runProcess(program: string, args: string[], options: Options): P
       clearTimeout(escalation);
       clearTimeout(reapDeadline);
       options.signal?.removeEventListener("abort", abort);
+      if (options.input && typeof options.input !== "string") {
+        options.input.unpipe(child.stdin);
+        options.input.removeListener("error", inputError);
+      }
       if (error) reject(error);
       else resolve(Buffer.concat(stdout).toString("utf8").trim());
     };
@@ -88,7 +94,7 @@ export function runProcess(program: string, args: string[], options: Options): P
     };
     const onStdout = options.onStdout;
     child.stdout.on("data", (chunk: Buffer) => collect(chunk, onStdout ?? ((c) => stdout.push(c))));
-    child.stderr.on("data", (chunk: Buffer) => collect(chunk, (c) => stderr.push(c)));
+    child.stderr.on("data", (chunk: Buffer) => collect(chunk, (c) => { stderr.push(c); options.onStderr?.(c); }));
     child.once("error", (error) => finish(error));
     child.once("close", async (code, signal) => {
       closed = true;
@@ -103,8 +109,12 @@ export function runProcess(program: string, args: string[], options: Options): P
       } else stop(new Error(`${program}: code ${code}, signal ${signal ?? "none"}\n${Buffer.concat(stderr).toString("utf8").slice(-2000)}`));
     });
     options.signal?.addEventListener("abort", abort, { once: true });
-    child.stdin.on("error", (error) => stop(error));
-    child.stdin.end(options.input);
+    const inputError = (error: Error) => { void stop(error); };
+    child.stdin.on("error", inputError);
+    if (options.input && typeof options.input !== "string") {
+      options.input.on("error", inputError);
+      options.input.pipe(child.stdin);
+    } else child.stdin.end(options.input);
     if (options.signal?.aborted) abort();
   });
 }

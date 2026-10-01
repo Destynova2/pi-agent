@@ -31,7 +31,7 @@ test("strict policy never asks, ignores legacy exceptions, and fails closed befo
     handlers.get("session_start")({}, ctx);
     writeFileSync(join(f.agent, "tool-policy.json"), '{"*":"allow"}');
     for (const name of STRICT_TOOLS) assert.equal(call(name), undefined, name);
-    for (const name of ["lsp", "dunst", "web_search", "ci_watch", "unknown", "codemode"]) assert.equal(call(name).block, true, name);
+    for (const name of ["unknown", "codemode", "remote_mcp"]) assert.equal(call(name).block, true, name);
     assert.deepEqual([...tools.keys()].sort(), ["edit", "find", "grep", "ls", "read", "request_network_access", "write"]);
     ctx.isProjectTrusted = () => true;
     assert.equal(call("write").block, true, "trusted project extensions must not run on the host");

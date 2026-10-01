@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { webSearch } from "./core.ts";
 import { runConfined } from "../../lib/confined.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
 
@@ -28,8 +27,8 @@ export default function (pi: ExtensionAPI) {
     label: "Web Search",
     description: "Search via Claude Code limited to WebSearch, without user hooks/skills/MCP. Consumes Claude quota: use only on explicit search request.",
     parameters: Type.Object({ query: Type.String() }),
-    execute: async (_id, params, signal) => ({
-      content: [{ type: "text", text: (await tasks.run((owned) => webSearch(params.query, owned), signal)).slice(0, 20000) }],
+    execute: async (_id, params, signal, _update, ctx) => ({
+      content: [{ type: "text", text: String(await tasks.run((owned) => runConfined(ctx.cwd, "search", { query: params.query }, owned), signal)).slice(0, 20000) }],
       details: undefined,
     }),
   });
@@ -44,7 +43,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("web", "Web access…");
       try {
         const text = input.startsWith("--search ")
-          ? await tasks.run((owned) => webSearch(input.slice(9), owned), ctx.signal)
+          ? String(await tasks.run((owned) => runConfined(ctx.cwd, "search", { query: input.slice(9) }, owned), ctx.signal))
           : String(await tasks.run((owned) => runConfined(ctx.cwd, "web", { url: input }, owned), ctx.signal));
         ctx.ui.notify(text.slice(0, 8000), "info");
       } catch (error) {
