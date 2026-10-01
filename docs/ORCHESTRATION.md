@@ -1,6 +1,6 @@
 # Orchestration on large projects
 
-This source branch adds confined Notes, Graphify, Git inspection and `web_fetch`, plus delegation restricted to those executors. LSP, MCP, `web_search` and `ci_watch` remain unavailable to the model. Migration is not yet installed or validated end to end; do not confuse source changes with activation in existing sessions.
+This source branch adds confined Notes, Graphify, Git inspection, web helpers, CI queries, LSP and local MCP servers, plus delegation restricted to those executors. Dunst remains a distinct, human-approved host operation. Migration is not installed in the live runtime; authenticated live search and real configured language servers still need validation. Do not confuse fixture tests or source changes with activation in existing sessions.
 
 ## Working method
 
@@ -69,7 +69,29 @@ Children inherit the intersection of role tools, active parent tools and the fix
 
 The installer sets `shellPath` and deploys the launchers, workers and SDK resolver. Restart Pi with `--no-approve` after a validated installation. Project resources are refused through `project_trust`; a session started with trusted project resources blocks permitted tools too. `/confined-tools` reports configuration, not proof that the backend can run. A missing adapter, changed cwd/shell or backend failure blocks execution.
 
-The original LSP package stays installed but its extension is filtered out (`extensions: []`): denying its tool alone would leave automatic diagnostics and workspace edits on the host. A replacement must preserve persistent servers, session previews, cancellation and UI behavior while confining edits and lifecycle operations. Local MCP servers need confined execution; a jailed remote client cannot confine its remote server. Dunst controls host applications and must not be presented as project-confined execution.
+The original LSP package stays installed at 0.4.4 with its extension filtered out (`extensions: []`). The replacement runs its actual lifecycle controller inside Codex: persistent servers, workspace previews/apply, diagnostics, branch restoration and `/lsp` selections. Only UI selection/notification and the two LSP session-entry types cross back to the host. Diagnostics entries use plain-text presentation. Settings reads use Pi's storage API without acquiring a write lock outside the jail; persistent global settings writes remain denied. Session-scoped enablement works. Source TypeScript is loaded with Node's built-in transformation hook, limited to the pinned package. No copied LSP mutation engine or unrestricted fallback is used.
+
+LSP and local MCP connections reuse the process-group supervisor. JSON frames are limited to 8 MiB, total process output to 128 MiB and worker lifetime to 12 hours. Request cancellation/timeouts terminate the connection and process group, not merely the wait. A later explicit call can open a new connection; the canceled call is never replayed. Session navigation/shutdown closes connections. These are POSIX process-group guarantees, not containment of deliberately detached descendants.
+
+`mcp` accepts local stdio servers from user-owned `<agent-dir>/mcp.json`, outside the writable workspace. Project definitions, symlinked config files, remote URLs, sampling and elicitation requests are not accepted. `/mcp` stops connections. The installer preserves this file. Example (replace the server path):
+
+```json
+{
+  "servers": {
+    "local": {
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-server.mjs"],
+      "network": false
+    }
+  }
+}
+```
+
+Optional `env` contains string-valued server environment variables. `network: true` uses the managed proxy and existing host grants, never unrestricted networking. A remote MCP server cannot be confined by jailing its local client; remote transports are deliberately not advertised as supported.
+
+Dunst is **not jailed**: Mac applications can write files or contact external services on its behalf. Each operation, including server startup, requires a fresh interactive human confirmation showing the exact tool and arguments. Reading already-loaded help schemas needs no new approval. Headless calls, refused/canceled approvals and approvals returned after a session change do not execute. Dunst's own risk approvals remain additional. Dunst is excluded from delegated capabilities and must never be used to bypass a sandbox denial.
+
+`ci_watch` keeps only timers and notifications on the host. All Git/`gh`/`glab` queries run in fixed workers; stops and session transitions cancel pending starts and queries. Provider authentication must already be configured and usable inside the jail. `web_search` runs the existing Claude helper with hooks, skills and MCP disabled, writable state under private scratch, and read-only access to existing credential files. It consumes Claude quota only when explicitly requested. Live authenticated search has not been validated: the jailed `claude auth status` probe reported no usable login. Login/refresh failures remain errors; no host retry or new API key is introduced. Claude/GitLab API hosts outside the network baseline require explicit grants.
 
 This is a tool execution boundary, **not a whole-Pi process jail**. Model transport, session persistence, background logs and trusted extension lifecycle handlers remain host-side. Do not load untrusted personal/CLI extensions or toolchains. Outside reads remain allowed, so this is not credential confidentiality isolation. Tests still need to run on a host where Codex can create its OS sandbox; an enclosing sandbox can prohibit nested namespaces.
 
@@ -102,9 +124,9 @@ The installer deploys the executable launcher to `<agent-dir>/scripts/codex-shel
 
 - Native Bash, user `!` commands, and `@richardgill/pi-background-bash` use Pi's existing shell setting. Foreground/background execution, streaming, exit codes, timeouts and process-group cancellation remain owned by Pi/the background extension. No command-text rewriting or extra approval model is added.
 - Codex applies macOS Seatbelt or Linux bubblewrap plus `no_new_privs`/seccomp to Bash and its descendants: writes are limited to the command's initial working directory and a private per-project `TMPDIR`; network access is restricted to allowed hosts through the managed proxy, or disabled when no hosts are allowed. `.git`, `.codex` and `.agents` remain protected by Codex. The directory is the session/worker cwd, not an inferred parent repository or all of `~/workspace`. The sandbox guard also rejects single, parallel and chained delegations whose canonical cwd escapes the parent's directory.
-- Outside reads remain allowed. The strict dispatcher also runs native file tools through this adapter and blocks LSP, MCP and other unconfined tools. Model transport and trusted extension internals remain outside the sandbox. Do not use another tool to bypass a denied action.
+- Outside reads remain allowed. The strict dispatcher routes supported tools through their adapters and blocks unknown executors. Dunst is the explicitly confirmed host-side exception. Model transport and trusted extension internals remain outside the sandbox. Do not use another tool to bypass a denied action.
 - `git commit`, `git push`, dependency downloads, local servers and Podman access can be blocked. A denial is an error, never permission to retry outside the sandbox. The adapter fails closed when the backend is missing, the platform is unsupported or launch fails.
-- Linux requires a kernel/runtime that permits Codex's namespace-based sandbox. An unavailable sandbox is a launch failure, not permission to disable confinement. Fixed `/bin/cat` relays convert Node's captured Unix-socket stdio to pipes: otherwise Codex's network seccomp filter prevents libuv socket inspection and can silently discard Node console output. Only those fixed relays run outside confinement; the model's command remains a literal argument to Codex. Tests cover stdin, stdout, stderr, exit status and cancellation without relaxing network restrictions. This is a non-interactive Pi launcher: stdin must be closed or reach EOF. Do not invoke it from another host with an indefinitely open stdin; the input relay could outlive the command. Pi's normal native/background command paths use ignored stdin. No second sandbox backend or extra model process is added.
+- Linux requires a kernel/runtime that permits Codex's namespace-based sandbox. An unavailable sandbox is a launch failure, not permission to disable confinement. Fixed `/bin/cat` relays convert Node's captured Unix-socket stdio to pipes: otherwise Codex's network seccomp filter prevents libuv socket inspection and can silently discard Node console output. Only those fixed relays run outside confinement; the model's command remains a literal argument to Codex. Tests cover stdin, stdout, stderr, exit status and cancellation without relaxing network restrictions. Pi's native/background command paths use closed or ignored stdin. Persistent LSP/MCP transports own their input stream and terminate the supervised group on shutdown; an unmanaged caller leaving stdin open could otherwise retain the relay. No second sandbox backend or extra model process is added.
 - Codex configuration is isolated under `~/.cache/pi-codex-sandbox/config`, with explicit filesystem/network overrides. Scratch files persist under a cwd-hashed directory in the same cache; they are not committed and have no automatic retention policy. The user's normal Codex profiles, credentials and saved allow rules are not loaded.
 - For model Bash calls, project `shellPath` overrides are refused by `extensions/codex-sandbox` while this global adapter is enabled. Human `!` commands use Pi's resolved shell setting; do not override it in project settings. `/codex-sandbox` reports the shell configured at session load. Updating files does not retrofit an already running shell: reload idle sessions; existing jobs retain their original permissions.
 

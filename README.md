@@ -25,11 +25,14 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 | Find an old prompt | `ctrl+r` |
 | Import session history | `/btw import` |
 | Code map | `project_graph` tool, auto-indexed at startup |
-| Watch a PR | `ci_watch` remains disabled pending a confined executor |
+| Watch a PR | `ci_watch` or `/watch`: jailed queries, host-side timers |
+| Use language servers | `lsp` and `/lsp`: jailed servers, previews, edits and diagnostics |
+| Use local MCP servers | `mcp`: trusted stdio definitions; see the [sandbox boundary](docs/ORCHESTRATION.md#strict-tool-sandbox) |
+| Control Mac applications | `dunst`: separate host operation, with human confirmation per call |
 
 Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts.
 
-This branch prepares confined Notes, Graphify, Git inspection, `web_fetch` and capability-limited delegation. It is not an activated runtime migration. LSP, MCP, `web_search` and `ci_watch` remain disabled; the unconfined LSP extension is filtered out, including its automatic hooks. See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for remaining work and boundaries. Model transport and trusted host extension internals are not jailed.
+This branch adds confined tool adapters; it is not an activated runtime migration. The upstream LSP extension stays filtered out: its replacement runs the same lifecycle inside Codex. MCP support is local stdio only. `web_search` uses the existing Claude login and quota, but authenticated live search still needs validation; no paid model call was used for testing. See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for boundaries. Model transport, trusted host internals and human-approved Dunst actions are not jailed.
 
 See [Latency and context](docs/PERFORMANCE.md) for measured startup/context costs, Jcode comparisons, and native batching of queued follow-ups.
 
@@ -45,6 +48,9 @@ extensions/
   tool-policy/       confined-executor dispatcher, /confined-tools (no legacy policy)
   git-inspect/       fixed-argument Git inspection
   notes.ts           SQLite memory, /btw, ctrl+r, inter-agent inbox
+  confined-lsp/      jailed upstream LSP lifecycle and guarded edits
+  mcp/               configured local MCP stdio servers
+  dunst/             separately approved host application control
   ci-watch/          ci_watch tool
   graphify/          project_graph tool
   web/               web_fetch, web_search
