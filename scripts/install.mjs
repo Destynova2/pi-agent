@@ -9,8 +9,9 @@ import { spawnSync } from "node:child_process";
 import { isSubPath, isSymlink, pathExists } from "./lib.mjs";
 
 export const MANAGED_DIRS = ["agents", "extensions", "lib", "gates"];
-export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs"];
-export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json"];
+export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs", "scripts/confined-tool.mjs"];
+const RETIRED_FILES = ["tool-policy.json", "extensions/tool-policy/core.ts", "extensions/tool-policy/task.ts", "extensions/tool-policy/tests/policy.test.ts", "extensions/tool-policy/tests/task.test.ts", "extensions/tool-policy/tests/skills.test.ts"];
+export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json", "tool-policy.json"];
 
 const DEFAULT_SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -182,8 +183,11 @@ function validateSettingsSchema(value, label) {
     throw new Error(`refuse: ${label} is not a valid JSON object (${label})`);
   }
   if ("packages" in value) {
-    const ok = Array.isArray(value.packages) && value.packages.every((p) => typeof p === "string");
-    if (!ok) throw new Error(`refuse: ${label}.packages must be an array of strings`);
+    const ok = Array.isArray(value.packages) && value.packages.every((p) => typeof p === "string" ||
+      (p && typeof p === "object" && !Array.isArray(p) && typeof p.source === "string" &&
+        Object.entries(p).every(([key, entry]) => key === "source" ||
+          (["extensions", "skills", "prompts", "themes"].includes(key) && Array.isArray(entry) && entry.every(item => typeof item === "string")))));
+    if (!ok) throw new Error(`refuse: ${label}.packages must contain strings or filtered package objects`);
   }
 }
 
@@ -207,6 +211,7 @@ async function readSettings(path, label) {
  * not a version marker: it is not stripped.
  */
 export function packageIdentity(spec) {
+  if (typeof spec !== "string") spec = spec.source;
   const at = spec.lastIndexOf("@");
   if (at <= 0) return spec;
   const before = spec[at - 1];
@@ -233,7 +238,8 @@ export function mergeSettings(sourceSettings, targetSettings) {
 function installPackages(packages, target, env) {
   const failures = [];
   const installed = [];
-  for (const source of packages) {
+  for (const entry of packages) {
+    const source = typeof entry === "string" ? entry : entry.source;
     const res = spawnSync("pi", ["install", source, "--no-approve"], {
       env: { ...env, PI_CODING_AGENT_DIR: target },
       stdio: "pipe",
@@ -297,12 +303,17 @@ export async function runInstall({
       }
     }
 
+    // Retire only known legacy files, after backup; preserve personal extensions.
+    for (const file of RETIRED_FILES) await rm(join(resolvedTarget, file), { force: true });
     await writeFile(join(resolvedTarget, "settings.json"), `${JSON.stringify(mergedSettings, null, 2)}\n`);
 
     let installed = [];
     let packageFailures = [];
     if (!noPackages) {
       ({ installed, failures: packageFailures } = installPackages(sourceSettings.packages ?? [], resolvedTarget, env));
+      // pi install may rewrite package entries; preserve the resource filters selected above.
+      const installedSettings = await readSettings(join(resolvedTarget, "settings.json"), "installed settings.json");
+      await writeFile(join(resolvedTarget, "settings.json"), `${JSON.stringify({ ...installedSettings, packages: mergedSettings.packages }, null, 2)}\n`);
     }
 
     return {

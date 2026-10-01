@@ -2,11 +2,12 @@
 // so read-only agents can inspect a repository without general bash.
 // Repo/user config cannot launch helpers: pager, external diff, textconv, fsmonitor,
 // signature verification, submodule recursion and clean/smudge filters are disabled.
-// Not an OS sandbox: git itself still runs with the user's permissions.
+// Model calls also run this implementation inside the Codex sandbox.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { StringDecoder } from "node:string_decoder";
 import { runProcess } from "../../lib/process.ts";
+import { runConfined } from "../../lib/confined.ts";
 
 export const MAX_OUTPUT_BYTES = 16 * 1024;
 export const MAX_PATHS = 100;
@@ -118,7 +119,7 @@ export default function (pi: ExtensionAPI) {
     description: "Read-only git inspection in the working directory. operation: status | diff (optional staged, paths) | log (last 20 commits) | files (tracked + untracked, optional paths). paths are literal, relative, no '..'. Output capped at 16 KiB.",
     parameters: GitInspectParams,
     execute: async (_id, params, signal, _onUpdate, ctx) => ({
-      content: [{ type: "text", text: await gitInspect(ctx.cwd, params, signal ?? ctx.signal) }],
+      content: [{ type: "text", text: String(await runConfined(ctx.cwd, "git", params, signal ?? ctx.signal)) }],
       details: undefined,
     }),
   });

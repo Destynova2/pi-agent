@@ -1,144 +1,66 @@
 /**
  * notes - shared SQLite memory between agents (and subagents) on the same project.
  *
- * Project DB:  <git root>/.agent/notes.db  (excluded from git via .git/info/exclude)
- * Central DB:  ~/workspace/notes.db        (only if ~/workspace exists; mirror of every project)
- *
- * Every write goes to both except kind=ask (raw human prompts), which stays in the project DB.
- * Reads hit the project DB, or the central one with scope "all".
+ * Host wiring only (ExtensionAPI, UI, status): all SQLite, filesystem and git/jj access lives in
+ * ./notes/worker.ts, dispatched through Codex. Missing or failed confinement is an error.
  */
 
-import { execSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { runConfined } from "../lib/confined.ts";
+import { SessionTasks } from "../lib/session-tasks.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { KINDS, type Kind, type NotesInput, type NotesResult } from "./notes/worker.ts";
 
-const SCHEMA = `CREATE TABLE IF NOT EXISTS notes (
-  id INTEGER PRIMARY KEY,
-  project TEXT NOT NULL,
-  agent TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  body TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-)`;
-
-const KINDS = ["ask", "plan", "decision", "done", "blocker", "lesson", "claim", "msg"] as const;
-type Kind = (typeof KINDS)[number];
-
-function open(file: string): DatabaseSync {
-	fs.mkdirSync(path.dirname(file), { recursive: true });
-	const db = new DatabaseSync(file);
-	db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;");
-	db.exec(SCHEMA);
-	if (!db.prepare("SELECT 1 FROM pragma_table_info('notes') WHERE name = 'rev'").get()) db.exec("ALTER TABLE notes ADD COLUMN rev TEXT");
-	return db;
-}
-
-function gitRoot(cwd: string): string {
-	try {
-		return execSync("git rev-parse --show-toplevel", { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
-	} catch {
-		return cwd;
-	}
-}
-
-/** Revision recorded on each note for provenance only, not a restore point: jj operation id (`jj op restore <id>`) if the repo uses jj, else git HEAD (`git checkout <sha>`). */
-function currentRev(root: string): string | undefined {
-	const cmd = fs.existsSync(path.join(root, ".jj")) ? "jj op log --no-graph -n1 -T 'self.id().short(12)'" : "git rev-parse --short=12 HEAD";
-	try {
-		const out = execSync(cmd, { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
-		return out ? `${cmd.startsWith("jj") ? "jj:" : "git:"}${out}` : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function excludeFromGit(root: string): void {
-	const exclude = path.join(root, ".git", "info", "exclude");
-	if (!fs.existsSync(path.dirname(exclude))) return;
-	const current = fs.existsSync(exclude) ? fs.readFileSync(exclude, "utf8") : "";
-	if (!current.split("\n").includes(".agent/")) fs.appendFileSync(exclude, `${current.endsWith("\n") || current === "" ? "" : "\n"}.agent/\n`);
+async function dispatch(input: NotesInput, signal?: AbortSignal): Promise<NotesResult> {
+	return await runConfined(input.cwd, "notes", input, signal) as NotesResult;
 }
 
 export default function notes(pi: ExtensionAPI) {
-	let project = "";
+	let cwd = "";
 	let agent = "";
-	let dbs: DatabaseSync[] = [];
-	let central: DatabaseSync | undefined;
-	let root = "";
 	let lastSeenMsg = 0;
+	let project = "";
+	let tasks = new SessionTasks();
+	const run = (input: NotesInput, signal?: AbortSignal) => tasks.run(owned => dispatch(input, owned), signal);
+	const reset = async () => { await tasks.close(); tasks = new SessionTasks(); lastSeenMsg = 0; project = ""; };
 
-	pi.on("session_start", (_event, ctx) => {
-		root = gitRoot(ctx.cwd);
-		project = path.basename(root);
+	pi.on("session_start", async (_event, ctx) => {
+		await reset();
+		cwd = ctx.cwd;
 		agent = process.env.PI_AGENT_NAME ?? `pi-${process.pid}`;
-		excludeFromGit(root);
-		const local = open(path.join(root, ".agent", "notes.db"));
-		const workspace = path.join(os.homedir(), "workspace");
-		central = fs.existsSync(workspace) ? open(path.join(workspace, "notes.db")) : undefined;
-		dbs = central ? [local, central] : [local];
 	});
+	pi.on("session_before_switch", reset);
+	pi.on("session_before_fork", reset);
+	pi.on("session_before_tree", reset);
+	pi.on("session_shutdown", () => tasks.close());
 
-	function add(kind: Kind, body: string): void {
-		const rev = currentRev(root) ?? null;
-		// ask = raw human prompt: stays in the project DB, never mirrored outside the repo.
-		for (const db of kind === "ask" ? [dbs[0]] : dbs) {
-			db.prepare("INSERT INTO notes (project, agent, kind, body, rev) VALUES (?, ?, ?, ?, ?)").run(project, agent, kind, body, rev);
-		}
+	async function add(kind: Kind, body: string, signal?: AbortSignal): Promise<void> {
+		await run({ op: "add", cwd, agent, kind, body }, signal);
 	}
 
-	// One-shot import of this project's past human prompts from <agent dir>/sessions/**/*.jsonl (Claude Code / Codex history.jsonl idea).
-	function importSessions(): number {
-		const db = dbs[0];
-		if ((db.prepare("SELECT count(*) AS n FROM notes WHERE agent LIKE 'session-%'").get() as { n: number }).n > 0) return -1;
-		const sessionsDir = path.join(getAgentDir(), "sessions");
-		const files = fs.readdirSync(sessionsDir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".jsonl"));
-		const insert = db.prepare("INSERT INTO notes (project, agent, kind, body, created_at) VALUES (?, ?, 'ask', ?, ?)");
-		let n = 0;
-		for (const f of files) {
-			let proj = "";
-			let sid = "";
-			for (const line of fs.readFileSync(path.join(sessionsDir, f), "utf8").split("\n")) {
-				if (!line) continue;
-				let e: { type?: string; id?: string; cwd?: string; timestamp?: string; message?: { role?: string; content?: unknown } };
-				try { e = JSON.parse(line); } catch { continue; }
-				if (e.type === "session") { proj = path.basename(e.cwd ?? ""); sid = `session-${(e.id ?? "").slice(0, 8)}`; continue; }
-				if (proj !== project || e.type !== "message" || e.message?.role !== "user") continue;
-				const c = e.message.content;
-				const text = typeof c === "string" ? c : Array.isArray(c) ? c.map((p: { type?: string; text?: string }) => (p.type === "text" ? p.text : "")).join("") : "";
-				const body = text.trim().split("\n")[0]?.slice(0, 200);
-				if (!body) continue;
-				insert.run(proj, sid, body, (e.timestamp ?? new Date().toISOString()).replace(/\.\d+Z$/, "Z"));
-				n++;
-			}
-		}
-		return n;
+	async function importSessions(): Promise<number> {
+		const result = await run({ op: "importSessions", cwd, agent });
+		return (result as { op: "importSessions"; imported: number }).imported;
 	}
 
-	// Inbox: unread messages from other agents of this project; "@name ..." only reaches name.
-	function readInbox(): string | undefined {
-		const rows = (dbs[0]
-			.prepare("SELECT id, agent, body FROM notes WHERE project = ? AND kind = 'msg' AND id > ? AND agent <> ? AND created_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day') ORDER BY id")
-			.all(project, lastSeenMsg, agent) as { id: number; agent: string; body: string }[])
-			.filter((m) => !m.body.startsWith("@") || m.body.startsWith(`@${agent} `));
-		lastSeenMsg = (dbs[0].prepare("SELECT coalesce(max(id), 0) AS id FROM notes").get() as { id: number }).id;
-		return rows.length ? `<agent_inbox>\n${rows.map((m) => `${m.agent}: ${m.body}`).join("\n")}\n</agent_inbox>` : undefined;
+	async function readInbox(): Promise<string | undefined> {
+		const result = await run({ op: "inbox", cwd, agent, afterId: lastSeenMsg }) as { op: "inbox"; text?: string; lastId: number; project: string };
+		lastSeenMsg = result.lastId;
+		project = result.project;
+		return result.text;
 	}
 
 	// In-flight delivery: a subagent run checks its inbox after each tool call.
-	pi.on("tool_result", () => {
-		const text = readInbox();
+	pi.on("tool_result", async () => {
+		const text = await readInbox();
 		if (text) pi.sendMessage({ customType: "agent_inbox", content: text, display: true }, { deliverAs: "steer" });
 	});
 
-	pi.on("before_agent_start", (event) => {
+	pi.on("before_agent_start", async (event) => {
 		const ask = event.prompt.trim().split("\n")[0]?.slice(0, 200);
-		if (ask) add("ask", ask);
-		const inbox = readInbox();
+		if (ask) await add("ask", ask);
+		const inbox = await readInbox();
 		// Only instruct the model to use tools it can actually call: a scout/reviewer run with
 		// --tools excluding note_add (or note_list) must not be told to claim, write or list notes
 		// it has no tool for.
@@ -167,23 +89,21 @@ export default function notes(pi: ExtensionAPI) {
 			if (!text) return ctx.ui.notify("usage: /btw <kind> <text> | /btw import | /btw [@agent] <message>", "warning");
 			const [first, ...rest] = text.split(/\s+/);
 			if (first === "import") {
-				const n = importSessions();
+				const n = await importSessions();
 				return ctx.ui.notify(n < 0 ? "sessions already imported" : `imported ${n} prompts`, "info");
 			}
 			if (KINDS.includes(first as Kind) && first !== "ask" && first !== "msg" && rest.length) {
-				add(first as Kind, rest.join(" "));
+				await add(first as Kind, rest.join(" "));
 				return ctx.ui.notify(`noted [${first}] ${rest.join(" ")}`, "info");
 			}
 			let body = text;
 			if (!text.startsWith("@")) {
-				const claims = dbs[0]
-					.prepare("SELECT agent, body FROM notes WHERE project = ? AND kind = 'claim' AND agent <> ? AND created_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day') ORDER BY id DESC")
-					.all(project, agent) as { agent: string; body: string }[];
+				const claimsResult = await run({ op: "claims", cwd, agent }) as { op: "claims"; rows: { agent: string; body: string }[] };
 				const words = text.split(/\s+/).filter((w) => w.includes("/") || w.includes("."));
-				const hit = claims.find((c) => words.some((w) => c.body.includes(w) || w.includes(c.body.trim())));
+				const hit = claimsResult.rows.find((c) => words.some((w) => c.body.includes(w) || w.includes(c.body.trim())));
 				if (hit) body = `@${hit.agent} ${text}`;
 			}
-			add("msg", body);
+			await add("msg", body);
 			ctx.ui.notify(body.startsWith("@") ? `sent to ${body.split(" ")[0]}` : "broadcast to project", "info");
 		},
 	});
@@ -195,11 +115,9 @@ export default function notes(pi: ExtensionAPI) {
 		handler: async (ctx) => {
 			const q = await ctx.ui.input("Search prompt history", "substring, empty = recent");
 			if (q === undefined) return;
-			const rows = dbs[0]
-				.prepare("SELECT DISTINCT body FROM notes WHERE kind = 'ask' AND body LIKE ? ORDER BY id DESC LIMIT 40")
-				.all(`%${q}%`) as { body: string }[];
-			if (rows.length === 0) return ctx.ui.notify("no match", "info");
-			const pick = await ctx.ui.select(`history: ${q || "recent"}`, rows.map((r) => r.body));
+			const result = await run({ op: "search", cwd, query: q, limit: 40 }, ctx.signal) as { op: "search"; rows: string[] };
+			if (result.rows.length === 0) return ctx.ui.notify("no match", "info");
+			const pick = await ctx.ui.select(`history: ${q || "recent"}`, result.rows);
 			if (pick) ctx.ui.setEditorText(pick);
 		},
 	});
@@ -212,8 +130,8 @@ export default function notes(pi: ExtensionAPI) {
 			kind: Type.Union(KINDS.filter((k) => k !== "ask").map((k) => Type.Literal(k))),
 			body: Type.String({ description: "One line. For claim: the paths you are about to edit." }),
 		}),
-		async execute(_id, params: { kind: Kind; body: string }) {
-			add(params.kind, params.body);
+		async execute(_id, params: { kind: Kind; body: string }, signal) {
+			await add(params.kind, params.body, signal);
 			return { content: [{ type: "text", text: `noted [${params.kind}] ${params.body}` }], details: undefined };
 		},
 	});
@@ -227,19 +145,9 @@ export default function notes(pi: ExtensionAPI) {
 			scope: Type.Optional(Type.Union([Type.Literal("project"), Type.Literal("all")])),
 			limit: Type.Optional(Type.Number({ default: 50 })),
 		}),
-		async execute(_id, params: { kind?: Kind; scope?: "project" | "all"; limit?: number }) {
-			const all = params.scope === "all" && central;
-			const db = all ? central : dbs[0];
-			const where: string[] = [];
-			const args: string[] = [];
-			if (!all) { where.push("project = ?"); args.push(project); }
-			if (params.kind) { where.push("kind = ?"); args.push(params.kind); }
-			const sql = `SELECT created_at, project, agent, kind, body, rev FROM notes ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`;
-			const rows = db.prepare(sql).all(...args, params.limit ?? 50) as { created_at: string; project: string; agent: string; kind: string; body: string; rev: string | null }[];
-			const text = rows.length
-				? rows.reverse().map((r) => `${r.created_at} ${all ? `${r.project} ` : ""}${r.agent} [${r.kind}]${r.rev ? ` (${r.rev})` : ""} ${r.body}`).join("\n")
-				: "(no notes)";
-			return { content: [{ type: "text", text }], details: undefined };
+		async execute(_id, params: { kind?: Kind; scope?: "project" | "all"; limit?: number }, signal) {
+			const result = await run({ op: "list", cwd, agent, kind: params.kind, scope: params.scope, limit: params.limit }, signal) as { op: "list"; text: string };
+			return { content: [{ type: "text", text: result.text }], details: undefined };
 		},
 	});
 }

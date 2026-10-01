@@ -31,7 +31,7 @@ test("strict policy never asks, ignores legacy exceptions, and fails closed befo
     handlers.get("session_start")({}, ctx);
     writeFileSync(join(f.agent, "tool-policy.json"), '{"*":"allow"}');
     for (const name of STRICT_TOOLS) assert.equal(call(name), undefined, name);
-    for (const name of ["lsp", "subagent", "web_fetch", "dunst", "note_add", "note_list", "project_graph", "git_inspect", "unknown", "codemode"]) assert.equal(call(name).block, true, name);
+    for (const name of ["lsp", "dunst", "web_search", "ci_watch", "unknown", "codemode"]) assert.equal(call(name).block, true, name);
     assert.deepEqual([...tools.keys()].sort(), ["edit", "find", "grep", "ls", "read", "request_network_access", "write"]);
     ctx.isProjectTrusted = () => true;
     assert.equal(call("write").block, true, "trusted project extensions must not run on the host");
@@ -69,7 +69,7 @@ test("native file tools run inside Codex: writes, edits, symlinks, metadata and 
     await assert.rejects(call("edit", { path: "link", edits: [{ oldText: "outside", newText: "bad" }] }), /not permitted|denied|read-only|\b(?:EACCES|EPERM|EROFS)\b/i);
     assert.equal(readFileSync(join(f.root, "outside"), "utf8"), "outside stays unchanged");
     assert.match((await call("read", { path: "../outside" })).content[0].text, /outside stays/);
-    await assert.rejects(call("write", { path: "canceled", content: "bad" }, AbortSignal.abort()), /aborted/);
+    await assert.rejects(call("write", { path: "canceled", content: "bad" }, AbortSignal.abort()), /canceled/);
     process.env.PI_CODEX_SANDBOX_BIN = join(f.root, "missing");
     await assert.rejects(call("write", { path: "unconfined", content: "bad" }));
     assert.equal(existsSync(join(f.cwd, "unconfined")), false);

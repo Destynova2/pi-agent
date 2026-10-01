@@ -1,7 +1,7 @@
 import { runProcess } from "../../lib/process.ts";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { nestedRepositories, WORKTREE_EXCLUDES } from "./scope.ts";
 
@@ -30,7 +30,9 @@ export async function projectRoot(cwd: string, signal?: AbortSignal): Promise<st
   throw new NoProjectError("No Git/jj root detected. Initialize the project explicitly before indexing it.");
 }
 
-export function cacheDirectory(root: string, base = join(homedir(), ".cache", "pi-graphify")): string {
+// Private per-cwd scratch, not the host's ~/.cache: TMPDIR is set per worktree jail by the
+// parent's launcher (lib/confined.ts), persistent for the session but never shared across cwds.
+export function cacheDirectory(root: string, base = join(process.env.TMPDIR ?? tmpdir(), "pi-graphify")): string {
   const name = basename(root).replace(/[^a-zA-Z0-9_-]/g, "_");
   const id = createHash("sha256").update(root).digest("hex").slice(0, 20);
   return join(base, `${name}-${id}`);

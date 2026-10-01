@@ -83,7 +83,7 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
           grantPath = destination;
           process.env.PI_CODEX_NETWORK_GRANTS = destination;
         }
-        return { content: [{ type: "text", text: `Network destinations available to new sandbox commands: ${requested.join(", ")}. Existing commands keep their old proxy policy. No command was retried.` }], details: undefined };
+        return { content: [{ type: "text" as const, text: `Network destinations available to new sandbox commands: ${requested.join(", ")}. Existing commands keep their old proxy policy. No command was retried.` }], details: undefined };
       };
       const result = tail.then(run, run);
       tail = result.catch(() => undefined);

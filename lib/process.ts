@@ -8,6 +8,7 @@ interface Options {
   maxBytes?: number;
   graceMs?: number;
   env?: NodeJS.ProcessEnv;
+  input?: string;
   /** When supplied, stdout chunks stream here instead of being buffered; the resolved value is then empty. */
   onStdout?: (chunk: Buffer) => void;
 }
@@ -18,7 +19,7 @@ export function runProcess(program: string, args: string[], options: Options): P
   if (options.signal?.aborted) return Promise.reject(new Error("Operation canceled"));
   return new Promise((resolve, reject) => {
     const child = spawn(program, args, {
-      cwd: options.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"],
+      cwd: options.cwd, detached: true, stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...options.env, NO_COLOR: "1" },
     });
     const stdout: Buffer[] = [];
@@ -102,6 +103,8 @@ export function runProcess(program: string, args: string[], options: Options): P
       } else stop(new Error(`${program}: code ${code}, signal ${signal ?? "none"}\n${Buffer.concat(stderr).toString("utf8").slice(-2000)}`));
     });
     options.signal?.addEventListener("abort", abort, { once: true });
+    child.stdin.on("error", (error) => stop(error));
+    child.stdin.end(options.input);
     if (options.signal?.aborted) abort();
   });
 }

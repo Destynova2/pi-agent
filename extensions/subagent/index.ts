@@ -14,9 +14,8 @@
 
 import { StringDecoder } from "node:string_decoder";
 import { runProcess } from "../../lib/process.ts";
-import { loadToolPolicy, toolDecision, isValidToolName, type ToolPolicy } from "../tool-policy/core.ts";
+import { CONFINED_TOOLS } from "../../lib/confined-tools.ts";
 import { openRun } from "./runs.ts";
-import { taskPathReason } from "../tool-policy/task.ts";
 import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -276,7 +275,6 @@ interface DispatchDefaults {
 	timeoutSeconds?: number;
 	parentSession: string;
 	tools: string[];
-	taskScoped: boolean;
 }
 
 async function runSingleAgent(
@@ -347,9 +345,10 @@ async function runSingleAgent(
 	try {
 		signal?.throwIfAborted();
 		cwd = path.resolve(defaultCwd, cwd ?? ".");
-		if (dispatchDefaults.taskScoped) {
-			const reason = taskPathReason(cwd, defaultCwd);
-			if (reason) throw new Error(`Cannot delegate outside the task scope: ${reason}`);
+		cwd = fs.realpathSync(cwd);
+		const relative = path.relative(fs.realpathSync(defaultCwd), cwd);
+		if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+			throw new Error("Cannot delegate outside the task scope: child cwd must stay inside the parent workspace");
 		}
 		run = openRun({ parentSession: dispatchDefaults.parentSession, agent: agent.name, agentFile: agent.filePath,
 			cwd: cwd ?? defaultCwd, tools, resume });
@@ -518,18 +517,14 @@ export default function (pi: ExtensionAPI) {
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			let policy: ToolPolicy;
-			try { policy = loadToolPolicy(getAgentDir()); }
-			catch (error) { throw new Error(`Cannot delegate: tool policy failed to load (${String(error)})`); }
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const parentFile = ctx.sessionManager.getSessionFile();
 			const dispatchDefaults: DispatchDefaults = {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 				thinkingLevel: ctx.thinkingLevel,
 				timeoutSeconds: params.timeoutSeconds,
-				taskScoped: Object.values(policy).includes("task"),
 				parentSession: JSON.stringify([ctx.sessionManager.getSessionId(), parentFile ? fs.realpathSync(parentFile) : null]),
-				tools: pi.getActiveTools().filter((name) => name !== "subagent" && isValidToolName(name) && ["allow", "task"].includes(toolDecision(policy, name))),
+				tools: pi.getActiveTools().filter((name) => name !== "subagent" && name !== "request_network_access" && CONFINED_TOOLS.has(name)),
 			};
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;

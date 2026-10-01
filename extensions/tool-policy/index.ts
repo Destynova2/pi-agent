@@ -1,5 +1,6 @@
 // Trusted host broker: all file operations execute in Codex; unsupported tools fail closed.
-import { spawn } from "node:child_process";
+import { runProcess } from "../../lib/process.ts";
+import { CONFINED_TOOLS } from "../../lib/confined-tools.ts";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -7,54 +8,24 @@ import {
   createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition,
   createLsToolDefinition, createFindToolDefinition, createGrepToolDefinition,
   getAgentDir, getPackageDir, SettingsManager, withFileMutationQueue,
-  type ExtensionAPI, type ExtensionContext,
+  type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
 import { registerNetworkAccess } from "./network.ts";
 
-export const STRICT_TOOLS = new Set(["read", "write", "edit", "ls", "find", "grep", "bash", "bash_process", "request_network_access"]);
+export const STRICT_TOOLS = CONFINED_TOOLS;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const factories = [createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition, createFindToolDefinition, createGrepToolDefinition];
 
-export function runSandboxTool(launcher: string, worker: string, sdk: string, cwd: string, request: unknown, signal?: AbortSignal): Promise<any> {
-  if (signal?.aborted) return Promise.reject(new Error("Sandbox tool aborted"));
-  return new Promise((done, fail) => {
-    const child = spawn(launcher, ["-c", `${quote(process.execPath)} ${quote(worker)} ${quote(sdk)}`], {
-      cwd, detached: true, stdio: ["pipe", "pipe", "pipe"],
-    });
-    let failure: Error | undefined;
-    const stop = (error: Error) => {
-      failure ??= error;
-      if (child.pid) try { process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ }
-    };
-    const abort = () => stop(new Error("Sandbox tool aborted"));
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) abort();
-    const timer = setTimeout(() => stop(new Error("Sandbox tool timed out (60s)")), 60_000);
-    const stdout: Buffer[] = [], stderr: Buffer[] = [];
-    let bytes = 0;
-    const collect = (chunks: Buffer[]) => (data: Buffer) => {
-      bytes += data.length;
-      if (bytes > 32 * 1024 * 1024) stop(new Error("Sandbox tool output exceeds 32 MiB"));
-      else chunks.push(data);
-    };
-    child.stdout.on("data", collect(stdout));
-    child.stderr.on("data", collect(stderr));
-    child.on("error", error => { failure ??= error; });
-    child.stdin.on("error", error => { failure ??= error; });
-    child.on("close", code => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", abort);
-      if (failure) return fail(failure);
-      if (code !== 0) return fail(new Error(`Sandbox tool failed (${code}): ${Buffer.concat(stderr).toString().slice(0, 8000)}`));
-      try {
-        const result = JSON.parse(Buffer.concat(stdout).toString());
-        if (!Array.isArray(result.content)) throw new Error("Invalid sandbox tool result");
-        done(result);
-      } catch (error) { fail(error); }
-    });
-    child.stdin.end(JSON.stringify(request));
+export async function runSandboxTool(launcher: string, worker: string, sdk: string, cwd: string, request: unknown, signal?: AbortSignal) {
+  const input = JSON.stringify(request);
+  if (Buffer.byteLength(input) > 32 * 1024 * 1024) throw new Error("Sandbox tool request exceeds 32 MiB");
+  const output = await runProcess(launcher, ["-c", `${quote(process.execPath)} ${quote(worker)} ${quote(sdk)}`], {
+    cwd, signal, input, timeoutMs: 60_000, maxBytes: 32 * 1024 * 1024,
   });
+  const result = JSON.parse(output);
+  if (!Array.isArray(result.content)) throw new Error("Invalid sandbox tool result");
+  return result;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -97,19 +68,19 @@ export default function (pi: ExtensionAPI) {
     const tool = factory(process.cwd());
     pi.registerTool({
       ...tool,
-      async execute(id, input, signal, _onUpdate, ctx) {
+      async execute(id: string, input: unknown, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
         verify(ctx);
         const run = () => runSandboxTool(launcher, worker, sdk, ctx.cwd, { name: tool.name, id, input }, signal);
         // ponytail: serialize file calls per workspace; per-file queues if contention matters.
         return withFileMutationQueue(ctx.cwd, run);
       },
-    } as any);
+    } as ToolDefinition);
   }
   pi.on("before_agent_start", event => {
     pi.setActiveTools(pi.getActiveTools().filter(name => STRICT_TOOLS.has(name)));
-    event.systemPromptOptions.sections.tool_policy = "Strict tool sandbox: file tools and Bash execute inside Codex's OS sandbox. Writes: current workspace and private TMPDIR only; outside reads allowed. Network is restricted to approved hosts through Codex's managed proxy. request_network_access can ask the human for an additional public host, never for filesystem escape. All other tools (including LSP, subagent, MCP, web and shared notes) are denied. No tool-policy.json exceptions or automatic escalation. Model transport, session storage and trusted extension lifecycle code remain host-side.";
+    event.systemPromptOptions.sections.confined_tools = "File tools, Bash, Notes, Graphify, Git inspection and web_fetch execute inside Codex's OS sandbox. Writes: current workspace and private TMPDIR; outside reads allowed. Only the fixed Notes worker can also write project note storage, its Git exclude entry and the central notes.db with SQLite sidecars. Network is restricted to approved public hosts; request_network_access never disables filesystem confinement. Subagents inherit active confined tools without recursion or cwd widening; their model transport and private session artifacts remain host-side. LSP, MCP, web_search and other tools without confined executors are denied. Never retry a sandbox denial through an unrestricted tool.";
   });
-  pi.registerCommand("tool-policy", {
+  pi.registerCommand("confined-tools", {
     description: "Show sandbox status (only additional network hosts require approval)",
     handler: async (_args, ctx) => {
       try { verify(ctx); ctx.ui.notify(`Strict sandbox configured: ${[...STRICT_TOOLS].join(", ")}. Other tools denied. Only additional public network hosts can request approval. Restart required after installation.`, "info"); }

@@ -20,6 +20,7 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     await writeFile(join(source, relative), "#!/usr/bin/env node\n");
     await writeFile(join(source, "scripts/codex-tool.mjs"), "// confined file worker\n");
     await writeFile(join(source, "scripts/codex-network.mjs"), "// managed network policy\n");
+    await writeFile(join(source, "scripts/confined-tool.mjs"), "// confined service worker\n");
     await chmod(join(source, relative), 0o644); // installer must set executable mode itself
     await runInstall({ sourceRoot: source, target, noPackages: true });
     assert.equal((await stat(join(target, relative))).mode & 0o777, 0o755);
@@ -28,13 +29,19 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     await writeFile(join(target, relative), "previous launcher\n");
     await writeFile(join(target, "scripts/personal.mjs"), "keep\n");
     await writeFile(join(target, "tool-policy.json"), '{"bash":"deny"}\n');
+    await mkdir(join(target, "extensions/tool-policy"), { recursive: true });
+    await writeFile(join(target, "extensions/tool-policy/core.ts"), "// legacy parser\n");
     await writeFile(join(target, "network-policy.json"), '{"allow":[]}\n');
     await writeFile(join(target, "settings.json"), '{"shellPath":"/bin/bash","theme":"dark"}');
     const result = await runInstall({ sourceRoot: source, target, noPackages: true });
     assert.equal(await readFile(join(result.backupDir, relative), "utf8"), "previous launcher\n");
     assert.equal(await readFile(join(target, relative), "utf8"), "#!/usr/bin/env node\n");
     assert.equal(await readFile(join(target, "scripts/personal.mjs"), "utf8"), "keep\n");
-    assert.equal(await readFile(join(target, "tool-policy.json"), "utf8"), '{"bash":"deny"}\n');
+    assert.equal(await readFile(join(result.backupDir, "tool-policy.json"), "utf8"), '{"bash":"deny"}\n');
+    assert.equal(await readFile(join(result.backupDir, "extensions/tool-policy/core.ts"), "utf8"), "// legacy parser\n");
+    await assert.rejects(readFile(join(target, "tool-policy.json")), { code: "ENOENT" });
+    await assert.rejects(readFile(join(target, "extensions/tool-policy/core.ts")), { code: "ENOENT" });
+    assert.equal(await readFile(join(target, "scripts/confined-tool.mjs"), "utf8"), "// confined service worker\n");
     assert.equal(await readFile(join(target, "network-policy.json"), "utf8"), '{"allow":[]}\n');
     assert.equal(await readFile(join(target, "scripts/codex-network.mjs"), "utf8"), "// managed network policy\n");
     assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, relative));
@@ -345,6 +352,26 @@ test("malformed target settings.json: refused before any mutation, managed targe
   } finally {
     await rm(source, { recursive: true, force: true });
     await rm(targetParent, { recursive: true, force: true });
+  }
+});
+
+test("filtered package resources survive install and replace the unfiltered package", async () => {
+  const entry = { source: "npm:@ian-pascoe/pi-lsp@0.4.4", extensions: [] };
+  const source = await buildFixtureSource({ settings: { packages: [entry] } });
+  const parent = await makeTmpDir("pi-filtered-package-");
+  const target = join(parent, "agent");
+  const fakePi = await makeFakePi();
+  try {
+    await mkdir(target);
+    await writeFile(join(target, "settings.json"), JSON.stringify({ packages: [entry.source] }));
+    const result = await runInstall({ sourceRoot: source, target, env: fakePi.env });
+    assert.deepEqual(result.packageFailures, []);
+    assert.deepEqual((await readJson(join(target, "settings.json"))).packages, [entry]);
+    assert.match(await readFile(fakePi.logPath, "utf8"), /install npm:@ian-pascoe\/pi-lsp@0.4.4/);
+  } finally {
+    await rm(source, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
+    await rm(fakePi.binDir, { recursive: true, force: true });
   }
 });
 

@@ -1,18 +1,23 @@
+import { runConfined } from "../../lib/confined.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { NoProjectError, projectGraph, projectRoot } from "./core.ts";
 import { chooseIndexRoot } from "./repositories.ts";
+import type { GraphifyInput, GraphifyResult } from "./worker.ts";
 import { AutomaticIndex } from "./automatic.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
 
+async function dispatch(cwd: string, input: GraphifyInput, signal?: AbortSignal): Promise<GraphifyResult> {
+  return await runConfined(cwd, "graphify", input, signal) as GraphifyResult;
+}
+
 export default function (pi: ExtensionAPI) {
   let tasks = new SessionTasks();
-  let automatic = new AutomaticIndex<Awaited<ReturnType<typeof projectGraph>> | undefined>();
+  let automatic = new AutomaticIndex<Extract<GraphifyResult, { op: "graph"; ok: true }> | undefined>();
   let selectedRoot: string | undefined;
   const approved = new Set<string>();
   const pickRoot = async (ctx: ExtensionContext, signal?: AbortSignal, includeNested = false) => {
     const root = await chooseIndexRoot(selectedRoot ?? ctx.cwd, approved,
-      ctx.hasUI ? (title, choices, owned) => ctx.ui.select(title, choices, { signal: owned }) : undefined, signal, includeNested);
+      ctx.hasUI ? (title, choices, owned) => ctx.ui.select(title, choices, { signal: owned }) : undefined, signal, includeNested, ctx.cwd);
     selectedRoot = root;
     return root;
   };
@@ -29,11 +34,12 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus("graphify", "AST indexing in background…");
     automatic.start(
       async (signal) => {
-        let root: string;
-        try { root = await projectRoot(ctx.cwd, signal); }
-        catch (error) { if (error instanceof NoProjectError) return undefined; throw error; }
-        selectedRoot = root;
-        return projectGraph(root, "overview", "", signal);
+        const detected = await dispatch(ctx.cwd, { op: "root", cwd: ctx.cwd }, signal) as Extract<GraphifyResult, { op: "root" }>;
+        if (!detected.ok) return undefined;
+        selectedRoot = detected.root;
+        const result = await dispatch(ctx.cwd, { op: "graph", root: detected.root, action: "overview", symbol: "" }, signal) as Extract<GraphifyResult, { op: "graph" }>;
+        if (!result.ok) return undefined;
+        return result;
       },
       (result) => ctx.ui.setStatus("graphify", result ? `Graphify ready: ${result.root}` : undefined),
       (error) => {
@@ -66,7 +72,9 @@ export default function (pi: ExtensionAPI) {
         owned.throwIfAborted();
         const root = await pickRoot(ctx, owned);
         if (!root) throw new Error("No authorized root: indexing canceled.");
-        return projectGraph(root, params.action, params.symbol, owned);
+        const graphed = await dispatch(ctx.cwd, { op: "graph", root, action: params.action, symbol: params.symbol }, owned) as Extract<GraphifyResult, { op: "graph" }>;
+        if (!graphed.ok) throw new Error(graphed.message);
+        return graphed;
       }, signal);
       return { content: [{ type: "text", text: result.text }], details: { root: result.root, graph: result.graph } };
     },
@@ -83,7 +91,9 @@ export default function (pi: ExtensionAPI) {
           owned.throwIfAborted();
           const root = await pickRoot(ctx, owned, includeNested);
           if (!root) throw new Error("No authorized root: indexing canceled.");
-          return projectGraph(root, symbol ? "explain" : "overview", symbol, owned, undefined, includeNested);
+          const graphed = await dispatch(ctx.cwd, { op: "graph", root, action: symbol ? "explain" : "overview", symbol, includeNested }, owned) as Extract<GraphifyResult, { op: "graph" }>;
+          if (!graphed.ok) throw new Error(graphed.message);
+          return graphed;
         }, ctx.signal);
         ctx.ui.notify(result.text, "info");
       } catch (error) {
