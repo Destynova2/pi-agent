@@ -1,6 +1,6 @@
 # Installation
 
-This document describes how to fetch this repo somewhere other than a live pi agent directory, then install it.
+This document describes how to fetch this repo somewhere other than a live pi agent directory, then install it. The confined-services migration on this branch is not yet validated end to end or installed in the live runtime; use an isolated test target first.
 
 ## Source vs target
 
@@ -44,11 +44,11 @@ Idempotent, Node stdlib only. Before any mutation:
 - refuses if a symlink exists anywhere under a managed resource (source or target) — would allow a write outside the target during the copy;
 - validates the minimal JSON schema of `settings.json` (source and target) before any write.
 
-Managed directories/files (`MANAGED_DIRS`/`MANAGED_FILES` in `scripts/install.mjs`): `agents/`, `extensions/`, `lib/`, `gates/`, `scripts/codex-shell.mjs`, `scripts/codex-tool.mjs`, `scripts/codex-network.mjs`, `keybindings.json`, `settings.json`. The shell launcher retains its executable mode and is backed up on reinstall; other personal scripts are not managed. **Never touched**: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `tool-policy.json`, `network-policy.json`, nor any file outside this list (including `skills/`, see below).
+Managed directories/files (`MANAGED_DIRS`/`MANAGED_FILES` in `scripts/install.mjs`): `agents/`, `extensions/`, `lib/`, `gates/`, `scripts/codex-shell.mjs`, `scripts/codex-tool.mjs`, `scripts/codex-network.mjs`, `scripts/confined-tool.mjs`, `keybindings.json`, `settings.json`. The shell launcher retains its executable mode and is backed up on reinstall; other personal scripts are not managed. **Never touched**: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `network-policy.json`, nor any file outside this list except the explicitly retired legacy policy files (including `skills/`, see below).
 
-Installation now enables the [strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox): it replaces `shellPath` with the installed Codex adapter, preserving the previous settings in the backup. Restart Pi with `--no-approve`. File tools and Bash run confined without routine approval prompts. Predefined network hosts are automatic; `request_network_access` asks only for additional public hosts, without widening filesystem access. All other tools remain denied. Stable Codex >=0.155.1 must be installed and its OS sandbox and managed proxy must work. Legacy `tool-policy.json` rules no longer authorize calls.
+Installation now enables the [strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox): it replaces `shellPath` with the installed Codex adapter, preserving the previous settings in the backup. Restart Pi with `--no-approve`. File tools and Bash run confined without routine approval prompts. Predefined network hosts are automatic; `request_network_access` asks only for additional public hosts, without widening filesystem access. Notes, Graphify, Git inspection and `web_fetch` use confined workers; delegation inherits that fixed capability set. Other tools remain denied. Stable Codex >=0.155.1 must be installed and its OS sandbox and managed proxy must work. The installer backs up then deletes `tool-policy.json` and its obsolete parser/classifier files. The LSP package remains installed with `extensions: []`, preventing unconfined automatic hooks until a complete adapter is available.
 
-Sequence: back up the existing target into `<target>.backup-<timestamp>/` (created with `0700` permissions), then copy file by file (never deletes a target directory: any personal addition in a managed directory survives a reinstall), then merge `settings.json` (packages managed by the source replace their counterpart by identity — without the `@version`/`@sha` suffix — in the target; personal target packages with no source counterpart are kept), then `pi install <source> --no-approve` for each listed package.
+Sequence: back up the existing target into `<target>.backup-<timestamp>/` (created with `0700` permissions), then copy file by file (never deletes a target directory: any personal addition in a managed directory survives a reinstall), then merge `settings.json` (string and filtered-object package entries are supported; packages managed by the source replace their counterpart by identity — without the `@version`/`@sha` suffix — in the target; personal target packages with no source counterpart are kept), then `pi install <source> --no-approve` for each listed package.
 
 Options:
 

@@ -18,18 +18,18 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 |---|---|
 | Adapt delegation automatically | Ask normally: work starts direct and splits when useful; `/orchestrate <request>` remains optional |
 | Delegate or resume a subtask | `subagent` with `agent: scout\|worker\|reviewer`; reuse the returned `resume` ID for a follow-up |
-| Inspect tool confinement | `/tool-policy`: confined file/Bash tools; predefined network hosts are automatic, `request_network_access` asks only for additional public hosts |
+| Inspect tool confinement | `/confined-tools`: available confined executors; `request_network_access` asks only for additional public hosts |
 | Inspect Git without general shell access | `git_inspect`: status, diff, log or files |
 | Note a decision without a model turn | `/btw decision <text>` (kinds: plan, decision, done, blocker, lesson, claim) |
 | Talk to another project agent | `/btw [@agent] <text>`: routed by @name, otherwise by claimed path, otherwise broadcast; delivered on its next turn or between tool calls if it's running |
 | Find an old prompt | `ctrl+r` |
 | Import session history | `/btw import` |
 | Code map | `project_graph` tool, auto-indexed at startup |
-| Watch a PR | `ci_watch` tool, wakes on green / red / merged |
+| Watch a PR | `ci_watch` remains disabled pending a confined executor |
 
 Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts.
 
-See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for boundaries and validation. Delegation, shared notes, LSP, web and MCP tools remain disabled until they have confined executors. Shell networking uses the [managed host allowlist](docs/ORCHESTRATION.md#network-access), without disabling the filesystem jail. Model transport and trusted host extension internals are not jailed.
+This branch prepares confined Notes, Graphify, Git inspection, `web_fetch` and capability-limited delegation. It is not an activated runtime migration. LSP, MCP, `web_search` and `ci_watch` remain disabled; the unconfined LSP extension is filtered out, including its automatic hooks. See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for remaining work and boundaries. Model transport and trusted host extension internals are not jailed.
 
 See [Latency and context](docs/PERFORMANCE.md) for measured startup/context costs, Jcode comparisons, and native batching of queued follow-ups.
 
@@ -42,7 +42,7 @@ agents/              scout, worker, reviewer (sub-agent prompts)
 extensions/
   orchestrate/       /orchestrate and the chef prompt; gates via gates/pi-prek
   subagent/          bounded single/parallel/chain delegation and native session resume
-  tool-policy/       pre-execution authorization, /tool-policy
+  tool-policy/       confined-executor dispatcher, /confined-tools (no legacy policy)
   git-inspect/       fixed-argument Git inspection
   notes.ts           SQLite memory, /btw, ctrl+r, inter-agent inbox
   ci-watch/          ci_watch tool

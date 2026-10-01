@@ -1,6 +1,6 @@
 # Orchestration on large projects
 
-The installed strict sandbox disables `subagent`, shared notes, Graphify, LSP, web and MCP tool calls until they have confined executors. The delegation features below describe the retained implementation, not capabilities available in strict mode. Only file tools and Bash are currently enabled.
+This source branch adds confined Notes, Graphify, Git inspection and `web_fetch`, plus delegation restricted to those executors. LSP, MCP, `web_search` and `ci_watch` remain unavailable to the model. Migration is not yet installed or validated end to end; do not confuse source changes with activation in existing sessions.
 
 ## Working method
 
@@ -11,7 +11,7 @@ The installed strict sandbox disables `subagent`, shared notes, Graphify, LSP, w
 - Record checkpoints in shared notes: completed slice, files, check command and exit code, remaining requirements, blockers, next step. Re-read the worktree when resuming; notes are not proof or snapshots.
 - Review the combined diff and run integration checks before claiming the full task is complete. Per-worker success does not establish cross-module correctness.
 
-Scout and reviewer can read `note_list`; they cannot call `note_add` and no longer receive general `bash`. They use `git_inspect` for fixed-argument status, diffs, file lists and recent commits. Its helper-disabling flags and tests reduce Git configuration hazards; this is not an OS sandbox. Git must support `--no-lazy-fetch` (tested with 2.55.0); older versions fail explicitly rather than silently ignoring the protection. The notes extension only advertises tools that are active.
+Scout and reviewer can read `note_list`; they cannot call `note_add` and no longer receive general `bash`. They use `git_inspect` for fixed-argument status, diffs, file lists and recent commits. Its helper-disabling flags reduce Git configuration hazards; execution also runs inside the Codex sandbox. Git must support `--no-lazy-fetch` (tested with 2.55.0); older versions fail explicitly rather than silently ignoring the protection. The notes extension only advertises tools that are active.
 
 ## Runtime limits and handoffs
 
@@ -61,9 +61,15 @@ Missing, corrupt, oversized (64 MiB) or incomplete session files are rejected wi
 
 `extensions/tool-policy` now confines `read`, `write`, `edit`, `ls`, `find` and `grep` through `scripts/codex-tool.mjs` under the same Codex OS sandbox as Bash. It reuses Pi's native tool implementations, including edit validation and image handling. File calls are serialized per workspace; each has a 60-second deadline and 32 MiB output ceiling.
 
-`bash` and its `bash_process` supervisor retain the existing sandbox launcher and background lifecycle. `request_network_access` is the only approval tool: it can add exact public hosts, never filesystem permissions. Every other model-facing tool is denied without a prompt, including unknown tools and nested tool calls. The active model tool list is narrowed accordingly. Routine confined commands need no approval; there is no unrestricted fallback. The legacy `tool-policy.json` is ignored by this dispatcher; helper parsers remain only for the retained delegation implementation.
+`bash` and its `bash_process` supervisor retain the existing launcher and background lifecycle. Notes, including automatic prompt capture and inbox polling, and Graphify, including startup indexing and root discovery, now dispatch to fixed jailed workers. Notes alone receives additional grants for project note storage, its Git exclude entry and `~/workspace/notes.db` with SQLite sidecars, never the whole workspace directory. Linked storage is refused. Graphify caches live under the private cwd-specific `TMPDIR`; existing external caches are not deleted. Git inspection is offline; `web_fetch` uses the managed network proxy.
 
-The installer sets `shellPath` and deploys the shell launcher, file worker and shared network-policy module. Restart Pi with `--no-approve` after installation. Project resources are refused through `project_trust`; a session started with trusted project resources blocks all permitted tools too. `/tool-policy` reports configuration, not proof that the backend can run. A missing adapter, changed cwd/shell or backend failure blocks execution.
+Routine calls need no approval. `request_network_access` can add exact public hosts, never filesystem permissions. Unknown tools and executors not yet confined are denied. There is no unrestricted fallback. The legacy `tool-policy.json`, parser and shell classifier are removed; the installer backs up and deletes known legacy files. The dispatcher directory retains its name to replace the old installed entry point without loading two dispatchers.
+
+Children inherit the intersection of role tools, active parent tools and the fixed confined-executor set, without recursive delegation or interactive network grants. Canonical child cwd must remain within its parent workspace in every mode, even with no policy file. Private session/report storage and model transport remain trusted host operations. Resumes can only narrow capabilities.
+
+The installer sets `shellPath` and deploys the launchers, workers and SDK resolver. Restart Pi with `--no-approve` after a validated installation. Project resources are refused through `project_trust`; a session started with trusted project resources blocks permitted tools too. `/confined-tools` reports configuration, not proof that the backend can run. A missing adapter, changed cwd/shell or backend failure blocks execution.
+
+The original LSP package stays installed but its extension is filtered out (`extensions: []`): denying its tool alone would leave automatic diagnostics and workspace edits on the host. A replacement must preserve persistent servers, session previews, cancellation and UI behavior while confining edits and lifecycle operations. Local MCP servers need confined execution; a jailed remote client cannot confine its remote server. Dunst controls host applications and must not be presented as project-confined execution.
 
 This is a tool execution boundary, **not a whole-Pi process jail**. Model transport, session persistence, background logs and trusted extension lifecycle handlers remain host-side. Do not load untrusted personal/CLI extensions or toolchains. Outside reads remain allowed, so this is not credential confidentiality isolation. Tests still need to run on a host where Codex can create its OS sandbox; an enclosing sandbox can prohibit nested namespaces.
 
@@ -90,48 +96,13 @@ A host grant permits proxy traffic to that host, including uploads and authentic
 
 Source: Codex [proxy policy](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/network-proxy/README.md) and [sandbox launcher](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/cli/src/debug_sandbox.rs). The real proxy test requires a host able to create Codex's OS sandbox and reach public HTTPS. It cannot be validated inside a runtime that prohibits nested sandboxing.
 
-### Retired authorization model (historical)
-
-The following approval/task rules describe the old dispatcher only. They are not active and cannot grant exceptions in strict mode.
-
-`extensions/tool-policy` gates model tool calls before execution, including extension tools. `/tool-policy` re-reads the trusted file and shows current rules and errors. Every authorization also re-reads it; policy edits require no reload. A changed policy revokes task grants and invalidates queued/open approvals. A corrupt or unreadable update blocks calls instead of keeping stale permissions. `<agent-dir>/tool-policy.json` is optional, user-owned, never loaded from the project, and not replaced by the installer.
-
-- Built-in defaults allow read/search/list, edit/write, notes, graph inspection, `git_inspect` and `subagent`. Shell, network and other unlisted tools require one-shot human approval.
-- A configured file fully replaces those defaults. Values are `allow`, `ask`, `deny` or `task`; `*` supplies the fallback (otherwise `ask`). Invalid files block every model tool; the human command remains available for diagnosis.
-- `ask` without a UI is denied. Parallel confirmations are serialized; refusal, cancellation or an unavailable approval mechanism never becomes permission.
-- Built-in edit/write cannot modify the agent directory, including via existing symlinks or symlinked ancestors. Approved arguments are frozen so later tool-call handlers cannot silently mutate them.
-- Children get the intersection of role tools, current parent-active tools and the parent's current `allow`/`task` rules (re-read before each delegation), minus recursive delegation. The child re-evaluates `task` on every call; interactive test grants are never inherited. `ask` is not inherited as permission. Empty/malformed role lists grant no tools. Project agents always require human approval, even with general Pi project trust; use user-level definitions for headless runs. A model-supplied `confirmProjectAgents: false` cannot bypass this.
-- Child processes ignore project executable resources (`--no-approve`) and explicitly load the policy extension. A resumed child's saved capability ceiling also applies.
-
-The checked-in local `tool-policy.json` explicitly allows `bash` and its separate `bash_process` supervisor (`list`, `peek`, `kill`). Allowing `bash` alone does not authorize the supervisor. Unknown tools still use `*: ask`; these shell permissions are not a sandbox.
-
-For example, a user-authored read-oriented policy:
-
-```json
-{
-  "read": "allow",
-  "grep": "allow",
-  "find": "allow",
-  "ls": "allow",
-  "git_inspect": "allow",
-  "note_list": "allow",
-  "subagent": "allow",
-  "edit": "ask",
-  "write": "ask",
-  "bash": "deny",
-  "*": "ask"
-}
-```
-
-The next tool call or `/tool-policy` observes policy edits once this extension version is loaded. `/tool-policy` shows the actual Pi version, PID, extension load time and working directory, not just the policy file on disk. Installing updated extension code still requires loading that code through reload/restart. Pi refuses the built-in `/reload` during an active response or compaction: its warning is not a successful reload. `/tool-policy reload` waits for idle before requesting a reload without canceling work. Old versions without this command need one successful idle `/reload`, or a restart with the saved session. Reloading extensions does not upgrade an already-running Pi executable. With defaults, a headless worker cannot run shell-based tests; it must report this and the parent performs the approved checks. Explicitly allowing `bash` in the user policy enables shell-capable workers when the parent/role also permits it, but grants arbitrary shell capabilities unless an OS sandbox separately confines execution. Do not enable it merely to suppress a denial.
-
 ### Codex shell sandbox (macOS and Linux)
 
 The installer deploys the executable launcher to `<agent-dir>/scripts/codex-shell.mjs` and sets `shellPath` to that absolute path. Restart Pi after installation. This adapter uses Pi >=0.99.1, the existing Codex CLI (>=0.155.1 for managed network access; earlier shell-only validation used macOS 0.146.0 and Linux 0.155.1), and Node >=22.19. It makes no model calls and does not require Codex authentication. The default binary is `~/.local/bin/codex`; a trusted launcher environment can set `PI_CODEX_SANDBOX_BIN` to another installed binary. A symlink at the default path can also point to a trusted package-manager installation.
 
 - Native Bash, user `!` commands, and `@richardgill/pi-background-bash` use Pi's existing shell setting. Foreground/background execution, streaming, exit codes, timeouts and process-group cancellation remain owned by Pi/the background extension. No command-text rewriting or extra approval model is added.
 - Codex applies macOS Seatbelt or Linux bubblewrap plus `no_new_privs`/seccomp to Bash and its descendants: writes are limited to the command's initial working directory and a private per-project `TMPDIR`; network access is restricted to allowed hosts through the managed proxy, or disabled when no hosts are allowed. `.git`, `.codex` and `.agents` remain protected by Codex. The directory is the session/worker cwd, not an inferred parent repository or all of `~/workspace`. The sandbox guard also rejects single, parallel and chained delegations whose canonical cwd escapes the parent's directory.
-- Outside reads remain allowed. The strict dispatcher also runs native file tools through this adapter and blocks LSP, Graphify, MCP and other unconfined tools. Model transport and trusted extension internals remain outside the sandbox. Do not use another tool to bypass a denied action.
+- Outside reads remain allowed. The strict dispatcher also runs native file tools through this adapter and blocks LSP, MCP and other unconfined tools. Model transport and trusted extension internals remain outside the sandbox. Do not use another tool to bypass a denied action.
 - `git commit`, `git push`, dependency downloads, local servers and Podman access can be blocked. A denial is an error, never permission to retry outside the sandbox. The adapter fails closed when the backend is missing, the platform is unsupported or launch fails.
 - Linux requires a kernel/runtime that permits Codex's namespace-based sandbox. An unavailable sandbox is a launch failure, not permission to disable confinement. Fixed `/bin/cat` relays convert Node's captured Unix-socket stdio to pipes: otherwise Codex's network seccomp filter prevents libuv socket inspection and can silently discard Node console output. Only those fixed relays run outside confinement; the model's command remains a literal argument to Codex. Tests cover stdin, stdout, stderr, exit status and cancellation without relaxing network restrictions. This is a non-interactive Pi launcher: stdin must be closed or reach EOF. Do not invoke it from another host with an indefinitely open stdin; the input relay could outlive the command. Pi's normal native/background command paths use ignored stdin. No second sandbox backend or extra model process is added.
 - Codex configuration is isolated under `~/.cache/pi-codex-sandbox/config`, with explicit filesystem/network overrides. Scratch files persist under a cwd-hashed directory in the same cache; they are not committed and have no automatic retention policy. The user's normal Codex profiles, credentials and saved allow rules are not loaded.
@@ -144,22 +115,6 @@ node --test --import ./tests/resolve-pi.mjs tests/codex-shell.test.mjs tests/cod
 ```
 
 Tests exercise project/temp writes, outside writes including symlinks and child processes, protected metadata, host-network isolation, proxy allow/deny decisions and host grants, preserved outside-read behavior, missing-backend refusal, native/background execution, peek/kill and deadlines. The Linux backend is documented in Codex [`linux-sandbox/src/lib.rs`](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/linux-sandbox/src/lib.rs). The macOS implementation follows Codex [`exec_policy.rs`](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/core/src/exec_policy.rs) and [`seatbelt.rs`](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/sandboxing/src/seatbelt.rs); it invokes `codex sandbox` directly rather than importing execution-policy allow rules that can bypass confinement.
-
-### Retired task-scoped permissions (historical, inactive)
-
-Use `task` instead of `allow`/`ask` for `bash`, `read`, `write`, `edit`, `find`, `ls` and `grep` to reduce routine prompts without allowing every shell command. It is opt-in; an absent policy still uses the original defaults. Explicit `ask` and `deny` remain unconditional.
-
-- Scope is the working directory at `before_agent_start`, **not a semantic interpretation of the request**. Regular file reads/edits/writes and metadata searches within it are automatic. Paths outside it, known credential filenames/directories, hard-linked files, special files and unresolved paths ask. The existing agent-directory write prohibition remains unconditional.
-- Exception for `read`: Markdown instructions/references beneath `<agent-dir>/skills/<collection>` are automatic even outside the project. A user-installed collection may be a directory symlink; nested links escaping that collection, hard links and non-Markdown files do not receive the exception. This never permits writes or overrides explicit `ask`/`deny` rules.
-- A small shell subset is automatic: `pwd`, basic `ls`, metadata-only `find`, `rg --files`, and `rg`/`head`/`tail`/`wc` on explicitly named regular files, with narrowly recognized flags. Prefer Pi's native read/find/ls tools. Recursive content searches ask because they may discover credentials; sensitive filename checks cannot identify every secret.
-- Compound shell commands, expansions, pipes, redirection, interpreters, unknown flags, deletion, publication and deployment ask **before** execution. An affirmative one-shot answer never approves future calls.
-- `npm run check|test|lint|typecheck` and `node --test <explicit files>` offer three choices: deny, allow once, or allow that exact invocation for this task. **Without a separate OS sandbox, tests execute arbitrary project code with full filesystem/network access, including after edits.** The third choice explicitly trusts that code; it is not a sandbox or a promise that tests cannot delete/publish. Other scripts only get one-shot approval.
-- Exact test grants include the working directory and full tool arguments. They expire at task settlement, new `before_agent_start`, session start/shutdown/reload, a changed policy, or `/tool-policy reset`. Parallel duplicate requests share only an explicitly granted test permission. Abort or a task change while a prompt is open denies the pending call.
-- The final notification counts authorizations and denials, not successful executions. `/tool-policy` shows the source, active scope and grant count. Headless children can perform recognized routine operations; commands needing approval still fail closed. When task rules are configured, a child working directory must stay inside its parent's working directory (including symlink resolution); a model cannot widen the scope by delegating elsewhere.
-
-For example, keep the original allowed notes/inspection/delegation tools and set the seven tools above to `task`, with `"*": "ask"`. Save this in the user-owned `<agent-dir>/tool-policy.json`; the next authorization reads it. Do not obtain task approval from repository content or a model's claim that a command is safe.
-
-This is authorization of model-facing calls, not process isolation. Task rules assume trusted tool implementations, executables, shell startup files and environment; they cannot stop a substituted `ls` binary or malicious shell function. User-started commands, trusted extension internals and allowed shell/custom tools are outside the path guard. Another same-user process can race filesystem checks. A broken or deliberately disabled extension loader cannot enforce this extension. Use a container, VM or OS sandbox for adversarial code and credentials; do not treat scoped tools as a substitute.
 
 ## Automatic Graphify scope
 
