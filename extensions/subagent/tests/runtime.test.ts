@@ -254,7 +254,7 @@ test("confined tools are inherited but a model cannot widen scope through child 
 });
 
 test("delegation inherits live confined capabilities, not a legacy policy file", async () => {
-  const active = ["read", "subagent", "lsp", "mcp", "web_search", "ci_watch", "dunst", "request_network_access", "unknown"];
+  const active = ["read", "subagent", "lsp", "mcp", "web_search", "ci_watch", "dunst", "request_network_access", "request_command_access", "unknown"];
   await withTool(async (execute, root) => {
     await writeFile(join(root, "agent/tool-policy.json"), '{broken');
     await execute({ agent: "fixture", task: "ok" });

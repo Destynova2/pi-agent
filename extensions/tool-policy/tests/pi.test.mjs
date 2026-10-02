@@ -24,7 +24,7 @@ test("real Pi loader registers confined file tools and fails closed without an a
       const loaded = loader.getExtensions();
       assert.deepEqual(loaded.errors, []);
       const extension = loaded.extensions[0];
-      assert.deepEqual([...extension.tools.keys()].sort(), ["edit", "find", "grep", "ls", "read", "request_network_access", "write"]);
+      assert.deepEqual([...extension.tools.keys()].sort(), ["edit", "find", "grep", "ls", "read", "request_command_access", "request_network_access", "write"]);
       const ctx = { cwd, isProjectTrusted: () => false, hasUI: false, ui: {
         confirm() { assert.fail("No approval prompts"); }, select() { assert.fail("No task grants"); },
       } };

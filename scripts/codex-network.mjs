@@ -65,12 +65,13 @@ export function requireNetworkProxyVersion(output) {
   }
 }
 
-export function networkSandboxArgs(command, cwd, scratch, allowedHosts) {
+export function networkSandboxArgs(command, cwd, scratch, allowedHosts, writableRoots = []) {
   const allowed = hosts(allowedHosts);
   const q = JSON.stringify;
   const domains = allowed.map(host => `${q(host)}="allow"`).join(",");
   // Inherit Codex's protected metadata roots, but not its shared system-temp write grants.
-  const filesystem = `filesystem={":slash_tmp"="read",${q(scratch)}="write",":workspace_roots"={".pi"="read"}}`;
+  const additional = writableRoots.map(path => `,${q(path)}="write"`).join("");
+  const filesystem = `filesystem={":slash_tmp"="read",${q(scratch)}="write",":workspace_roots"={".pi"="read"}${additional}}`;
   const network = `network={enabled=true,proxy_url="http://127.0.0.1:0",enable_socks5=false,enable_socks5_udp=false,allow_upstream_proxy=false,allow_local_binding=false,dangerously_allow_non_loopback_proxy=false,dangerously_allow_all_unix_sockets=false,mode="full",domains={${domains}}}`;
   return ["sandbox", "-C", cwd, "-P", "pi", "--include-managed-config",
     "-c", 'features.network_proxy=true',
