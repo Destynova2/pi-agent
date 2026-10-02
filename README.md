@@ -18,7 +18,9 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 |---|---|
 | Adapt delegation automatically | Ask normally: work starts direct and splits when useful; `/orchestrate <request>` remains optional |
 | Delegate or resume a subtask | `subagent` with `agent: scout\|worker\|reviewer`; reuse the returned `resume` ID for a follow-up |
-| Inspect tool confinement | `/confined-tools`: available confined executors; `request_network_access` asks only for additional public hosts |
+| Inspect tool confinement | `/confined-tools`: available executors and approval boundaries |
+| Retry a denied write | `request_command_access`: [one confirmed command with exact additional paths](docs/ORCHESTRATION.md#one-command-filesystem-access) |
+| Allow another public host | `request_network_access`: filesystem confinement stays unchanged |
 | Inspect Git without general shell access | `git_inspect`: status, diff, log or files |
 | Note a decision without a model turn | `/btw decision <text>` (kinds: plan, decision, done, blocker, lesson, claim) |
 | Talk to another project agent | `/btw [@agent] <text>`: routed by @name, otherwise by claimed path, otherwise broadcast; delivered on its next turn or between tool calls if it's running |
