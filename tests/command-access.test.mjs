@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { registerCommandAccess } from "../extensions/tool-policy/command-access.ts";
 import { commandWritableRoots } from "../scripts/codex-shell.mjs";
 import { CONFINED_TOOLS } from "../lib/confined-tools.ts";
+import { metalFixture } from "./metal-fixture.mjs";
 
 function fixture(confirm = async () => true) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "pi-command-access-")));
@@ -13,9 +14,9 @@ function fixture(confirm = async () => true) {
   mkdirSync(join(agent, "scripts"), { recursive: true }); mkdirSync(cwd);
   // Unit transport only; OS confinement is exercised by command-access.integration.test.mjs.
   writeFileSync(join(agent, "scripts/codex-shell.mjs"), '#!/usr/bin/env node\nconsole.log(JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd()}));\n', { mode: 0o755 });
-  const handlers = new Map(); let tool; let prompts = 0; let active = true;
+  const handlers = new Map(); const journal = []; let tool; let prompts = 0; let active = true;
   const ctx = { cwd, hasUI: true, ui: { confirm: (...args) => { prompts++; return confirm(...args); } } };
-  registerCommandAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: value => { tool = value; }, getActiveTools: () => active ? ["request_command_access"] : [] }, agent, () => {});
+  registerCommandAccess({ on: (name, fn) => handlers.set(name, fn), appendEntry: (type, data) => journal.push({ type, ...data }), registerTool: value => { tool = value; }, getActiveTools: () => active ? ["request_command_access"] : [] }, agent, () => {});
   handlers.get("session_start")({}, ctx);
   const fail = (id = "failed", command = "echo original", extra = {}, isError = true) => {
     const event = { toolName: "bash", toolCallId: id, input: { command, ...extra } };
@@ -23,7 +24,7 @@ function fixture(confirm = async () => true) {
     return handlers.get("tool_result")({ ...event, content: [{ type: "text", text: "EPERM" }], isError, structuredContent: { exit_code: isError ? 1 : 0 } }, ctx);
   };
   const request = (input = {}, signal) => tool.execute("approval", { failed_call_id: "failed", write_paths: [target], reason: "write one output file", ...input }, signal, undefined, ctx);
-  return { root, agent, cwd, target, ctx, handlers, fail, request, disable: () => { active = false; }, get prompts() { return prompts; }, close: async () => { await handlers.get("session_shutdown")(); rmSync(root, { recursive: true, force: true }); } };
+  return { root, agent, cwd, target, ctx, handlers, journal, fail, request, disable: () => { active = false; }, get prompts() { return prompts; }, close: async () => { await handlers.get("session_shutdown")(); rmSync(root, { recursive: true, force: true }); } };
 }
 
 test("additional paths are canonical and narrow; runtime, links, hardlinks and ancestors are refused", async () => {
@@ -42,6 +43,44 @@ test("additional paths are canonical and narrow; runtime, links, hardlinks and a
     if (existsSync(join(f.root, "AGENT"))) assert.throws(() => validate([join(f.root, "AGENT/auth.json.lock")]), /canonical/);
     assert.equal(CONFINED_TOOLS.has("request_command_access"), false, "approval must not enter child capability ceilings");
   } finally { await f.close(); }
+});
+
+test("Metal approval binds the exact command, backend and journal without granting file writes", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+  let shown;
+  const f = fixture(async (_title, text) => { shown = text; return true; });
+  try {
+    const sha256 = metalFixture(f.agent);
+    f.fail("failed", "./probe 'exact argument'");
+    const result = await f.request({ gpu: "metal", write_paths: undefined });
+    assert.match(shown, /"gpu": "metal"/); assert.match(shown, /Deadline: 60 seconds/);
+    assert.ok(shown.includes(sha256));
+    const execution = JSON.parse(result.content[0].text.split("\n")[0]);
+    assert.deepEqual(execution.argv, ["--metal", sha256, "-c", "./probe 'exact argument'"]);
+    assert.deepEqual(result.details.writePaths, []);
+    assert.deepEqual(f.journal.map(entry => entry.status), ["started", "completed"]);
+    for (const entry of f.journal) {
+      assert.equal(entry.type, "metal_command"); assert.equal(entry.backendSha256, sha256);
+      assert.equal(entry.command, "./probe 'exact argument'"); assert.equal(entry.timeoutMs, 60000);
+    }
+    await assert.rejects(f.request({ gpu: "metal" }), /No eligible/);
+  } finally { await f.close(); }
+});
+
+test("Metal fails before prompting when unavailable, and rejects backend replacement during approval", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+  for (const mode of ["missing", "replacement", "refused"]) {
+    const f = fixture(async () => {
+      if (mode === "replacement") metalFixture(f.agent, "#!/bin/sh\nexit 2\n");
+      return mode !== "refused";
+    });
+    try {
+      if (mode !== "missing") metalFixture(f.agent);
+      f.fail();
+      await assert.rejects(f.request({ gpu: "metal", write_paths: undefined }), /unavailable|changed during approval|refused/);
+      assert.equal(f.prompts, mode === "missing" ? 0 : 1);
+      assert.deepEqual(f.journal, []);
+      await assert.rejects(f.request(), /No eligible/);
+    } finally { await f.close(); }
+  }
 });
 
 test("only a captured foreground failure can request a one-shot retry, preserving structured results", async () => {
