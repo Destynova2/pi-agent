@@ -55,7 +55,11 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
   pi.registerTool({
     name: "request_command_access", label: "Request one-command access",
     description: "After a failed foreground Bash call, ask the human to rerun that exact command once with additional filesystem write paths and/or Metal GPU access. Metal requires a separately reviewed, installed and natively qualified backend; it never grants file or network access. The stored command and cwd cannot be replaced. Runtime/configuration paths (including Pi locks) and workspace ancestors cannot be granted. Codex confinement and existing network policy remain active. Directories grant their subtree. No background, headless, delegated, permanent or unsandboxed execution. Requests expire after five minutes and are consumed once, including refusal. Execution is limited to 60 seconds and the command tree is canceled on session changes.",
-    promptGuidelines: ["Only request the write paths or Metal capability necessary for the reported failure. Inspect partial effects before proposing a retry. Never use another executor to bypass a sandbox denial."],
+    promptGuidelines: [
+      "Only request the write paths or Metal capability necessary for the reported failure. Inspect partial effects before proposing a retry. Never use another executor to bypass a sandbox denial.",
+      "Ordinary Bash has no Metal access, even after installation or restart. A nil Metal device there does not test the optional backend. After an eligible failure, use this tool with gpu=metal and the captured failed_call_id; report the approved rerun result.",
+      "Keep the GPU command in the foreground with timeoutAction=kill. Preserve its real failure status: use set -o pipefail for pipelines, do not append echo or otherwise swallow an error, and make a Metal probe exit nonzero when no device is available. A successful shell result cannot request access. Never manufacture an unrelated failure to obtain a grant.",
+    ],
     parameters: Type.Object({
       failed_call_id: Type.String({ minLength: 1, maxLength: 256 }),
       write_paths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1024 }), { minItems: 1, maxItems: 8 })),

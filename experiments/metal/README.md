@@ -49,6 +49,38 @@ security certification or an independent audit. A qualification report is a
 trusted operator record, not a signed attestation. Trusted host extensions and an
 operator able to replace the runtime remain outside the workspace threat model.
 
+## A nil device after installation
+
+Installation and restart make the approval tool available; ordinary Bash still
+has no GPU permission. `MTLCreateSystemDefaultDevice() == nil` or
+`MTLCopyAllDevices() == []` in ordinary Bash is therefore expected. It does not
+show that the installed optional backend is missing a driver permission.
+
+Keep the intended GPU command in the foreground (`timeoutAction: "kill"`).
+Preserve its exit status: use `set -o pipefail` when filtering output, and do not
+append a successful `echo`. A Swift probe must exit nonzero when no device exists:
+
+```swift
+import Foundation
+import Metal
+
+guard let device = MTLCreateSystemDefaultDevice() else {
+    print("METAL_UNAVAILABLE")
+    exit(77)
+}
+print(device.name)
+```
+
+After the failed Bash result, call `request_command_access` with that result's
+exact `failed_call_id`, `gpu: "metal"` and a reason, then confirm the one-command
+rerun. Do not invent an unrelated failure or add write paths for a GPU denial.
+An exit-zero shell result is ineligible even if its output contains an error.
+The approved command must complete within 60 seconds; no background handoff is
+available. Only a failure from the approved Metal rerun can demonstrate a missing
+permission in that backend. Investigate its exact denials before adding rules;
+WindowServer, `IOAccelDevice2` and `gpumemd` are not needed by the qualified compute
+probe merely because unrelated native logs mention them.
+
 ## Reproduce without installing
 
 Prerequisites: native Apple Silicon macOS, Xcode command-line tools, Node >=22.19,
@@ -113,8 +145,8 @@ use a unit-test fixture or this repository's validation summary as that report.
 After installing the reviewed adapter with the normal backup-producing installer,
 restart Pi, check `/confined-tools`, then exercise a failed Metal command and its
 single approved retry. Disabling/removing the manifest disables new Metal grants;
-restore the runtime backup to roll back adapter changes. This review branch has
-not been activated in the user's Pi installation.
+restore the runtime backup to roll back adapter changes. Adapter source alone
+does not activate the optional backend.
 
 See [validation](validation.md) for observed results and outstanding review limits.
 The Codex patch is distributed under the adjacent [Apache 2.0 license](CODEX-LICENSE)
