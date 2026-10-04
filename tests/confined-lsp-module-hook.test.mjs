@@ -1,10 +1,11 @@
 // Proves the static preload hook in isolation, against the real installed @ian-pascoe/pi-lsp
 // 0.4.4: resolves the fixed package aliases, maps relative .js imports inside the pinned src/
-// root to .ts, strips TypeScript types with node:module's stripTypeScriptTypes, and leaves
+// root to .ts, compiles TypeScript with the installed Pi SDK's Jiti compiler, and leaves
 // everything else (other specifiers, other paths) to Node's normal resolution.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -31,9 +32,13 @@ test("findPinnedPiLspRoot rejects a directory whose package.json name/version do
 });
 
 test(
-  "loads createPiLspExtension and strips its TypeScript, out-of-process under plain node",
+  "loads real LSP TypeScript without executing project Babel configuration",
   { skip: skipReason() },
-  () => {
+  (t) => {
+    const project = mkdtempSync(join(tmpdir(), "pi-lsp-compiler-"));
+    t.after(() => rmSync(project, { recursive: true, force: true }));
+    const marker = join(project, "babel-executed");
+    writeFileSync(join(project, "babel.config.cjs"), `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'bad'); throw new Error('project Babel config executed');`);
     const script = `
       import { createPiLspExtension, PiLspLifecycleController } from "@ian-pascoe/pi-lsp/pi-lsp-extension";
       if (typeof createPiLspExtension !== "function") throw new Error("createPiLspExtension missing");
@@ -54,8 +59,9 @@ test(
     const output = execFileSync(
       process.execPath,
       ["--import", RESOLVE_PI_HOOK, "--import", HOOK, "--input-type=module", "-e", script],
-      { env: { ...process.env, PI_CODING_AGENT_DIR: AGENT_DIR }, encoding: "utf8" },
+      { cwd: project, env: { ...process.env, PI_CODING_AGENT_DIR: AGENT_DIR }, encoding: "utf8" },
     );
     assert.equal(output.trim(), "OK");
+    assert.equal(existsSync(marker), false);
   },
 );

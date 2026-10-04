@@ -11,11 +11,9 @@
 // resolves that root for itself from `PI_CODING_AGENT_DIR` at import time (pi-lsp-module-hook.mjs)
 // and at "session_start" time (SettingsManager.create), never from a path baked in here.
 //
-// No Bun dependency: the worker runs under plain `node`. Node's own `node:module`
-// `stripTypeScriptTypes` (registered by pi-lsp-module-hook.mjs) loads @ian-pascoe/pi-lsp's
-// source-only TypeScript; Node's node_modules type-stripping restriction only blocks its
-// *built-in* loader for `.ts` files under node_modules, not a module customization hook that
-// strips and returns source itself.
+// The worker runs under plain Node. The scoped pi-lsp-module-hook.mjs compiles
+// the pinned package's source-only TypeScript with the installed Pi SDK's Jiti
+// compiler, without project Babel configuration or a compiler disk cache.
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";

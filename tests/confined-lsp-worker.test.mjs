@@ -276,7 +276,8 @@ test(
     // lib/rpc-process.ts stops the whole supervised process group on a canceled request
     // rather than sending a per-request cancel notification (see scripts/confined-lsp-worker.mjs's
     // module header): the pending call must reject, not hang.
-    await assert.rejects(() => pending, /canceled/);
+    try { await assert.rejects(() => pending, /canceled/); }
+    finally { await rpc.shutdown(); }
   },
 );
 

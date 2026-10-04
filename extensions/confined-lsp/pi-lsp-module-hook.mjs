@@ -5,8 +5,8 @@
 // siblings once published. Two things are needed to run that source under plain Node (no Bun):
 //   1. map those relative `.js` specifiers back to `.ts`, and the bare package specifier/the
 //      two fixed submodule aliases this worker imports, to the pinned install's `src/` files;
-//   2. strip the TypeScript types from anything resolved that way with `node:module`'s own
-//      `stripTypeScriptTypes({ mode: "transform" })` (experimental Node API, no external compiler).
+//   2. compile those files with the Jiti compiler already shipped by the installed Pi SDK.
+//      Node 26 no longer supports transforming TypeScript parameter properties.
 //
 // Scope is fixed and narrow on purpose: only `@ian-pascoe/pi-lsp@0.4.4` (the version this repo
 // pins and tests against) under one trusted `PI_CODING_AGENT_DIR`, and only `.ts` files that are
@@ -15,9 +15,10 @@
 // resolution (including the separate `lib/resolve-pi.mjs` hook redirecting
 // `@earendil-works/pi-coding-agent` and friends to the real installed Pi SDK).
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { registerHooks, stripTypeScriptTypes } from "node:module";
+import { createRequire, registerHooks } from "node:module";
+import { piPackageJson } from "../../lib/resolve-pi.mjs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const EXPECTED_NAME = "@ian-pascoe/pi-lsp";
 const EXPECTED_VERSION = "0.4.4";
@@ -64,6 +65,9 @@ export function findPinnedPiLspRoot(env = process.env) {
 }
 
 function registerPiLspHooks(pinned) {
+  if (!piPackageJson) throw new Error("Confined LSP requires the installed Pi SDK compiler");
+  const { createJiti } = createRequire(piPackageJson)("jiti");
+  const compiler = createJiti(import.meta.url, { fsCache: false, moduleCache: false, interopDefault: true });
   const srcDirUrl = pathToFileURL(`${pinned.srcDir}/`).href;
   const aliasUrls = new Map(
     Object.entries(SUBMODULE_ALIASES).map(([specifier, relative]) => [
@@ -95,8 +99,8 @@ function registerPiLspHooks(pinned) {
     load(url, context, nextLoad) {
       if (url.startsWith(srcDirUrl) && url.endsWith(".ts")) {
         const source = readFileSync(new URL(url), "utf8");
-        const code = stripTypeScriptTypes(source, { mode: "transform", sourceMap: false });
-        return { format: "module", shortCircuit: true, source: code };
+        const code = compiler.transform({ source, filename: fileURLToPath(url), ts: true, interopDefault: true, babel: { babelrc: false, configFile: false } });
+        return { format: "commonjs", shortCircuit: true, source: code };
       }
       return nextLoad(url, context);
     },
