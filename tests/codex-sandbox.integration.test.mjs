@@ -26,6 +26,7 @@ test("Codex shell enforces boundaries through native and background Bash without
     const launcher = join(agent, "scripts/codex-shell.mjs");
     copyFileSync(launcherSource, launcher);
     copyFileSync(new URL("../scripts/codex-network.mjs", import.meta.url), join(agent, "scripts/codex-network.mjs"));
+    copyFileSync(new URL("../scripts/metal-backend.mjs", import.meta.url), join(agent, "scripts/metal-backend.mjs"));
     chmodSync(launcher, 0o755);
     writeFileSync(join(agent, "settings.json"), JSON.stringify({ shellPath: launcher }));
     symlinkSync(join(root, "outside"), join(project, "escape"));

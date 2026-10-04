@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { networkHosts, networkSandboxArgs, requireNetworkProxyVersion } from "./codex-network.mjs";
+import { metalBackend } from "./metal-backend.mjs";
 
 // Only the fixed notes worker receives these grants; ordinary Bash never does.
 export function notesWritableRoots(cwd) {
@@ -67,6 +68,12 @@ export function sandboxArgs(command, writableRoots = []) {
 
 export function launch(argv = process.argv.slice(2)) {
   if (!["darwin", "linux"].includes(process.platform)) throw new Error("Codex shell sandbox requires macOS or Linux; no unsandboxed fallback.");
+  let metalDigest;
+  if (argv[0] === "--metal") {
+    metalDigest = argv[1];
+    if (!/^[a-f0-9]{64}$/.test(metalDigest ?? "")) throw new Error("Metal requires the exact approved backend digest");
+    argv = argv.slice(2);
+  }
   let requestedRoots;
   if (argv[0] === "--write-roots") {
     if (!argv[1] || Buffer.byteLength(argv[1]) > 16384) throw new Error("Invalid write-roots request");
@@ -74,13 +81,15 @@ export function launch(argv = process.argv.slice(2)) {
     argv = argv.slice(2);
     if (!Array.isArray(requestedRoots)) throw new Error("Expected write-roots array");
   }
-  const service = requestedRoots === undefined && (argv[0] === "--notes" || argv[0] === "--offline") ? argv[0].slice(2) : undefined;
+  const service = !metalDigest && requestedRoots === undefined && (argv[0] === "--notes" || argv[0] === "--offline") ? argv[0].slice(2) : undefined;
   if (service) argv = argv.slice(1);
   if (argv.length !== 2 || argv[0] !== "-c") throw new Error("Codex shell expects exactly: -c <command>.");
   if (typeof process.execve !== "function") throw new Error("Codex shell requires Node with process.execve (Node >=22.19).");
   const cwd = realpathSync(process.cwd());
   const agentDir = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
-  const codex = realpathSync(process.env.PI_CODEX_SANDBOX_BIN ?? join(homedir(), ".local/bin/codex"));
+  const metal = metalDigest ? metalBackend(agentDir) : undefined;
+  if (metal && metal.sha256 !== metalDigest) throw new Error("Metal backend changed after approval");
+  const codex = metal?.binary ?? realpathSync(process.env.PI_CODEX_SANDBOX_BIN ?? join(homedir(), ".local/bin/codex"));
   const cache = join(homedir(), ".cache/pi-codex-sandbox");
   mkdirSync(cache, { recursive: true, mode: 0o700 });
   // Never make the launcher, its backend, or its private configuration writable to commands.
@@ -104,6 +113,7 @@ export function launch(argv = process.argv.slice(2)) {
   const roots = requestedRoots === undefined ? (service === "notes" ? notesWritableRoots(cwd) : [])
     : commandWritableRoots(requestedRoots, cwd, process.env.PI_CODING_AGENT_DIR ?? agentDir, [codex]);
   const args = allowedHosts.length ? networkSandboxArgs(argv[1], cwd, scratch, allowedHosts, roots) : sandboxArgs(argv[1], roots);
+  if (metal) args.splice(1, 0, "--allow-metal");
   delete env.PI_CODEX_NETWORK_GRANTS; // Grants are broker state, not a child-controlled channel.
   // Node captures stdio with Unix sockets; Linux seccomp denies libuv's socket
   // inspection. Fixed cat relays supply real pipes without relaxing the sandbox.

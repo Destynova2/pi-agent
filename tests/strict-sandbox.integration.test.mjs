@@ -11,7 +11,7 @@ function fixture() {
   const agent = join(root, "agent"), cwd = join(root, "project");
   mkdirSync(join(agent, "scripts"), { recursive: true });
   mkdirSync(cwd);
-  for (const name of ["codex-shell.mjs", "codex-tool.mjs", "codex-network.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(agent, "scripts", name));
+  for (const name of ["codex-shell.mjs", "codex-tool.mjs", "codex-network.mjs", "metal-backend.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(agent, "scripts", name));
   const launcher = join(agent, "scripts/codex-shell.mjs");
   chmodSync(launcher, 0o755);
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ shellPath: launcher }));

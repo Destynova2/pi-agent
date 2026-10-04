@@ -14,7 +14,7 @@ async function fixture(network, run) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "pi-command-jail-")));
   const agent = join(root, "agent"), cwd = join(root, "project"), home = join(root, "home");
   mkdirSync(join(agent, "scripts"), { recursive: true }); mkdirSync(cwd); mkdirSync(home);
-  for (const name of ["codex-shell.mjs", "codex-network.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(agent, "scripts", name));
+  for (const name of ["codex-shell.mjs", "codex-network.mjs", "metal-backend.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(agent, "scripts", name));
   const launcher = join(agent, "scripts/codex-shell.mjs"); chmodSync(launcher, 0o755);
   writeFileSync(join(agent, "network-policy.json"), JSON.stringify({ allow: network ? ["github.com"] : [] }));
   const previous = Object.fromEntries(["HOME", "PI_CODING_AGENT_DIR", "PI_CODEX_SANDBOX_BIN", "PI_CODEX_NETWORK_GRANTS"].map(key => [key, process.env[key]]));
