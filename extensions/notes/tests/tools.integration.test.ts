@@ -10,9 +10,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import register from "../../notes.ts";
@@ -27,6 +27,8 @@ async function setup(activeTools: string[]) {
 	await mkdir(cwd, { recursive: true }); // the jailed worker spawns with this as its cwd; it must exist beforehand.
 
 	const oldHome = process.env.HOME;
+	const oldBackend = process.env.PI_CODEX_SANDBOX_BIN;
+	process.env.PI_CODEX_SANDBOX_BIN = realpathSync(oldBackend ?? join(homedir(), ".local/bin/codex"));
 	process.env.HOME = home; // os.homedir() reads this on POSIX; keeps ~/workspace mirror out of the picture.
 	const events = new Map<string, Handler>();
 	const tools = new Map<string, { execute: (id: string, input: unknown, signal?: AbortSignal) => Promise<unknown> }>();
@@ -41,9 +43,11 @@ async function setup(activeTools: string[]) {
 	await events.get("session_start")!({ type: "session_start", reason: "startup" }, { cwd });
 	return {
 		cwd, tools, events,
+		async restart() { await events.get("session_start")!({}, { cwd }); },
 		async cleanup() {
 			await events.get("session_shutdown")?.({}, { cwd });
 			if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+			if (oldBackend === undefined) delete process.env.PI_CODEX_SANDBOX_BIN; else process.env.PI_CODEX_SANDBOX_BIN = oldBackend;
 			await rm(home, { recursive: true, force: true });
 		},
 		async beforeAgentStart(prompt: string) {
@@ -140,11 +144,13 @@ test("before_agent_start: note_add only directs writes, never mentions note_list
 	}
 });
 
-test("before_agent_start: neither tool active injects no shared_notes section, but keeps ask/inbox behavior", async () => {
+test("before_agent_start: without note tools, memory guidance names storage but never unavailable tools", async () => {
 	const t = await setup(["Read", "Bash"]);
 	try {
 		const { event, result } = await t.beforeAgentStart("read only run");
-		assert.equal(event.systemPromptOptions.sections.shared_notes, undefined);
+		assert.match(event.systemPromptOptions.sections.shared_notes, /Before saying prior context is unavailable/);
+		assert.match(event.systemPromptOptions.sections.shared_notes, /read-only SQLite query/);
+		assert.doesNotMatch(event.systemPromptOptions.sections.shared_notes, /call note_list|note_add kind=/);
 		assert.equal(result, undefined); // no pending inbox message on a fresh project: no result returned either.
 		const dbFile = join(t.cwd, ".agent", "notes.db");
 		assert.ok(existsSync(dbFile), "ask must still be recorded even without note tools active");
@@ -152,4 +158,22 @@ test("before_agent_start: neither tool active injects no shared_notes section, b
 	} finally {
 		await t.cleanup();
 	}
+});
+
+test("project history is bounded, recalled before the current ask, once per session even without note tools", async () => {
+	const t = await setup([]);
+	try {
+		await t.tools.get("note_add")!.execute("seed", { kind: "decision", body: "Keep native sessions" });
+		const first = await t.beforeAgentStart("continue");
+		const message = (first.result as { message: { content: string } }).message;
+		assert.match(message.content, /Keep native sessions/);
+		assert.match(message.content, /historical data/);
+		assert.doesNotMatch(message.content, /\[ask\] continue/);
+		assert.equal((await t.beforeAgentStart("next")).result, undefined);
+		await t.tools.get("note_add")!.execute("large", { kind: "plan", body: "x".repeat(16_000) });
+		await t.restart();
+		const restarted = (await t.beforeAgentStart("resume")).result as { message: { content: string } };
+		assert.ok(restarted.message.content.length < 12_300);
+		assert.ok(restarted.message.content.endsWith("x".repeat(12_000)));
+	} finally { await t.cleanup(); }
 });
