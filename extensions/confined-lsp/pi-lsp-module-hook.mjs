@@ -5,8 +5,8 @@
 // siblings once published. Two things are needed to run that source under plain Node (no Bun):
 //   1. map those relative `.js` specifiers back to `.ts`, and the bare package specifier/the
 //      two fixed submodule aliases this worker imports, to the pinned install's `src/` files;
-//   2. compile those files with the Jiti compiler already shipped by the installed Pi SDK.
-//      Node 26 no longer supports transforming TypeScript parameter properties.
+//   2. use Node's native TypeScript transform when available; Node 26 removed it,
+//      so use the Jiti compiler already shipped by the installed Pi SDK there.
 //
 // Scope is fixed and narrow on purpose: only `@ian-pascoe/pi-lsp@0.4.4` (the version this repo
 // pins and tests against) under one trusted `PI_CODING_AGENT_DIR`, and only `.ts` files that are
@@ -15,7 +15,7 @@
 // resolution (including the separate `lib/resolve-pi.mjs` hook redirecting
 // `@earendil-works/pi-coding-agent` and friends to the real installed Pi SDK).
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { createRequire, registerHooks } from "node:module";
+import { createRequire, registerHooks, stripTypeScriptTypes } from "node:module";
 import { piPackageJson } from "../../lib/resolve-pi.mjs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -66,8 +66,11 @@ export function findPinnedPiLspRoot(env = process.env) {
 
 function registerPiLspHooks(pinned) {
   if (!piPackageJson) throw new Error("Confined LSP requires the installed Pi SDK compiler");
-  const { createJiti } = createRequire(piPackageJson)("jiti");
-  const compiler = createJiti(import.meta.url, { fsCache: false, moduleCache: false, interopDefault: true });
+  // Native ESM avoids Node 24's CommonJS load-hook resolution gap for ESM-only SDKs.
+  const nativeTransform = process.allowedNodeEnvironmentFlags.has("--experimental-transform-types");
+  const compiler = nativeTransform ? undefined : createRequire(piPackageJson)("jiti").createJiti(
+    import.meta.url, { fsCache: false, moduleCache: false, interopDefault: true },
+  );
   const srcDirUrl = pathToFileURL(`${pinned.srcDir}/`).href;
   const aliasUrls = new Map(
     Object.entries(SUBMODULE_ALIASES).map(([specifier, relative]) => [
@@ -99,6 +102,7 @@ function registerPiLspHooks(pinned) {
     load(url, context, nextLoad) {
       if (url.startsWith(srcDirUrl) && url.endsWith(".ts")) {
         const source = readFileSync(new URL(url), "utf8");
+        if (nativeTransform) return { format: "module", shortCircuit: true, source: stripTypeScriptTypes(source, { mode: "transform", sourceMap: false }) };
         const code = compiler.transform({ source, filename: fileURLToPath(url), ts: true, interopDefault: true, babel: { babelrc: false, configFile: false } });
         return { format: "commonjs", shortCircuit: true, source: code };
       }

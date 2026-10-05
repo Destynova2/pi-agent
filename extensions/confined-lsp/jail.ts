@@ -12,8 +12,8 @@
 // and at "session_start" time (SettingsManager.create), never from a path baked in here.
 //
 // The worker runs under plain Node. The scoped pi-lsp-module-hook.mjs compiles
-// the pinned package's source-only TypeScript with the installed Pi SDK's Jiti
-// compiler, without project Babel configuration or a compiler disk cache.
+// the pinned package's TypeScript natively when supported, otherwise with Pi's
+// Jiti compiler, without project Babel configuration or a compiler disk cache.
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
