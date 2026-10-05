@@ -5,7 +5,8 @@
 // skip for a missing external dependency (git/jj/graphify/Pi installed...) into a hard failure,
 // then also runs `python3 -m unittest test_gates` (gates/pi-orchestrate) if python3 is
 // available. Never a fake pass: a missing dependency fails, it does not pass silently.
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -98,11 +99,19 @@ async function main() {
   const useBootstrap = shouldBootstrap(args) && existsSync(BOOTSTRAP_PATH);
 
   console.log(`test: ${files.length} file(s)${args.integration ? " (full suite, PI_TEST_INTEGRATION=1)" : ""}`);
-  const nodeArgs = ["--test"];
+  // Native fixtures spawn their own process trees, compilers and sandbox brokers.
+  // Bound file concurrency so startup is not starved by one worker per CPU.
+  const nodeArgs = ["--test", "--test-concurrency=4"];
   if (useBootstrap) nodeArgs.push("--import", BOOTSTRAP_PATH);
   nodeArgs.push(...files);
 
-  const env = args.integration ? { ...process.env, PI_TEST_INTEGRATION: "1" } : process.env;
+  const env = { ...process.env, ...(args.integration ? { PI_TEST_INTEGRATION: "1" } : {}) };
+  // Several native fixtures isolate HOME. Resolve the installed backend before
+  // that isolation, never search a disposable HOME or silently skip confinement.
+  if (useBootstrap && !env.PI_CODEX_SANDBOX_BIN) {
+    const codex = join(homedir(), ".local/bin/codex");
+    if (existsSync(codex)) env.PI_CODEX_SANDBOX_BIN = realpathSync(codex);
+  }
   const result = spawnSync(process.execPath, nodeArgs, { stdio: "inherit", env });
   let exitCode = result.status ?? 1;
 

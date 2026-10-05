@@ -124,7 +124,12 @@ console.log('boundaries passed');
     const killed = await processes.execute("stop", { action: "kill", pgid: waiting.details.pgid }, undefined, undefined, ctx);
     assert.match(killed.content[0].text, /Killed background process/);
     for (let i = 0; i < 100; i++) {
-      try { process.kill(processGroup, 0); } catch (error) { if (error.code === "ESRCH") break; throw error; }
+      try { process.kill(processGroup, 0); } catch (error) {
+        if (error.code === "ESRCH") break;
+        // Darwin may report EPERM while a killed group still contains zombies.
+        // Yield for reaping; the final assertion still requires actual ESRCH.
+        if (process.platform !== "darwin" || error.code !== "EPERM") throw error;
+      }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.throws(() => process.kill(processGroup, 0), error => error.code === "ESRCH");

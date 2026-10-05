@@ -6,6 +6,21 @@ import { test } from "node:test";
 import { metalBackend } from "../scripts/metal-backend.mjs";
 import { metalFixture } from "./metal-fixture.mjs";
 
+test("Metal rejects unsupported platforms before reading backend configuration", () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const arch = Object.getOwnPropertyDescriptor(process, "arch");
+  try {
+    for (const [os, cpu] of [["linux", "x64"], ["linux", "arm64"], ["win32", "x64"], ["darwin", "x64"]]) {
+      Object.defineProperty(process, "platform", { ...platform, value: os });
+      Object.defineProperty(process, "arch", { ...arch, value: cpu });
+      assert.throws(() => metalBackend(undefined), /Metal capability requires native Apple Silicon qualification/, `${os}/${cpu}`);
+    }
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    Object.defineProperty(process, "arch", arch);
+  }
+});
+
 test("Metal configuration refuses missing, incomplete, changed and linked capabilities", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, () => {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "pi-metal-config-")));
   try {
