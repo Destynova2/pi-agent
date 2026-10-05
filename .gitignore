@@ -1,6 +1,7 @@
 # secrets / state
 auth.json
 mcp.json
+mcp-approvals/
 models-store.json
 trust.json
 sessions/

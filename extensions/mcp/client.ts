@@ -1,7 +1,12 @@
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { RpcProcess } from "../../lib/rpc-process.ts";
 
-export interface McpTool { name: string; description?: string; inputSchema?: Record<string, unknown> }
+export interface McpTool {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
+}
 
 /** MCP stdio only: no sampling, elicitation, or host execution requests from servers. */
 export class McpConnection {
@@ -23,20 +28,35 @@ export class McpConnection {
       protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "pi", version: "1" },
     }, { signal });
     this.rpc.notify("notifications/initialized", {});
+    await this.refreshTools(signal);
+  }
+
+  private async refreshTools(signal?: AbortSignal): Promise<void> {
+    const tools: McpTool[] = [];
     let cursor: string | undefined;
+    const names = new Set<string>();
     for (let page = 0; page < 10; page++) {
       const result = await this.rpc.request("tools/list", cursor ? { cursor } : {}, { signal }) as { tools: McpTool[]; nextCursor?: string };
       if (!Array.isArray(result?.tools) || result.tools.some(tool => typeof tool?.name !== "string")) throw new Error("Invalid MCP tool list");
-      this.tools.push(...result.tools);
-      if (this.tools.length > 1000) throw new Error("MCP tool list exceeds limit");
+      for (const tool of result.tools) {
+        if (names.has(tool.name)) throw new Error("Ambiguous MCP tool name");
+        names.add(tool.name);
+      }
+      tools.push(...result.tools);
+      if (tools.length > 1000) throw new Error("MCP tool list exceeds limit");
       cursor = result.nextCursor;
-      if (!cursor) return;
+      if (!cursor) { this.tools.splice(0, this.tools.length, ...tools); return; }
     }
     throw new Error("MCP tool pagination exceeds limit");
   }
 
-  async call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
+  async call(name: string, args: Record<string, unknown>, signal?: AbortSignal, beforeCall?: () => void): Promise<AgentToolResult> {
     await this.start(signal);
+    // Revalidate consent after startup/discovery, immediately before dispatch. A live server
+    // may change its tool declarations while the human is deciding; never reuse that grant.
+    if (beforeCall && name !== "help") await this.refreshTools(signal);
+    beforeCall?.();
+    signal?.throwIfAborted();
     if (name === "help") {
       const selected = args.name === undefined ? undefined : this.tools.find(tool => tool.name === args.name);
       if (args.name !== undefined && !selected) throw new Error(`Unknown MCP tool: ${args.name}`);
