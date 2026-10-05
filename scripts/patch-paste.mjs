@@ -89,9 +89,10 @@ function findPiTuiPackageRoot(packageRoot) {
  * string to occur exactly once. Throws PastePatchError otherwise (unknown/
  * modified content — fail closed instead of guessing).
  */
-function applyReplacements(content, target, filePath) {
+function applyReplacements(content, target, filePath, reverse = false) {
 	let next = content;
-	for (const { search, replace } of target.replacements) {
+	const replacements = reverse ? [...target.replacements].reverse().map(({ search, replace }) => ({ search: replace, replace: search })) : target.replacements;
+	for (const { search, replace } of replacements) {
 		const parts = next.split(search);
 		if (parts.length !== 2) {
 			throw new PastePatchError(
@@ -143,6 +144,9 @@ async function planPatches(packageRoot, targets) {
 		}
 
 		if (content.includes(PATCHED_MARKER)) {
+			if (sha256(applyReplacements(content, target, filePath, true)) !== target.pristineSha256) {
+				throw new PastePatchError(`patch-paste: modified patched artifact ${filePath} — refusing (unknown input)`);
+			}
 			plan.push({ target, filePath, action: "already-patched" });
 			continue;
 		}
