@@ -1,6 +1,6 @@
 # Installation
 
-This document describes how to fetch this repo somewhere other than a live pi agent directory, then install it. The confined-services migration on this branch is not yet validated end to end or installed in the live runtime; use an isolated test target first.
+This document describes how to fetch this repo somewhere other than a live pi agent directory, then install it. Source files and installed state are separate; validate an isolated test target before deploying.
 
 ## Source vs target
 
@@ -17,8 +17,8 @@ cd ~/src/pi-agent
 
 - Node.js `>=22.19` (`package.json` → `engines.node`). `node:sqlite` must be available (checked by `doctor`, native since Node 22.5+, enabled by default from 22.19).
 - [`pi`](https://github.com/earendil-works/pi) installed and on `PATH`. This repo's `settings.json` states `lastChangelogVersion: 0.87.1` — check your actual version with `pi --version` before installing the listed packages (may differ).
-- `git`, `curl`.
-- Optional, diagnosed but non-blocking: `graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`.
+- `git`, `curl`, Codex >=0.155.1 with a working OS sandbox and managed proxy.
+- Optional, diagnosed but non-blocking: `graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`, `podman`. Podman must also have a working connection/VM for container operations; binary presence alone is insufficient.
 
 This repo has **no npm dependencies** (`scripts/` and `tests/` are pure Node stdlib, see `package.json` description). There is no `package-lock.json`: `npm ci` would fail for lack of a lockfile and has nothing to install anyway.
 
@@ -44,9 +44,9 @@ Idempotent, Node stdlib only. Before any mutation:
 - refuses if a symlink exists anywhere under a managed resource (source or target) — would allow a write outside the target during the copy;
 - validates the minimal JSON schema of `settings.json` (source and target) before any write.
 
-Managed directories/files (`MANAGED_DIRS`/`MANAGED_FILES` in `scripts/install.mjs`): `agents/`, `extensions/`, `lib/`, `gates/`, `scripts/codex-shell.mjs`, `scripts/codex-tool.mjs`, `scripts/codex-network.mjs`, `scripts/metal-backend.mjs`, `scripts/web-read-worker.mjs`, `scripts/confined-tool.mjs`, `scripts/confined-lsp-worker.mjs`, `keybindings.json`, `settings.json`. The shell launcher retains its executable mode and is backed up on reinstall; other personal scripts are not managed. **Never touched**: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `network-policy.json`, `mcp.json`, nor any file outside this list except the explicitly retired legacy policy files (including `skills/`, see below).
+Managed directories/files (`MANAGED_DIRS`/`MANAGED_FILES` in `scripts/install.mjs`): `agents/`, `extensions/`, `lib/`, `gates/`, `scripts/codex-shell.mjs`, `scripts/codex-tool.mjs`, `scripts/codex-network.mjs`, `scripts/metal-backend.mjs`, `scripts/web-read-worker.mjs`, `scripts/git-operation.mjs`, `scripts/git-hook-guard.mjs`, `scripts/git-hooks/`, `scripts/confined-tool.mjs`, `scripts/confined-lsp-worker.mjs`, `keybindings.json`, `settings.json`. The shell launcher retains its executable mode and is backed up on reinstall; other personal scripts are not managed. **Never touched**: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `network-policy.json`, `mcp.json`, `mcp-approvals/`, nor any file outside this list except the explicitly retired legacy policy files (including `skills/`, see below).
 
-Installation now enables the [strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox): it replaces `shellPath` with the installed Codex adapter, preserving the previous settings in the backup. Restart Pi with `--no-approve`. File tools and Bash run confined without routine approval prompts. Predefined network hosts are automatic. An exact public HTTP(S) URL supplied by the user can be read by `web_fetch` without another confirmation; the fixed GET worker receives only that destination, without cookies, redirects, uploads or a grant to Bash. For broader session access, `request_network_access` asks only for additional public hosts, without widening filesystem access. Notes, Graphify, Git inspection, web helpers, CI queries, LSP and configured local MCP servers use confined executors; delegation inherits only confined capabilities. Dunst is separate host automation requiring a fresh interactive confirmation for each operation. Unknown tools remain denied. Stable Codex >=0.155.1 must be installed and its OS sandbox and managed proxy must work. The installer backs up then deletes `tool-policy.json` and its obsolete parser/classifier files. The LSP package remains pinned to 0.4.4 with `extensions: []`, preventing its unconfined hooks from loading alongside the replacement. The confined adapter loads that package inside its worker. Do not remove the package or enable its original extension. Configure local MCP servers in the user-owned `mcp.json` described in [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox).
+Installation now enables the [strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox): it replaces `shellPath` with the installed Codex adapter, preserving the previous settings in the backup. With the [pinned trust-order patch](#plain-pi-startup-on-supported-runtimes) installed, restart Pi normally. `--no-approve` is only a workaround for an unpatched runtime. File tools and Bash run confined without routine approval prompts. Predefined network hosts are automatic. An exact public HTTP(S) URL supplied by the user can be read by `web_fetch` without another confirmation; its fixed GET worker receives only that destination, without cookies, redirects, uploads or a grant to Bash. `request_network_access` still confirms broader session access to additional public hosts, without widening filesystem access. Notes, Graphify, Git inspection, web helpers, CI queries, LSP and configured local MCP servers use confined executors; delegation inherits only confined capabilities. Dunst is separate host automation: observation consent can be remembered, while actions retain fresh exact confirmation. The parent-only [host operation bridge](docs/ORCHESTRATION.md#one-host-operation) separately confirms bounded Podman, clipboard and process operations. It never opens Bash or delegates host access. Recognized failures are recorded through the existing confined Notes worker. See [MCP and desktop consent](docs/ORCHESTRATION.md#mcp-and-desktop-consent) for approval choices, scope and revocation. Unknown tools remain denied. Stable Codex >=0.155.1 must be installed and its OS sandbox and managed proxy must work. The installer backs up then deletes `tool-policy.json` and its obsolete parser/classifier files. The LSP package remains pinned to 0.4.4 with `extensions: []`, preventing its unconfined hooks from loading alongside the replacement. The confined adapter loads that package inside its worker. Do not remove the package or enable its original extension. Configure local MCP servers in the user-owned `mcp.json` described in [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox).
 
 Sequence: back up the existing target into `<target>.backup-<timestamp>/` (created with `0700` permissions), then copy file by file (never deletes a target directory: any personal addition in a managed directory survives a reinstall), then merge `settings.json` (string and filtered-object package entries are supported; packages managed by the source replace their counterpart by identity — without the `@version`/`@sha` suffix — in the target; personal target packages with no source counterpart are kept), then `pi install <source> --no-approve` for each listed package.
 
@@ -59,6 +59,24 @@ node scripts/install.mjs --no-packages        # copies files, does not invoke `p
 
 A failure of an individual package (`pi install`) is reported but does not block the copy of other resources; the output then makes clear not to treat the installation as a full success.
 
+### Plain `pi` startup on supported runtimes
+
+Unpatched Pi 0.99.1, 1.0.1 and 1.0.2 skip personal `project_trust` handlers when a directory has no protected project resources. It marks that directory trusted, which the confined-tool broker correctly refuses. `defaultProjectTrust: "never"` does not fix that early return.
+
+After backing up the Pi package, apply the pinned runtime correction:
+
+```bash
+node scripts/patch-project-trust.mjs <Pi-package-root>
+```
+
+This changes the CLI startup condition and moves the empty-project shortcut after personal trust handlers in both the bundled CLI and unbundled runtime. Our existing handler then declines host-side project resources automatically, including previously trusted projects. Tool guards, native explicit CLI overrides, and the no-handler fallback remain unchanged. No alias, recurring flag, or trust-store edit is needed.
+
+The patch accepts only exact known Pi 0.99.1, 1.0.1 and 1.0.2 artifacts, validates every target before writing, and is idempotent. The 1.0.1/1.0.2 pins were matched against registry tarballs with SHA-512 integrity checks, not inferred from old filenames. Unknown versions or modified artifacts are refused. It does not touch the paste patch. The paste mitigation also supports the verified 1.0.2 artifacts.
+
+For the separate bracketed-paste keepalive mitigation, back up both the coding-agent package and its resolved `pi-tui` dependency, then apply `node scripts/patch-paste.mjs <Pi-package-root>`. Supported versions are pinned in `patches/paste-keepalive.mjs`, including 1.0.1. Already-patched content is reverse-validated against its pristine hash. This mitigation re-enables paste mode on TTYs; it does not establish the original cause of every paste failure. Upgrades replace both runtime patches. Never force old hashes or remove sandbox guards. The configuration installer does not modify the Pi runtime; after a Pi upgrade, revalidate runtime compatibility instead of forcing this patch onto a new version.
+
+Already-running processes need one normal restart, not `/reload`: reload retains their old trust state and cannot undo host code that already ran. Quit Pi, then use `pi --resume` in the same project and select the existing conversation. Future launches use plain `pi`.
+
 ### Recovering after a problem
 
 The previous backup remains at `<target>.backup-<timestamp>/` — restore it manually (`cp -a <backup>/<entry> <target>/<entry>`), entry by entry if needed. This is **not** a `git checkout` nor a `jj restore`: the install target is not necessarily a Git/jj repo, and the installer never assumes it is one.
@@ -69,7 +87,7 @@ The previous backup remains at `<target>.backup-<timestamp>/` — restore it man
 node scripts/doctor.mjs [--target <path>] [--strict]
 ```
 
-Checks the Node version (against `engines.node` in `package.json`), `node:sqlite` availability, required commands (`git`, `curl`, `pi`) and optional ones (`graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`), as well as the executable presence of `gates/pi-prek` in the target. `--strict` also fails on a missing optional tool (warning only by default). Never reads or displays `auth.json`.
+Checks the Node version (against `engines.node` in `package.json`), `node:sqlite` availability, required commands (`git`, `curl`, `pi`, `codex`) and optional ones (`graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`, `podman`), as well as the executable presence of `gates/pi-prek` in the target. `--strict` also fails on a missing optional tool (warning only by default). Never reads or displays `auth.json`.
 
 ## Tests
 
@@ -120,6 +138,7 @@ Replace `<target agent directory>` with your own install path; do not copy a `/U
 
 ## What this documentation does not guarantee
 
+- **Cross-platform GPU access**: the optional [Metal backend](experiments/metal/README.md#platform-support) requires macOS on Apple Silicon and separate native qualification. A Linux GPU backend remains to be developed and validated; installing the shell sandbox does not grant GPU access.
 - **Every Linux environment**: the installer and full integration suite were validated on native Fedora 44 with Pi 0.99.1, Node 26.9.0 and Codex 0.155.1; Darwin-only tests remain skipped there. This does not validate restricted containers or other kernels. Check the real Codex sandbox before enabling it; unavailable namespace support must remain a failure.
 - **Full automation**: this installation copies files and invokes `pi install`, it does not configure model authentication (handled by `pi` itself, never by an export from this repo) nor declared-but-unbundled external dependencies (`skills/cli-code-skills` above).
 - **Recovery**: in case of a problem, restore from the `<target>.backup-<timestamp>/` backup created by the installer, never via a `git checkout`/`jj restore` of the target (which may not be a versioned repo).

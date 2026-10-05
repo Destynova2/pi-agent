@@ -5,6 +5,18 @@ operator installs a reviewed backend with a successful native qualification repo
 It is not an upstream Codex feature, a production installation, or a general GPU
 entitlement. No `host_command` or unrestricted executor is introduced.
 
+## Platform support
+
+This capability supports **macOS on Apple Silicon only**. The runtime rejects
+Linux, Windows and Intel macOS before reading the backend configuration.
+Seatbelt rules and native Metal qualification cannot be reused for Linux GPU access.
+
+Linux GPU access is not implemented. It requires a separate backend for the
+chosen GPU runtime and driver, explicit device permissions, and native Linux
+checks for computation, file/network confinement, one-command approval,
+cancellation, timeout and ordinary-command isolation. The existing Linux shell
+sandbox does not provide this GPU capability.
+
 ## Upstream position, checked 2026-10-04
 
 - [Pi](https://github.com/earendil-works/pi#permissions--containerization) deliberately
