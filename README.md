@@ -21,6 +21,7 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 | Inspect tool confinement | `/confined-tools`: available executors and approval boundaries |
 | Retry a denied write | `request_command_access`: [one confirmed command with exact additional paths](docs/ORCHESTRATION.md#one-command-filesystem-access) |
 | Review experimental Metal access | [Qualified backend and one-command GPU approval](experiments/metal/README.md); disabled until separately installed |
+| Read a URL you supplied | `web_fetch` or `/web <url>`: exact public GET without another confirmation; no permission for Bash or uploads |
 | Allow another public host | `request_network_access`: filesystem confinement stays unchanged |
 | Inspect Git without general shell access | `git_inspect`: status, diff, log or files |
 | Note a decision without a model turn | `/btw decision <text>` (kinds: plan, decision, done, blocker, lesson, claim) |

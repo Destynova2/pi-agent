@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { isSubPath, isSymlink, pathExists } from "./lib.mjs";
 
 export const MANAGED_DIRS = ["agents", "extensions", "lib", "gates"];
-export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs"];
+export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs", "scripts/web-read-worker.mjs", "scripts/metal-backend.mjs", "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs"];
 const RETIRED_FILES = ["tool-policy.json", "extensions/tool-policy/core.ts", "extensions/tool-policy/task.ts", "extensions/tool-policy/tests/policy.test.ts", "extensions/tool-policy/tests/task.test.ts", "extensions/tool-policy/tests/skills.test.ts"];
 export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json", "tool-policy.json"];
 

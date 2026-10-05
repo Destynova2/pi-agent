@@ -6,7 +6,7 @@ import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { networkHosts, networkSandboxArgs, requireNetworkProxyVersion } from "./codex-network.mjs";
+import { networkHosts, networkSandboxArgs, publicWebUrl, readNetworkPolicy, requireNetworkProxyVersion } from "./codex-network.mjs";
 import { metalBackend } from "./metal-backend.mjs";
 
 // Only the fixed notes worker receives these grants; ordinary Bash never does.
@@ -68,6 +68,14 @@ export function sandboxArgs(command, writableRoots = []) {
 
 export function launch(argv = process.argv.slice(2)) {
   if (!["darwin", "linux"].includes(process.platform)) throw new Error("Codex shell sandbox requires macOS or Linux; no unsandboxed fallback.");
+  let webUrl;
+  if (argv[0] === "--web-url") {
+    if (argv.length !== 2) throw new Error("Exact web read expects only --web-url <url>");
+    webUrl = publicWebUrl(argv[1]);
+    const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+    const worker = fileURLToPath(new URL("./web-read-worker.mjs", import.meta.url));
+    argv = ["-c", [process.execPath, worker, webUrl].map(quote).join(" ")];
+  }
   let metalDigest;
   if (argv[0] === "--metal") {
     metalDigest = argv[1];
@@ -108,7 +116,10 @@ export function launch(argv = process.argv.slice(2)) {
   env.TMPDIR = scratch; // A private per-project temp root, not all of /tmp.
   delete env.BASH_ENV;
   delete env.ENV;
-  const allowedHosts = service ? [] : networkHosts(agentDir, cwd, env.PI_CODEX_NETWORK_GRANTS);
+  const webHost = webUrl && new URL(webUrl).hostname;
+  if (webHost && readNetworkPolicy(agentDir).deny.includes(webHost)) throw new Error("WEB_NETWORK_DENIED: destination explicitly denied by network-policy.json");
+  // The fixed reader gets only its exact destination, never the baseline/session hosts.
+  const allowedHosts = webHost ? [webHost] : service ? [] : networkHosts(agentDir, cwd, env.PI_CODEX_NETWORK_GRANTS);
   if (allowedHosts.length) requireNetworkProxyVersion(execFileSync(codex, ["--version"], { env, encoding: "utf8", timeout: 5000, maxBuffer: 65536 }));
   const roots = requestedRoots === undefined ? (service === "notes" ? notesWritableRoots(cwd) : [])
     : commandWritableRoots(requestedRoots, cwd, process.env.PI_CODING_AGENT_DIR ?? agentDir, [codex]);

@@ -3,6 +3,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runProcess } from "./process.ts";
 
+/** The launcher selects a fixed GET worker; no command or session network grant. */
+export async function runUserWebRead(cwd: string, url: string, signal?: AbortSignal): Promise<string> {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  return JSON.parse(await runProcess(join(root, "scripts/codex-shell.mjs"), ["--web-url", url], {
+    cwd, signal, timeoutMs: 40_000, maxBytes: 8 * 1024 * 1024,
+  }));
+}
+
 /** Fixed worker programs only; model arguments cross stdin, never the shell command. */
 export async function runConfined(cwd: string, service: "notes" | "graphify" | "git" | "web" | "ci" | "search", input: unknown, signal?: AbortSignal): Promise<unknown> {
   const root = fileURLToPath(new URL("../", import.meta.url));

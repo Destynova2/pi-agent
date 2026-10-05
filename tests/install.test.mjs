@@ -20,6 +20,8 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     await writeFile(join(source, relative), "#!/usr/bin/env node\n");
     await writeFile(join(source, "scripts/codex-tool.mjs"), "// confined file worker\n");
     await writeFile(join(source, "scripts/codex-network.mjs"), "// managed network policy\n");
+    await writeFile(join(source, "scripts/metal-backend.mjs"), "// qualified Metal backend\n");
+    await writeFile(join(source, "scripts/web-read-worker.mjs"), "// fixed public GET reader\n");
     await writeFile(join(source, "scripts/confined-tool.mjs"), "// confined service worker\n");
     await chmod(join(source, relative), 0o644); // installer must set executable mode itself
     await runInstall({ sourceRoot: source, target, noPackages: true });
@@ -44,6 +46,8 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     assert.equal(await readFile(join(target, "scripts/confined-tool.mjs"), "utf8"), "// confined service worker\n");
     assert.equal(await readFile(join(target, "network-policy.json"), "utf8"), '{"allow":[]}\n');
     assert.equal(await readFile(join(target, "scripts/codex-network.mjs"), "utf8"), "// managed network policy\n");
+    assert.equal(await readFile(join(target, "scripts/metal-backend.mjs"), "utf8"), "// qualified Metal backend\n");
+    assert.equal(await readFile(join(target, "scripts/web-read-worker.mjs"), "utf8"), "// fixed public GET reader\n");
     assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, relative));
     assert.equal((await readJson(join(result.backupDir, "settings.json"))).shellPath, "/bin/bash");
     await mkdir(outside);

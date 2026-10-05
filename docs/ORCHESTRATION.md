@@ -109,6 +109,30 @@ Workspace ancestors, sandbox runtime/configuration storage, links and special-fi
 
 Codex reference: [directory-root protection](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/sandboxing/src/seatbelt.rs). Its [tool orchestrator](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/core/src/tools/orchestrator.rs) separates approval from process execution; this bridge follows that pattern without embedding another model session.
 
+### User-supplied web URLs
+
+A direct user message (interactive or RPC) authorizes `web_fetch` to read each
+exact public HTTP(S) URL it contains, without an additional confirmation. `/web`
+is also a direct read request. The permission lives only in this extension
+session/workspace and is cleared by reload, navigation or shutdown. Child and
+extension-generated input cannot create it; page contents cannot extend it.
+
+The launcher selects a fixed GET worker, not a caller-supplied command. It allows
+only the destination hostname for that process, keeps the existing filesystem
+sandbox and private-network blocks, and respects explicit `network-policy.json`
+denies. Credentials, custom ports, cookies, curl configuration, request bodies
+and redirects are excluded. Path/query changes, including an appended `.json`,
+do not inherit the user's URL permission. Existing baseline/approved hosts keep
+their ordinary fetch behavior. No session grant file is created and subsequent
+Bash commands keep their previous network permissions.
+
+`request_network_access` remains a broader grant, including uploads; it should
+not be used merely to read a user-supplied URL. HTTP 403 alone is not an
+authentication diagnosis. A website, bot filter or proxy can reject a request;
+report that distinction without automatically asking for credentials or wider
+access. A successful HTTP read also does not prove that a JavaScript-only page
+returned the article text.
+
 ### Network access
 
 The global baseline automatically permits `github.com`, `api.github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com`, `codeload.github.com` and `registry.npmjs.org`. Other registries, documentation sites and APIs require an additional host grant. This baseline applies to new sessions in every project after installation; it does not validate the projects themselves.

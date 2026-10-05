@@ -19,6 +19,16 @@ export function normalizeHost(value) {
   return host;
 }
 
+/** Public web reads use default ports, no credentials and no fragment on the wire. */
+export function publicWebUrl(value) {
+  if (typeof value !== "string" || value.length > 8192 || /[\s\\\u0000-\u001f\u007f]/u.test(value)) throw new Error("Expected a public HTTP(S) URL without credentials or control characters");
+  const url = new URL(value);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port) throw new Error("Expected a public HTTP(S) URL on its default port without credentials");
+  normalizeHost(url.hostname); // The managed proxy also blocks private DNS resolutions.
+  url.hash = "";
+  return url.href;
+}
+
 function hosts(value) {
   if (!Array.isArray(value) || value.length > 128) throw new Error("Expected at most 128 network hosts");
   return [...new Set(value.map(normalizeHost))].sort();
