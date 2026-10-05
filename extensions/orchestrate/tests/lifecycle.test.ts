@@ -47,7 +47,9 @@ test("orchestrate command: forwards instructions without simulating the LLM", as
   assert.match(prompt, /inspect the current worktree; notes are hints, not proof/);
   assert.match(prompt, /verify the combined change and map each requirement to evidence/);
   assert.match(prompt, /configured agent models; verify availability/);
-  assert.match(prompt, /ask whether to continue solo; wait for the user's answer/);
+  assert.match(prompt, /first slice is a checkpoint, not the finish line/);
+  assert.match(prompt, /If optional delegation is unavailable, work directly/);
+  assert.match(prompt, /If required review is unavailable, ask about that gate and keep it open/);
   assert.match(prompt, /Never present solo work as independently reviewed/);
   assert.match(prompt, /check other agents' claims and protect preexisting changes/);
   assert.match(prompt, /git\/jj reference in a note is not a backup/);
@@ -62,17 +64,48 @@ test("orchestrate command: forwards instructions without simulating the LLM", as
   assert.ok(notifications.includes("No gate in progress."));
 });
 
-test("ordinary requests get adaptive guidance only when root delegation is available", () => {
-  const events = new Map<string, (event: any) => void>();
+test("completion guidance covers ordinary, explicit and child turns without delegation or automatic continuations", async () => {
+  type PromptEvent = { prompt: string; systemPromptOptions: { sections: Record<string, string> } };
+  const events = new Map<string, (event: PromptEvent) => void>();
+  let command: Handler | undefined;
+  const sent: string[] = [];
   let tools = ["subagent"];
   const oldChild = process.env.PI_SUBAGENT_CHILD;
   try {
     delete process.env.PI_SUBAGENT_CHILD;
-    register({ on: (name: string, handler: any) => events.set(name, handler), getActiveTools: () => tools, registerCommand: () => {} } as any);
-    const event = { prompt: "fix this bug", systemPromptOptions: { sections: {} as Record<string, string> } };
+    register({
+      on: (name: string, handler: (event: PromptEvent) => void) => events.set(name, handler),
+      getActiveTools: () => tools,
+      registerCommand: (_name: string, definition: { handler: Handler }) => { command = definition.handler; },
+      sendUserMessage: (message: string) => sent.push(message),
+    } as unknown as ExtensionAPI);
+    const event = { prompt: "fix this bug", systemPromptOptions: { sections: { existing: "kept" } as Record<string, string> } };
     const before = events.get("before_agent_start")!;
     before(event);
+    const completion = event.systemPromptOptions.sections.task_completion;
+    assert.ok(completion.length < 2700, "Keep completion and recovery guidance bounded");
+    assert.match(completion, /Minimal code does not mean reduced scope/);
+    assert.match(completion, /plan-only or read-only audit request does not authorize implementation/);
+    assert.match(completion, /every requested outcome \(including annotations\), dependencies and acceptance checks/);
+    assert.match(completion, /in-task strategy request does not cancel remaining work; honor explicit pauses/);
+    assert.match(completion, /Continue authorized, unblocked work after each slice/);
+    assert.match(completion, /do not ask whether to continue steps already requested/);
+    assert.match(completion, /parent owns integration and verification/);
+    assert.match(completion, /child completes its assigned task and write-set/);
+    assert.match(completion, /use an available approval mechanism/);
+    assert.match(completion, /Never bypass a denial, retry indefinitely/);
+    assert.match(completion, /required human or review gates remain blocking/);
+    assert.match(completion, /distinguish implemented, verified and awaiting human validation/);
+    assert.match(completion, /Report partial work as partial/);
+    assert.match(completion, /After a resolved blocker, approval or restart/);
+    assert.match(completion, /resume the remaining authorized work in the same turn/);
+    assert.match(completion, /unless the user explicitly pauses or limits the scope/);
+    assert.match(completion, /do not repeat an unchanged denial/);
+    assert.match(completion, /source integration, runtime installation, activation and application acceptance separately/);
+    assert.match(completion, /name its exact next action/);
+    assert.match(completion, /No unrequested commit, push or deployment/);
     const policy = event.systemPromptOptions.sections.adaptive_delegation;
+    assert.match(policy, /then continue the remaining authorized requirements/);
     assert.match(policy, /Start direct for simple or tightly coupled work/);
     assert.match(policy, /Split progressively only after contracts are stable/);
     assert.match(policy, /first usable, tested slice before broad write delegation/);
@@ -89,8 +122,22 @@ test("ordinary requests get adaptive guidance only when root delegation is avail
     assert.equal(event.systemPromptOptions.sections.adaptive_delegation, policy, "no accumulating prompt text");
     tools = []; before(event);
     assert.equal(event.systemPromptOptions.sections.adaptive_delegation, undefined);
+    assert.equal(event.systemPromptOptions.sections.task_completion, completion, "completion does not depend on delegation");
     tools = ["subagent"]; process.env.PI_SUBAGENT_CHILD = "1"; before(event);
     assert.equal(event.systemPromptOptions.sections.adaptive_delegation, undefined);
+    assert.equal(event.systemPromptOptions.sections.task_completion, completion, "children own their assigned scope");
+    assert.equal(event.systemPromptOptions.sections.existing, "kept");
+    assert.equal(sent.length, 0, "prompt guidance must not start extra model turns");
+    assert.equal(events.has("agent_end"), false);
+    assert.equal(events.has("agent_settled"), false);
+    delete process.env.PI_SUBAGENT_CHILD;
+    assert.ok(command);
+    await command("complete the requested changes", {} as Parameters<Handler>[1]);
+    event.prompt = sent[0];
+    before(event);
+    assert.equal(event.systemPromptOptions.sections.adaptive_delegation, undefined, "explicit orchestration does not duplicate delegation guidance");
+    assert.equal(event.systemPromptOptions.sections.task_completion, completion);
+    assert.equal(sent.length, 1, "only the explicit command queued a user request");
   } finally {
     if (oldChild === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = oldChild;
   }

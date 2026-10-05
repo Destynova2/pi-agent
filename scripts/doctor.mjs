@@ -7,8 +7,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { commandExists } from "./lib.mjs";
 
-export const REQUIRED_COMMANDS = ["git", "curl", "pi"];
-export const OPTIONAL_COMMANDS = ["graphify", "jj", "prek", "gitleaks", "python3", "claude", "gh"];
+export const REQUIRED_COMMANDS = ["git", "curl", "pi", "codex"];
+export const OPTIONAL_COMMANDS = ["graphify", "jj", "prek", "gitleaks", "python3", "claude", "gh", "podman"];
 export const BUNDLED_TOOLS = ["gates/pi-prek"];
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));

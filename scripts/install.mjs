@@ -9,7 +9,10 @@ import { spawnSync } from "node:child_process";
 import { isSubPath, isSymlink, pathExists } from "./lib.mjs";
 
 export const MANAGED_DIRS = ["agents", "extensions", "lib", "gates"];
-export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs", "scripts/web-read-worker.mjs", "scripts/metal-backend.mjs", "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs"];
+export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs",
+  "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", "scripts/web-read-worker.mjs",
+  ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`),
+];
 const RETIRED_FILES = ["tool-policy.json", "extensions/tool-policy/core.ts", "extensions/tool-policy/task.ts", "extensions/tool-policy/tests/policy.test.ts", "extensions/tool-policy/tests/task.test.ts", "extensions/tool-policy/tests/skills.test.ts"];
 export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json", "tool-policy.json"];
 
@@ -299,7 +302,7 @@ export async function runInstall({
     for (const file of MANAGED_FILES) {
       if (await syncFile(join(sourceRoot, file), join(resolvedTarget, file))) {
         syncedFiles.push(file);
-        if (file === "scripts/codex-shell.mjs") await chmod(join(resolvedTarget, file), 0o755);
+        if (file === "scripts/codex-shell.mjs" || file.startsWith("scripts/git-hooks/")) await chmod(join(resolvedTarget, file), 0o755);
       }
     }
 

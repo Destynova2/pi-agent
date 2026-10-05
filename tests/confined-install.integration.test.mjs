@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { DefaultResourceLoader, SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { runInstall } from "../scripts/install.mjs";
 
-test("isolated installation loads the confined adapters and keeps upstream LSP hooks filtered", { timeout: 30000 }, async () => {
+test("isolated installation loads confined adapters without host LSP hooks or a builtin MCP collision", { timeout: 30000 }, async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-confined-install-")));
   const target = join(root, "agent"), cwd = join(root, "project");
   mkdirSync(cwd);
@@ -20,6 +20,7 @@ test("isolated installation loads the confined adapters and keeps upstream LSP h
     const settings = JSON.parse(readFileSync(join(target, "settings.json"), "utf8"));
     const lspPackage = settings.packages.find(entry => entry.source?.includes("pi-lsp"));
     assert.deepEqual(lspPackage?.extensions, []);
+    assert.ok(settings.extensions.includes("-builtin:mcp"));
     assert.ok(existsSync(join(target, "scripts/confined-lsp-worker.mjs")));
     // Reuse installed dependency files; fail instead of ever downloading or running install scripts.
     const isolatedSettings = { ...settings, packages: [lspPackage], npmCommand: ["/usr/bin/false"] };
@@ -27,12 +28,13 @@ test("isolated installation loads the confined adapters and keeps upstream LSP h
     const loader = new DefaultResourceLoader({
       cwd, agentDir: target, settingsManager: SettingsManager.inMemory(isolatedSettings),
       noExtensions: false, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      extensionFactories: [{ name: "mcp", builtin: true, replaceable: true, factory() { throw new Error("The shadowed host MCP builtin must not load"); } }],
       additionalExtensionPaths: ["confined-lsp", "mcp", "dunst", "ci-watch", "web"].map(name => join(target, "extensions", name, "index.ts")),
     });
     await loader.reload();
     const loaded = loader.getExtensions();
     assert.deepEqual(loaded.errors, []);
-    for (const name of ["ci_watch", "dunst", "lsp", "mcp", "web_fetch", "web_search"]) {
+    for (const name of ["ci_watch", "dunst", "lsp", "mcp", "web_fetch", "web_search", "task_checkpoint"]) {
       assert.equal(loaded.extensions.filter(extension => extension.tools.has(name)).length, 1, `${name}: exactly one executor, no upstream host hooks`);
     }
     const lsp = loaded.extensions.find(extension => extension.tools.has("lsp"));
