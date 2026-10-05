@@ -7,7 +7,7 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 ## Prerequisites
 
 - Node.js `>=22.19` with `node:sqlite` (see `package.json`)
-- [`pi`](https://github.com/earendil-works/pi) installed and on `PATH` (`lastChangelogVersion` in `settings.json`: `0.87.1`, check against your actual version)
+- [`pi`](https://github.com/earendil-works/pi) `>=0.99.1` installed and on `PATH`; see [runtime compatibility and validation](INSTALLATION.md#runtime-compatibility). `lastChangelogVersion` is a UI read marker, not a version pin.
 - `git`, `curl`, Codex >=0.155.1 with a working native sandbox
 
 `node scripts/doctor.mjs` diagnoses the environment (required + optional: `graphify`, `jj`, `prek`, `gitleaks`, `python3`, `claude`, `gh`, `podman`). Binary presence does not verify a running Podman VM or GPU access.
@@ -39,19 +39,19 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 | Watch a PR | `ci_watch` or `/watch`: jailed queries, host-side timers |
 | Use language servers | `lsp` and `/lsp`: jailed servers, previews, edits and diagnostics |
 | Use local MCP servers | `mcp`: confined stdio servers with [once/session/project consent](docs/ORCHESTRATION.md#mcp-and-desktop-consent) |
-| Control Mac applications | `dunst`: remembered observation consent, fresh confirmation for actions |
+| Control Mac applications | `dunst` is host automation, not a confined capability; denied by this jail |
 | Revoke MCP or desktop consent | `/mcp permissions [server]` or `/dunst permissions` |
 
-Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts.
+Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts. The first turn loads the last 20 project notes (at most 12,000 characters), even without note tools. Prompt excerpts are not full history: consult native Pi sessions for complete requirements and previous answers. No separate memory model call is made.
 
-Installing these adapters does not activate them in an already-running session; restart Pi after deployment. The upstream LSP extension stays filtered out: its replacement runs the same lifecycle inside Codex. MCP support is local stdio only. `web_search` uses the existing Claude login and quota, but authenticated live search still needs validation; no paid model call was used for testing. See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for boundaries. Model transport, trusted host internals, human-approved Dunst actions and the explicitly confirmed host operation bridge are not jailed.
+Installing these adapters does not activate them in an already-running session; restart Pi after deployment. The upstream LSP extension stays filtered out: its replacement runs the same lifecycle inside Codex. MCP support is local stdio only. `web_search` uses the existing Claude login and quota, but authenticated live search still needs validation; no paid model call was used for testing. See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for boundaries. Model transport, trusted host internals, the explicitly confirmed host operation bridge are not jailed. Dunst remains denied by the local strict dispatcher.
 
 See [Latency and context](docs/PERFORMANCE.md) for measured startup/context costs, Jcode comparisons, and native batching of queued follow-ups.
 
 ## Contents
 
 ```
-settings.json        packages: pi-simplify, ponytail, pi-lsp, background-bash, emilkowalski/skills
+settings.json        packages: pi-simplify, ponytail, pi-lsp, TypeScript, background-bash, emilkowalski/skills
 keybindings.json     ctrl+r freed for prompt search
 agents/              scout, worker, reviewer (sub-agent prompts)
 extensions/
@@ -62,7 +62,7 @@ extensions/
   notes.ts           SQLite memory, /btw, ctrl+r, inter-agent inbox
   confined-lsp/      jailed upstream LSP lifecycle and guarded edits
   mcp/               configured local MCP stdio servers
-  dunst/             separately approved host application control
+  dunst/             host application control (denied by the strict dispatcher)
   ci-watch/          ci_watch tool
   graphify/          project_graph tool
   web/               web_fetch, web_search
@@ -82,9 +82,10 @@ Not versioned: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `npm
 ```bash
 npm run check           # .mjs syntax + whitespace hygiene + git diff --check
 npm test                # standard suite (node:test), excluding *.integration.test.*
-npm run test:integration  # full suite + Python gates (hard failure if an external dependency is missing)
+npm run verify         # standard completion gate: syntax + standard tests
+npm run verify:integration  # host gate: syntax + full suite + Python gates
 ```
 
 No versioned `node_modules`: Node stdlib only for `scripts/` and `tests/`, `npm ci` has nothing to install (no `package-lock.json`).
 
-See [INSTALLATION.md](INSTALLATION.md) for details on the installer, diagnostics, and gates.
+Run `node scripts/doctor.mjs --installed` to detect missing or stale deployed executors and LSP packages. This is a deployment check, not proof that every external service works. See [INSTALLATION.md](INSTALLATION.md#validate-before-activating) for staged validation before activation.
