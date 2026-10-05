@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { runInstall, MANAGED_DIRS } from "../scripts/install.mjs";
+import { runInstall, mergeSettings, MANAGED_DIRS } from "../scripts/install.mjs";
 import { buildFixtureSource, makeFakePi, makeTmpDir } from "./fixtures/build.mjs";
 
 async function readJson(path) {
@@ -22,6 +22,7 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     await writeFile(join(source, "scripts/codex-network.mjs"), "// managed network policy\n");
     await writeFile(join(source, "scripts/metal-backend.mjs"), "// qualified Metal backend\n");
     await writeFile(join(source, "scripts/web-read-worker.mjs"), "// fixed public GET reader\n");
+    await writeFile(join(source, "scripts/jj-checkpoint.mjs"), "// fixed jj snapshot worker\n");
     await writeFile(join(source, "scripts/confined-tool.mjs"), "// confined service worker\n");
     await chmod(join(source, relative), 0o644); // installer must set executable mode itself
     await runInstall({ sourceRoot: source, target, noPackages: true });
@@ -29,6 +30,7 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, relative));
     assert.equal(await readFile(join(target, "scripts/codex-tool.mjs"), "utf8"), "// confined file worker\n");
     await writeFile(join(target, relative), "previous launcher\n");
+    await writeFile(join(target, "scripts/jj-checkpoint.mjs"), "// previous snapshot worker\n");
     await writeFile(join(target, "scripts/personal.mjs"), "keep\n");
     await writeFile(join(target, "tool-policy.json"), '{"bash":"deny"}\n');
     await mkdir(join(target, "extensions/tool-policy"), { recursive: true });
@@ -37,6 +39,8 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     await writeFile(join(target, "settings.json"), '{"shellPath":"/bin/bash","theme":"dark"}');
     const result = await runInstall({ sourceRoot: source, target, noPackages: true });
     assert.equal(await readFile(join(result.backupDir, relative), "utf8"), "previous launcher\n");
+    assert.equal(await readFile(join(result.backupDir, "scripts/jj-checkpoint.mjs"), "utf8"), "// previous snapshot worker\n");
+    assert.equal(await readFile(join(target, "scripts/jj-checkpoint.mjs"), "utf8"), "// fixed jj snapshot worker\n");
     assert.equal(await readFile(join(target, relative), "utf8"), "#!/usr/bin/env node\n");
     assert.equal(await readFile(join(target, "scripts/personal.mjs"), "utf8"), "keep\n");
     assert.equal(await readFile(join(result.backupDir, "tool-policy.json"), "utf8"), '{"bash":"deny"}\n');
@@ -63,6 +67,66 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     await rm(source, { recursive: true, force: true });
     await rm(parent, { recursive: true, force: true });
   }
+});
+
+test("retires the virtual model with a backup, preserving native model and retry choices", async () => {
+  const source = await buildFixtureSource({ settings: { defaultProvider: "anthropic", defaultModel: "native-model" } });
+  const parent = await makeTmpDir("pi-retire-fallback-");
+  const target = join(parent, "agent");
+  const old = { defaultProvider: "fallback", defaultModel: "anthropic-astra", retry: { maxRetries: 3 } };
+  try {
+    await mkdir(join(target, "extensions/model-fallback"), { recursive: true });
+    await writeFile(join(target, "extensions/model-fallback/index.ts"), "// old router\n");
+    await writeFile(join(target, "settings.json"), JSON.stringify(old));
+    const result = await runInstall({ sourceRoot: source, target, noPackages: true });
+    const settings = await readJson(join(target, "settings.json"));
+    assert.equal(settings.defaultProvider, "anthropic");
+    assert.equal(settings.defaultModel, "native-model");
+    assert.deepEqual(settings.retry, old.retry);
+    assert.deepEqual(await readJson(join(result.backupDir, "settings.json")), old);
+    assert.equal(await readFile(join(result.backupDir, "extensions/model-fallback/index.ts"), "utf8"), "// old router\n");
+    await assert.rejects(readFile(join(target, "extensions/model-fallback/index.ts")), { code: "ENOENT" });
+    assert.equal(mergeSettings({}, old).defaultProvider, undefined);
+    assert.equal(mergeSettings({}, old).defaultModel, undefined);
+    const native = { defaultProvider: "openai-codex", defaultModel: "chosen-model" };
+    assert.equal(mergeSettings(old, native).defaultModel, "chosen-model");
+    assert.equal(mergeSettings({}, { ...old, defaultModel: "personal-router" }).defaultModel, "personal-router");
+  } finally {
+    await rm(source, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("managed TypeScript is pinned, migrated and bound to the installed runtime without replacing custom servers", async () => {
+  const settings = await readJson(new URL("../settings.json", import.meta.url));
+  const source = await buildFixtureSource({ settings });
+  const root = await makeTmpDir("pi-lsp-install-");
+  const target = join(root, "agent");
+  const legacy = {
+    command: "npx", args: ["--no-install", "tsc", "--lsp", "--stdio"],
+    languages: [{ extensions: [".ts", ".mts", ".cts"], languageId: "typescript" }, { extensions: [".tsx"], languageId: "typescriptreact" }],
+    requireRootMarker: true, rootMarkers: ["tsconfig.json"],
+  };
+  try {
+    await mkdir(target);
+    const personal = { command: "rust-analyzer", languages: [{ extensions: [".rs"], languageId: "rust" }] };
+    await writeFile(join(target, "settings.json"), JSON.stringify({ lsp: { servers: { typescript: legacy, rust: personal }, enablement: { typescript: false } } }));
+    const first = await runInstall({ sourceRoot: source, target, noPackages: true });
+    const installed = await readJson(join(target, "settings.json"));
+    assert.ok(installed.packages.some(p => p.source === "npm:typescript@7.0.2"));
+    assert.equal(installed.lsp.servers.typescript.command, process.execPath);
+    assert.deepEqual(installed.lsp.servers.typescript.args, [join(target, "npm/node_modules/typescript/bin/tsc"), "--lsp", "--stdio"]);
+    assert.ok(installed.lsp.servers.typescript.rootMarkers.includes("package.json"));
+    assert.ok(installed.lsp.servers.typescript.languages.some(l => l.extensions.includes(".mjs")));
+    assert.deepEqual(installed.lsp.servers.rust, personal);
+    assert.equal(installed.lsp.enablement.typescript, false, "preserve explicit disablement");
+    assert.deepEqual((await readJson(join(first.backupDir, "settings.json"))).lsp.servers.typescript, legacy);
+    await runInstall({ sourceRoot: source, target, noPackages: true });
+    assert.deepEqual(await readJson(join(target, "settings.json")), installed, "idempotent reinstall");
+    const custom = { ...legacy, command: "/personal/tsc" };
+    assert.deepEqual(mergeSettings(settings, { lsp: { servers: { typescript: custom } } }).lsp.servers.typescript, custom);
+    assert.equal(mergeSettings(settings, { lsp: { servers: { typescript: null } } }).lsp.servers.typescript, null);
+  } finally { await rm(source, { recursive: true, force: true }); await rm(root, { recursive: true, force: true }); }
 });
 
 test("fresh install copies managed resources and writes the source's settings.json", async () => {

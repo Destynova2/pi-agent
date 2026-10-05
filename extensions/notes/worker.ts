@@ -52,12 +52,14 @@ type Row = { created_at: string; project: string; agent: string; kind: string; b
 
 const handles = new Map<string, DatabaseSync>();
 
-function open(file: string): DatabaseSync {
+function open(file: string, fixedFiles = false): DatabaseSync {
 	const cached = handles.get(file);
 	if (cached) return cached;
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	const db = new DatabaseSync(file);
-	db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;");
+	// A central database is granted as exact Linux bind-mounted files. Persistent
+	// rollback journals avoid unlink/rename operations on those mount points.
+	db.exec(`PRAGMA busy_timeout=3000; PRAGMA journal_mode=${fixedFiles ? "PERSIST" : "WAL"};`);
 	db.exec(SCHEMA);
 	if (!db.prepare("SELECT 1 FROM pragma_table_info('notes') WHERE name = 'rev'").get()) db.exec("ALTER TABLE notes ADD COLUMN rev TEXT");
 	handles.set(file, db);
@@ -96,7 +98,7 @@ function context(cwd: string) {
 	const project = path.basename(root);
 	const local = open(path.join(root, ".agent", "notes.db"));
 	const workspace = path.join(os.homedir(), "workspace");
-	const central = fs.existsSync(workspace) ? open(path.join(workspace, "notes.db")) : undefined;
+	const central = fs.existsSync(workspace) ? open(path.join(workspace, "notes.db"), process.platform === "linux") : undefined;
 	return { root, project, local, central };
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -105,7 +105,15 @@ setInterval(() => {}, 1000);
     try {
       for (let i = 0; i < 1000 && !existsSync(join(f.cwd, "child-ready")); i++) await delay(10);
       assert.ok(existsSync(join(f.cwd, "child-ready")), "approved command started its descendant");
-      const pid = Number(readFileSync(join(f.cwd, "parent-pid"), "utf8"));
+      // Linux workers report a PID inside bubblewrap's namespace. Resolve its
+      // host PID by the unique script argv before checking that it is reaped.
+      const reportedPid = Number(readFileSync(join(f.cwd, "parent-pid"), "utf8"));
+      const pid = process.platform === "linux" ? Number(readdirSync("/proc").find(entry => {
+        if (!/^\d+$/.test(entry)) return false;
+        try { return readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0").includes(script); }
+        catch (error) { if (["ENOENT", "EACCES", "ESRCH"].includes(error.code)) return false; throw error; }
+      })) : reportedPid;
+      assert.ok(Number.isSafeInteger(pid) && pid > 0, "resolve the live worker's host PID");
       await f.handlers.get("session_before_switch")();
       await stopped;
       assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
@@ -118,7 +126,7 @@ test("Codex deliberately protects even an explicitly granted directory root from
   await fixture(false, async f => {
     const directory = join(f.root, "directory"); mkdirSync(directory);
     await f.capture(`rmdir ${quote(directory)}`);
-    await assert.rejects(f.request([directory]), /not permitted|denied|busy/i);
+    await assert.rejects(f.request([directory]), /not permitted|denied|busy|read-only/i);
     assert.equal(existsSync(directory), true);
     assert.equal(f.prompts, 1);
   });

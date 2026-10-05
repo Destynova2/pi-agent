@@ -12,7 +12,8 @@ export class SettingsManager extends NativeSettingsManager {
         const path = scope === "global" ? join(agentDir, "settings.json") : join(cwd, ".pi/settings.json");
         let current;
         try { current = readFileSync(path, "utf8"); }
-        catch (error) { if (error.code !== "ENOENT") throw error; }
+        // Linux may mask a missing protected .pi directory with an empty file.
+        catch (error) { if (!["ENOENT", "ENOTDIR"].includes(error.code)) throw error; }
         if (fn(current) !== undefined) throw new Error("Confined LSP settings snapshot is read-only");
       },
     }, options);

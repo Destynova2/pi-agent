@@ -2,12 +2,19 @@
 // Pi's shellPath adapter. The existing Bash supervisor still owns process groups and logs.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { networkHosts, networkSandboxArgs, publicWebUrl, readNetworkPolicy, requireNetworkProxyVersion } from "./codex-network.mjs";
+import { confinedCommand, networkHosts, networkSandboxArgs, publicWebUrl, readNetworkPolicy, requireNetworkProxyVersion, sandboxFilesystem } from "./codex-network.mjs";
 import { metalBackend } from "./metal-backend.mjs";
+
+export function sandboxBackend(env = process.env) {
+  if (env.PI_CODEX_SANDBOX_BIN) return env.PI_CODEX_SANDBOX_BIN;
+  const home = env.HOME ?? homedir();
+  const patched = join(home, ".local/share/pi-codex/0.155.1-file-roots/codex");
+  return process.platform === "linux" && existsSync(patched) ? patched : join(home, ".local/bin/codex");
+}
 
 // Only the fixed notes worker receives these grants; ordinary Bash never does.
 export function notesWritableRoots(cwd) {
@@ -16,15 +23,29 @@ export function notesWritableRoots(cwd) {
   catch (error) { if (error.code === "ETIMEDOUT") throw error; }
   const local = join(root, ".agent");
   const central = join(homedir(), "workspace", "notes.db");
-  const paths = [local, ...[join(local, "notes.db"), ...(existsSync(dirname(central)) ? [central] : [])].flatMap(file => [file, `${file}-wal`, `${file}-shm`, `${file}-journal`])];
+  // Grant the local directory once; mounting its SQLite files separately prevents
+  // SQLite from rotating them. The central directory must remain read-only.
+  const centralFiles = existsSync(dirname(central)) ? [central, `${central}-wal`, `${central}-shm`, `${central}-journal`] : [];
+  const paths = [local, ...centralFiles];
   const exclude = join(root, ".git", "info", "exclude");
   if (existsSync(dirname(exclude))) paths.push(exclude);
-  for (const path of paths) {
+  const localDb = join(local, "notes.db");
+  for (const path of [...paths, localDb, `${localDb}-wal`, `${localDb}-shm`, `${localDb}-journal`]) {
     for (let current = path; current !== root && current !== dirname(current); current = dirname(current)) {
       let stat;
       try { stat = lstatSync(current); } catch (error) { if (error.code === "ENOENT") continue; throw error; }
       if (stat.isSymbolicLink() || (stat.isFile() && stat.nlink !== 1)) throw new Error(`Notes storage must not contain links: ${current}`);
     }
+  }
+  // Linux bind mounts need existing targets. Create only these fixed storage
+  // paths, after checking all of them; never grant their parent directories.
+  mkdirSync(local, { recursive: true, mode: 0o700 });
+  for (const file of [...centralFiles, ...(paths.includes(exclude) ? [exclude] : [])]) {
+    const fd = openSync(file, constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Notes storage must be a regular unlinked file: ${file}`);
+    } finally { closeSync(fd); }
   }
   return paths;
 }
@@ -36,7 +57,7 @@ export function commandWritableRoots(paths, cwd, agentDir, protectedPaths = []) 
   const agent = realpathSync.native(agentDir);
   const runtime = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
   const cache = join(homedir(), ".cache/pi-codex-sandbox");
-  const backend = process.env.PI_CODEX_SANDBOX_BIN ?? join(homedir(), ".local/bin/codex");
+  const backend = sandboxBackend();
   const protectedRoots = [...new Set([agent, runtime, cache, backend, process.execPath, ...protectedPaths].map(path => existsSync(path) ? realpathSync.native(path) : resolve(path)))];
   return [...new Set(paths.map(path => {
     if (typeof path !== "string" || path.length > 1024 || !isAbsolute(path) || path !== resolve(path) || /[\u0000-\u001f\u007f-\u009f\u200e-\u200f\u202a-\u202e\u2066-\u2069]/u.test(path)) throw new Error("Write paths must be canonical absolute paths without control characters");
@@ -56,13 +77,12 @@ export function commandWritableRoots(paths, cwd, agentDir, protectedPaths = []) 
   }))].sort();
 }
 
-export function sandboxArgs(command, writableRoots = []) {
+export function sandboxArgs(command, cwd, scratch, writableRoots = [], readOnlyRoots = []) {
   return [
-    "sandbox",
-    "-c", 'sandbox_mode="workspace-write"',
-    "-c", `sandbox_workspace_write={writable_roots=${JSON.stringify(writableRoots)},network_access=false,exclude_tmpdir_env_var=false,exclude_slash_tmp=true}`,
+    "sandbox", "-C", cwd, "-P", "pi", "--include-managed-config",
     "-c", "features.network_proxy=false",
-    "--", "/bin/bash", "--noprofile", "--norc", "-c", command,
+    "-c", `permissions={pi={extends=":workspace",${sandboxFilesystem(scratch, writableRoots, readOnlyRoots)},network={enabled=false}}}`,
+    ...confinedCommand(command),
   ];
 }
 
@@ -89,7 +109,14 @@ export function launch(argv = process.argv.slice(2)) {
     argv = argv.slice(2);
     if (!Array.isArray(requestedRoots)) throw new Error("Expected write-roots array");
   }
-  const service = !metalDigest && requestedRoots === undefined && (argv[0] === "--notes" || argv[0] === "--offline") ? argv[0].slice(2) : undefined;
+  let readOnlyRoots = [];
+  if (argv[0] === "--read-roots") {
+    if (!argv[1] || Buffer.byteLength(argv[1]) > 16384) throw new Error("Invalid read-roots request");
+    readOnlyRoots = JSON.parse(argv[1]);
+    if (!Array.isArray(readOnlyRoots) || readOnlyRoots.length > 16 || readOnlyRoots.some(path => typeof path !== "string" || !isAbsolute(path) || path !== resolve(path) || /[\u0000-\u001f]/u.test(path))) throw new Error("Expected narrow absolute read-only paths");
+    argv = argv.slice(2);
+  }
+  const service = !metalDigest && (argv[0] === "--offline" || (requestedRoots === undefined && argv[0] === "--notes")) ? argv[0].slice(2) : undefined;
   if (service) argv = argv.slice(1);
   if (argv.length !== 2 || argv[0] !== "-c") throw new Error("Codex shell expects exactly: -c <command>.");
   if (typeof process.execve !== "function") throw new Error("Codex shell requires Node with process.execve (Node >=22.19).");
@@ -97,7 +124,7 @@ export function launch(argv = process.argv.slice(2)) {
   const agentDir = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
   const metal = metalDigest ? metalBackend(agentDir) : undefined;
   if (metal && metal.sha256 !== metalDigest) throw new Error("Metal backend changed after approval");
-  const codex = metal?.binary ?? realpathSync(process.env.PI_CODEX_SANDBOX_BIN ?? join(homedir(), ".local/bin/codex"));
+  const codex = metal?.binary ?? realpathSync(sandboxBackend());
   const cache = join(homedir(), ".cache/pi-codex-sandbox");
   mkdirSync(cache, { recursive: true, mode: 0o700 });
   // Never make the launcher, its backend, or its private configuration writable to commands.
@@ -123,7 +150,8 @@ export function launch(argv = process.argv.slice(2)) {
   if (allowedHosts.length) requireNetworkProxyVersion(execFileSync(codex, ["--version"], { env, encoding: "utf8", timeout: 5000, maxBuffer: 65536 }));
   const roots = requestedRoots === undefined ? (service === "notes" ? notesWritableRoots(cwd) : [])
     : commandWritableRoots(requestedRoots, cwd, process.env.PI_CODING_AGENT_DIR ?? agentDir, [codex]);
-  const args = allowedHosts.length ? networkSandboxArgs(argv[1], cwd, scratch, allowedHosts, roots) : sandboxArgs(argv[1], roots);
+  const args = allowedHosts.length ? networkSandboxArgs(argv[1], cwd, scratch, allowedHosts, roots, readOnlyRoots) : sandboxArgs(argv[1], cwd, scratch, roots, readOnlyRoots);
+  delete env.PI_CONFINED; // Only the command inside Codex sets the handoff marker.
   if (metal) args.splice(1, 0, "--allow-metal");
   delete env.PI_CODEX_NETWORK_GRANTS; // Grants are broker state, not a child-controlled channel.
   // Node captures stdio with Unix sockets; Linux seccomp denies libuv's socket

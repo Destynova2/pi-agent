@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -82,6 +82,21 @@ test("completion guidance covers ordinary, explicit and child turns without dele
     const event = { prompt: "fix this bug", systemPromptOptions: { sections: { existing: "kept" } as Record<string, string> } };
     const before = events.get("before_agent_start")!;
     before(event);
+    const jj = event.systemPromptOptions.sections.jj_workflow;
+    assert.ok(jj.length < 2500, "Keep jj preparation guidance bounded");
+    for (const requirement of [
+      "prefer jj when available and initialized", "once per repository/session",
+      "A missing .jj directory does not mean jj needs installing", "Check parent roots",
+      "obtain the required installation/capability approval", "Verify jj --version",
+      "jj git init --colocate", "explicitly permitting the metadata writes",
+      "Do not initialize during read-only audits", "linked worktrees, submodules",
+      "report the exact host command once", "Never widen sandbox permissions",
+      "Verify jj root and jj status", "--ignore-working-copy",
+      "Children reuse the parent's preparation", "Gate policy configuration remains a separate prerequisite",
+      "Before each new authorized modification task, use jj_checkpoint", "operationId and commitId",
+      "Never reinitialize existing jj", "Initialization alone is not a recovery point",
+      "Restoration requires a separate explicit user request",
+    ]) assert.ok(jj.includes(requirement), `Missing jj safeguard: ${requirement}`);
     const completion = event.systemPromptOptions.sections.task_completion;
     assert.ok(completion.length < 2700, "Keep completion and recovery guidance bounded");
     assert.match(completion, /Minimal code does not mean reduced scope/);
@@ -120,12 +135,15 @@ test("completion guidance covers ordinary, explicit and child turns without dele
     assert.match(policy, /No commit, push or deployment without explicit user authorization/);
     before(event);
     assert.equal(event.systemPromptOptions.sections.adaptive_delegation, policy, "no accumulating prompt text");
+    assert.equal(event.systemPromptOptions.sections.jj_workflow, jj, "jj instructions do not accumulate");
     tools = []; before(event);
     assert.equal(event.systemPromptOptions.sections.adaptive_delegation, undefined);
     assert.equal(event.systemPromptOptions.sections.task_completion, completion, "completion does not depend on delegation");
+    assert.equal(event.systemPromptOptions.sections.jj_workflow, jj, "jj preparation does not require delegation");
     tools = ["subagent"]; process.env.PI_SUBAGENT_CHILD = "1"; before(event);
     assert.equal(event.systemPromptOptions.sections.adaptive_delegation, undefined);
     assert.equal(event.systemPromptOptions.sections.task_completion, completion, "children own their assigned scope");
+    assert.equal(event.systemPromptOptions.sections.jj_workflow, jj, "children receive preparation boundaries");
     assert.equal(event.systemPromptOptions.sections.existing, "kept");
     assert.equal(sent.length, 0, "prompt guidance must not start extra model turns");
     assert.equal(events.has("agent_end"), false);
@@ -138,6 +156,7 @@ test("completion guidance covers ordinary, explicit and child turns without dele
     assert.equal(event.systemPromptOptions.sections.adaptive_delegation, undefined, "explicit orchestration does not duplicate delegation guidance");
     assert.equal(event.systemPromptOptions.sections.task_completion, completion);
     assert.equal(sent.length, 1, "only the explicit command queued a user request");
+    assert.equal(event.systemPromptOptions.sections.jj_workflow, jj, "explicit orchestration retains jj guidance");
   } finally {
     if (oldChild === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = oldChild;
   }
@@ -149,6 +168,7 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
     // on HOME or a real install path (see extensions/orchestrate/index.ts).
     const home = await mkdtemp(join(tmpdir(), "pi-orchestrate-lifecycle-"));
     const oldGatesBin = process.env.PI_GATES_BIN;
+    const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
     let handler: Handler | undefined;
     const events = new Map<string, () => Promise<void>>();
     const notifications: string[] = [];
@@ -162,6 +182,10 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
       const parent = `const child=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'}); child.on('error',error=>{console.error(error);process.exit(1)}); child.on('exit',code=>{console.error('fixture child exited '+code);process.exit(code??1)}); setInterval(()=>{},1000);`;
       await writeFile(gatesBin, `#!${process.execPath}\n${parent}\n`, { mode: 0o700 });
       process.env.PI_GATES_BIN = gatesBin;
+      process.env.PI_CODING_AGENT_DIR = join(home, "agent");
+      await mkdir(join(process.env.PI_CODING_AGENT_DIR, "scripts"), { recursive: true });
+      // Unit transport: the production command must enter the installed sandbox launcher.
+      await writeFile(join(process.env.PI_CODING_AGENT_DIR, "scripts/codex-shell.mjs"), `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(home, "launcher-args"))},JSON.stringify(process.argv.slice(2)));process.execve('/bin/bash',['bash',...process.argv.slice(2)],process.env);\n`, { mode: 0o700 });
       register({
         registerCommand: (_name: string, definition: { handler: Handler }) => { handler = definition.handler; },
         on: (event: string, callback: () => Promise<void>) => { events.set(event, callback); },
@@ -177,6 +201,7 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
         try { await access(ready); break; } catch { await delay(20); }
       }
       assert.equal(await readFile(ready, "utf8").catch(() => "missing"), "ready", notifications.join("\n"));
+      assert.deepEqual(JSON.parse(await readFile(join(home, "launcher-args"), "utf8")), ["-c", `'${gatesBin}' 'full'`]);
       await handler("gates full", ctx);
       assert.ok(notifications.some((text) => text.includes("already in progress")));
       await handler("status", ctx);
@@ -198,7 +223,8 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
     } finally {
       await events.get("session_shutdown")?.();
       await job;
-      process.env.PI_GATES_BIN = oldGatesBin;
+      if (oldGatesBin === undefined) delete process.env.PI_GATES_BIN; else process.env.PI_GATES_BIN = oldGatesBin;
+      if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
       await rm(home, { recursive: true, force: true });
     }
   });

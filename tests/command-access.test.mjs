@@ -12,6 +12,8 @@ function fixture(confirm = async () => true) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "pi-command-access-")));
   const agent = join(root, "agent"), cwd = join(root, "project"), target = join(root, "target");
   mkdirSync(join(agent, "scripts"), { recursive: true }); mkdirSync(cwd);
+  const previousHome = process.env.HOME;
+  process.env.HOME = join(root, "home"); // Isolate the protected-cache policy from the outer sandbox's TMPDIR.
   // Unit transport only; OS confinement is exercised by command-access.integration.test.mjs.
   writeFileSync(join(agent, "scripts/codex-shell.mjs"), '#!/usr/bin/env node\nconsole.log(JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd()}));\n', { mode: 0o755 });
   const handlers = new Map(); const journal = []; let tool; let prompts = 0; let active = true;
@@ -24,7 +26,7 @@ function fixture(confirm = async () => true) {
     return handlers.get("tool_result")({ ...event, content: [{ type: "text", text: "EPERM" }], isError, structuredContent: { exit_code: isError ? 1 : 0 } }, ctx);
   };
   const request = (input = {}, signal) => tool.execute("approval", { failed_call_id: "failed", write_paths: [target], reason: "write one output file", ...input }, signal, undefined, ctx);
-  return { root, agent, cwd, target, ctx, handlers, journal, fail, request, disable: () => { active = false; }, get prompts() { return prompts; }, close: async () => { await handlers.get("session_shutdown")(); rmSync(root, { recursive: true, force: true }); } };
+  return { root, agent, cwd, target, ctx, handlers, journal, fail, request, disable: () => { active = false; }, get prompts() { return prompts; }, close: async () => { try { await handlers.get("session_shutdown")(); } finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; rmSync(root, { recursive: true, force: true }); } } };
 }
 
 test("additional paths are canonical and narrow; runtime, links, hardlinks and ancestors are refused", async () => {
@@ -32,6 +34,7 @@ test("additional paths are canonical and narrow; runtime, links, hardlinks and a
   const validate = paths => commandWritableRoots(paths, f.cwd, f.agent);
   try {
     assert.deepEqual(validate([f.target, f.target]), [f.target]);
+    assert.throws(() => validate([join(process.env.HOME, ".cache/pi-codex-sandbox/scratch")]), /runtime\/configuration/);
     for (const name of ["auth.json.lock", "settings.json.lock", "models-store.json.lock"]) assert.throws(() => validate([join(f.agent, name)]), /runtime\/configuration/);
     for (const paths of [[], Array(9).fill(f.target), ["relative"], [f.cwd], [f.root], ["/"], [f.agent], [join(f.agent, "settings.json")], [join(f.agent, "extensions")], [join(f.agent, "auth.json.lock/child")], [f.target + "/../other"], [f.target + "\n"]]) assert.throws(() => validate(paths), undefined, JSON.stringify(paths));
     symlinkSync(f.target, join(f.root, "dangling"));

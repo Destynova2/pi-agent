@@ -8,6 +8,7 @@ import mcp, { readServers } from "../extensions/mcp/index.ts";
 import { APPROVAL_CHOICES } from "../lib/mcp-approvals.ts";
 import { McpConnection } from "../extensions/mcp/client.ts";
 import { CONFINED_TOOLS } from "../lib/confined-tools.ts";
+import { STRICT_TOOLS } from "../extensions/tool-policy/index.ts";
 
 test("MCP accepts only trusted local stdio definitions, not project config, symlinks or remote URLs", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-mcp-config-"));
@@ -16,6 +17,9 @@ test("MCP accepts only trusted local stdio definitions, not project config, syml
   try {
     assert.deepEqual(readServers(agent, cwd), {});
     const path = join(agent, "mcp.json");
+    writeFileSync(path, JSON.stringify({ mcpServers: { example: { command: "node", args: [] } } }));
+    assert.throws(() => readServers(agent, cwd), /uses servers, not native mcpServers/);
+    assert.equal(CONFINED_TOOLS.has("codemode"), false, "Codemode stays denied until its execution is confined");
     writeFileSync(path, JSON.stringify({ servers: { example: { command: "node", args: ["server.mjs"], network: false } } }));
     assert.equal(readServers(agent, cwd).example.command, "node");
     assert.throws(() => readServers(agent, root), /outside/);
@@ -24,6 +28,7 @@ test("MCP accepts only trusted local stdio definitions, not project config, syml
     rmSync(path); symlinkSync(join(cwd, "mcp.json"), path);
     assert.throws(() => readServers(agent, cwd));
     assert.equal(CONFINED_TOOLS.has("dunst"), false, "host automation never inherited by confined subagents");
+    assert.equal(STRICT_TOOLS.has("dunst"), false, "host automation is also denied in the confined parent");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

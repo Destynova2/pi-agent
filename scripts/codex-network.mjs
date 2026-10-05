@@ -75,16 +75,28 @@ export function requireNetworkProxyVersion(output) {
   }
 }
 
-export function networkSandboxArgs(command, cwd, scratch, allowedHosts, writableRoots = []) {
-  const allowed = hosts(allowedHosts);
+export function sandboxFilesystem(scratch, writableRoots = [], readOnlyRoots = []) {
   const q = JSON.stringify;
-  const domains = allowed.map(host => `${q(host)}="allow"`).join(",");
   // Inherit Codex's protected metadata roots, but not its shared system-temp write grants.
   const additional = writableRoots.map(path => `,${q(path)}="write"`).join("");
-  const filesystem = `filesystem={":slash_tmp"="read",${q(scratch)}="write",":workspace_roots"={".pi"="read"}${additional}}`;
+  const protectedPaths = readOnlyRoots.map(path => `,${q(path)}="read"`).join("");
+  return `filesystem={":slash_tmp"="read",${q(scratch)}="write",":workspace_roots"={".pi"="read"}${additional}${protectedPaths}}`;
+}
+
+export function confinedCommand(command) {
+  // This handoff marker is set by env INSIDE Codex, after OS confinement succeeds.
+  // It prevents accidental direct worker launches; the OS policy enforces permissions.
+  // CODEX_SANDBOX is not supplied by the Linux CLI and is not a portable contract.
+  return ["--", "/usr/bin/env", "PI_CONFINED=1", "/bin/bash", "--noprofile", "--norc", "-c", command];
+}
+
+export function networkSandboxArgs(command, cwd, scratch, allowedHosts, writableRoots = [], readOnlyRoots = []) {
+  const allowed = hosts(allowedHosts);
+  const domains = allowed.map(host => `${JSON.stringify(host)}="allow"`).join(",");
+  const filesystem = sandboxFilesystem(scratch, writableRoots, readOnlyRoots);
   const network = `network={enabled=true,proxy_url="http://127.0.0.1:0",enable_socks5=false,enable_socks5_udp=false,allow_upstream_proxy=false,allow_local_binding=false,dangerously_allow_non_loopback_proxy=false,dangerously_allow_all_unix_sockets=false,mode="full",domains={${domains}}}`;
   return ["sandbox", "-C", cwd, "-P", "pi", "--include-managed-config",
     "-c", 'features.network_proxy=true',
     "-c", `permissions={pi={extends=":workspace",${filesystem},${network}}}`,
-    "--", "/bin/bash", "--noprofile", "--norc", "-c", command];
+    ...confinedCommand(command)];
 }

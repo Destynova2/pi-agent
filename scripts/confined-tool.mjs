@@ -11,7 +11,7 @@ process.once("SIGTERM", () => lifetime.abort());
 process.once("SIGINT", () => lifetime.abort());
 
 try {
-  if (!process.env.CODEX_SANDBOX) throw new Error("Confined worker requires the Codex sandbox");
+  if (process.env.PI_CONFINED !== "1") throw new Error("Confined worker requires the Codex sandbox launcher");
   const data = readFileSync(0);
   if (data.length > 1024 * 1024) throw new Error("Confined request exceeds 1 MiB");
   const input = JSON.parse(data.toString("utf8"));

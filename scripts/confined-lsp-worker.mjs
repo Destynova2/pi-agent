@@ -21,7 +21,7 @@
 import { createInterface } from "node:readline";
 import { createConfinedLspWorkerBridge } from "../extensions/confined-lsp/worker-session.mjs";
 
-if (!process.env.CODEX_SANDBOX) throw new Error("LSP worker requires the Codex sandbox");
+if (process.env.PI_CONFINED !== "1") throw new Error("LSP worker requires the Codex sandbox launcher");
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 
 const shutdownController = new AbortController();

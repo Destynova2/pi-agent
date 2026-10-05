@@ -38,7 +38,7 @@ test("user URL reads use the native sandbox without dialogs or a grant to subseq
     await assert.rejects(runProcess(launcher, ["--web-url", "https://example.com/", "-c", "echo not-allowed"], { cwd }), /expects only/);
     await assert.rejects(shell(`${JSON.stringify(launcher)} --web-url https://example.com/`), /sandbox|permitted|denied/i, "an ordinary sandbox cannot promote itself to the exact-read path");
     const outside = join(root, "outside");
-    await assert.rejects(shell(`touch ${JSON.stringify(outside)}`), /not permitted|denied/);
+    await assert.rejects(shell(`touch ${JSON.stringify(outside)}`), /not permitted|denied|read-only/i);
     assert.equal(existsSync(outside), false);
     writeFileSync(join(agent, "network-policy.json"), '{"allow":[],"deny":["example.com"]}');
     await assert.rejects(fetch("https://example.com/"), /WEB_NETWORK_DENIED/);

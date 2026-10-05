@@ -40,6 +40,9 @@ test("real Codex Git consent grants only Git data; hooks run confined and ordina
     await request({ operation: "stage", paths: ["file"] });
     writeFileSync(join(cwd, "hook.mjs"), `import assert from 'node:assert/strict'; import fs from 'node:fs';
 for (const path of ${JSON.stringify([join(root, "outside"), join(agent, "settings.json"), join(cwd, ".git/config"), join(cwd, ".git/hooks/blocked")])}) assert.throws(() => fs.writeFileSync(path, 'bad'), /EPERM|EACCES|EROFS/);
+if (process.env.GIT_COMMON_DIR) {
+  for (const suffix of ['/config', '/hooks/blocked']) assert.throws(() => fs.writeFileSync(process.env.GIT_COMMON_DIR + suffix, 'bad'), /EPERM|EACCES|EROFS/);
+}
 fs.writeFileSync('hook-proof', 'confined');\n`);
     writeFileSync(join(cwd, ".git/hooks/pre-commit"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(join(cwd, "hook.mjs"))}\n`, { mode: 0o755 });
     await request({ operation: "commit", paths: ["file"], message: "fix: isolated sandbox fixture" });
@@ -47,6 +50,15 @@ fs.writeFileSync('hook-proof', 'confined');\n`);
     assert.equal(prompts, 1); assert.equal(readFileSync(join(cwd, "hook-proof"), "utf8"), "confined");
     assert.equal(readFileSync(join(cwd, ".git/config"), "utf8"), config); assert.equal(readFileSync(join(root, "outside"), "utf8"), "unchanged");
     writeFileSync(join(cwd, "file"), "two\n"); await assert.rejects(ordinary(), /denied|not permitted|read-only/i);
+    const linked = join(root, "linked");
+    git("worktree", "add", "-b", "fix/linked", linked);
+    ctx.cwd = linked;
+    writeFileSync(join(linked, "file"), "linked\n");
+    await request({ operation: "stage", paths: ["file"] });
+    await request({ operation: "commit", paths: ["file"], message: "fix: linked sandbox fixture" });
+    assert.equal(execFileSync("/usr/bin/git", ["show", "HEAD:file"], { cwd: linked, encoding: "utf8" }), "linked\n");
+    assert.equal(git("diff", "--cached", "--name-only").trim(), "", "linked index never changes the other worktree");
+    ctx.cwd = cwd;
     process.env.PI_CODEX_SANDBOX_BIN = join(root, "missing");
     await assert.rejects(request({ operation: "stage", paths: ["file"] }));
     assert.equal(git("diff", "--cached", "--name-only").trim(), "");

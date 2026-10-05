@@ -39,6 +39,7 @@ import { writeFileSync, readFileSync, readlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 if (process.platform === 'darwin') assert.equal(process.env.CODEX_SANDBOX, 'seatbelt');
+assert.equal(process.env.PI_CONFINED, '1');
 writeFileSync('inside.txt', 'inside');
 writeFileSync(process.env.TMPDIR + '/scratch.txt', 'scratch');
 for (const path of ['../outside/relative.txt', ${JSON.stringify(join(root, "outside/absolute.txt"))}, 'escape/link.txt', '.git/blocked.txt', '.codex/blocked.txt', '.agents/blocked.txt']) {

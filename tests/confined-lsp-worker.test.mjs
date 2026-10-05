@@ -73,7 +73,7 @@ function worker(cwd, agentDir, { onRequest } = {}) {
       command: process.execPath,
       args: ["--import", paths.resolvePiHookPath, "--import", paths.piLspModuleHookPath, paths.workerPath],
       cwd,
-      env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, CODEX_SANDBOX: "unit-test-only" },
+      env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_CONFINED: "1" },
       requestTimeoutMs: 15000,
       onRequest:
         onRequest ??

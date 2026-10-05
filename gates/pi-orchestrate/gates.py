@@ -73,9 +73,16 @@ def revision(root, rev):
     return value
 
 
+def cache_directory(root):
+    base = Path(tempfile.gettempdir()) if (os.environ.get('PI_CONFINED') == '1' or os.environ.get('CODEX_SANDBOX')) else Path.home() / '.cache'
+    return base / 'pi-orchestrate/gates' / key(root)
+
+
 def gates(mode='full', base='trunk()'):
     root = Path(run(['jj', '--ignore-working-copy', 'root'], Path.cwd())).resolve()
-    cache = Path.home() / '.cache/pi-orchestrate/gates' / key(root)
+    cache = cache_directory(root)
+    if (os.environ.get('PI_CONFINED') == '1' or os.environ.get('CODEX_SANDBOX')):
+        os.environ['PREK_HOME'] = str(Path(tempfile.gettempdir()) / 'prek')
     cache.mkdir(parents=True, exist_ok=True, mode=0o700)
     if any((cache / name).exists() for name in ('validation.lock', 'lock')):
         raise RuntimeError('Verrou ancien format présent : vérifier l’arrêt de l’ancien runner avant nettoyage manuel')

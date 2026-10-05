@@ -27,6 +27,24 @@ const sha = (value: string | Buffer) => createHash("sha256").update(value).diges
 const inside = (root: string, path: string) => { const rel = relative(root, path); return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../")); };
 const control = /[\u0000-\u001f\u007f-\u009f\u200e-\u200f\u202a-\u202e\u2066-\u2069]/u;
 
+let transaction: { snapshot: GitSnapshot; commonDir: string; gitDir: string } | undefined;
+
+/** One fixed worker handles one request; ordinary Git inspection never sets this. */
+export function setGitTransaction(snapshot: GitSnapshot, commonDir: string) {
+  if (transaction || !isAbsolute(commonDir) || realpathSync(commonDir) !== commonDir || inside(snapshot.root, commonDir)) throw new Error("Invalid Git transaction directory");
+  transaction = { snapshot, commonDir, gitDir: join(commonDir, relative(snapshot.commonDir, snapshot.gitDir)) };
+}
+
+function metadataPath(path: string) {
+  return transaction && inside(transaction.snapshot.commonDir, path)
+    ? join(transaction.commonDir, relative(transaction.snapshot.commonDir, path)) : path;
+}
+
+function originalPath(path: string) {
+  return transaction && inside(transaction.commonDir, path)
+    ? join(transaction.snapshot.commonDir, relative(transaction.commonDir, path)) : path;
+}
+
 export function validateGitRequest(value: unknown): GitRequest {
   if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value)) > 16000) throw new Error("Invalid or oversized Git request");
   const input = value as Record<string, unknown>;
@@ -58,6 +76,7 @@ export function gitRepositoryRoot(cwd: string): string {
 }
 
 function regular(path: string, limit: number): Buffer | null {
+  path = metadataPath(path);
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
@@ -76,7 +95,8 @@ function gitEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of Object.keys(process.env)) if (/^GIT_(DIR|COMMON_DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG.*|TRACE.*|NAMESPACE|CEILING_DIRECTORIES|EXEC_PATH|LITERAL_PATHSPECS|GLOB_PATHSPECS|NOGLOB_PATHSPECS|ICASE_PATHSPECS)$/.test(key) && !["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"].includes(key)) env[key] = undefined;
   // Do not disable hooks, signing, clean/smudge filters, or repository checks.
-  return { ...env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "/usr/bin/false", GIT_SEQUENCE_EDITOR: "/usr/bin/false", LC_ALL: "C" };
+  return { ...env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "/usr/bin/false", GIT_SEQUENCE_EDITOR: "/usr/bin/false", LC_ALL: "C",
+    ...(transaction ? { GIT_DIR: transaction.gitDir, GIT_COMMON_DIR: transaction.commonDir, GIT_WORK_TREE: transaction.snapshot.root } : {}) };
 }
 
 async function git(cwd: string, args: string[], signal?: AbortSignal, input?: string, env: NodeJS.ProcessEnv = {}) {
@@ -87,8 +107,8 @@ async function git(cwd: string, args: string[], signal?: AbortSignal, input?: st
 export async function inspectGit(cwd: string, request: GitRequest, signal?: AbortSignal): Promise<GitSnapshot> {
   const root = realpathSync(await git(cwd, ["rev-parse", "--show-toplevel"], signal));
   if (!inside(root, realpathSync(cwd))) throw new Error("Git repository does not contain the current workspace");
-  const gitDir = realpathSync(await git(root, ["rev-parse", "--absolute-git-dir"], signal));
-  const commonDir = realpathSync(await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal));
+  const gitDir = originalPath(realpathSync(await git(root, ["rev-parse", "--absolute-git-dir"], signal)));
+  const commonDir = originalPath(realpathSync(await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)));
   const marker = join(root, ".git"), markerStat = lstatSync(marker);
   if (markerStat.isDirectory()) {
     if (realpathSync(marker) !== marker || gitDir !== marker || commonDir !== marker) throw new Error("Unexpected Git metadata layout");
@@ -117,7 +137,9 @@ export async function inspectGit(cwd: string, request: GitRequest, signal?: Abor
     const bytes = regular(absolute, 32 * 1024 * 1024);
     files.push(bytes === null ? null : sha(bytes));
   }
-  const config = await git(root, ["config", "--null", "--show-origin", "--list"], signal);
+  const rawConfig = await git(root, ["config", "--null", "--show-origin", "--list"], signal);
+  const config = rawConfig.replace(/(^|\0)file:([^\0]+)(?=\0)/g,
+    (_match, separator, path) => separator + "file:" + originalPath(resolve(root, path)));
   let remoteUrl: string | undefined;
   if (request.operation === "push") {
     if (/(?:^|\0)(?:remote\.[^\n]+\.vcs|push\.pushoption)\n/i.test(config)) throw new Error("Push requires standard HTTPS transport without custom VCS helpers or configured push options");
@@ -166,7 +188,7 @@ export async function performGit(cwd: string, request: GitRequest, expected: Git
     }
     env.PI_GIT_ACCESS_NODE = process.execPath;
     env.PI_GIT_ACCESS_GUARD = fileURLToPath(new URL("../../scripts/git-hook-guard.mjs", import.meta.url));
-    env.PI_GIT_ACCESS_ORIGINAL_HOOKS = resolve(current.root, await git(current.root, ["rev-parse", "--git-path", "hooks"], signal));
+    env.PI_GIT_ACCESS_ORIGINAL_HOOKS = originalPath(resolve(current.root, await git(current.root, ["rev-parse", "--git-path", "hooks"], signal)));
     env.PI_GIT_ACCESS_EXPECTED_TREE = tree;
     env.PI_GIT_ACCESS_EXPECTED_HEAD = current.head;
     env.PI_GIT_ACCESS_EXPECTED_REF = `refs/heads/${current.branch}`;

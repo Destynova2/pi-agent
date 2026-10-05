@@ -12,16 +12,21 @@
       "source": "npm:@ian-pascoe/pi-lsp@0.4.4",
       "extensions": []
     },
+    {
+      "source": "npm:typescript@7.0.2",
+      "extensions": [],
+      "skills": [],
+      "prompts": [],
+      "themes": []
+    },
     "npm:@richardgill/pi-background-bash@0.0.3",
     "git:github.com/emilkowalski/skills@d16ebe60d09a5ba2afcb7054ede9d0a10c9f6128"
   ],
   "lsp": {
     "servers": {
       "typescript": {
-        "command": "npx",
+        "command": "tsc",
         "args": [
-          "--no-install",
-          "tsc",
           "--lsp",
           "--stdio"
         ],
@@ -39,11 +44,22 @@
               ".tsx"
             ],
             "languageId": "typescriptreact"
+          },
+          {
+            "extensions": [".js", ".mjs", ".cjs"],
+            "languageId": "javascript"
+          },
+          {
+            "extensions": [".jsx"],
+            "languageId": "javascriptreact"
           }
         ],
         "requireRootMarker": true,
         "rootMarkers": [
-          "tsconfig.json"
+          "tsconfig.json",
+          "jsconfig.json",
+          "package.json",
+          ".git"
         ]
       }
     }

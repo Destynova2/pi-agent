@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { runDoctor, REQUIRED_COMMANDS, OPTIONAL_COMMANDS } from "../scripts/doctor.mjs";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { runDoctor, REQUIRED_COMMANDS, OPTIONAL_COMMANDS, CONFINED_RUNTIME_FILES } from "../scripts/doctor.mjs";
 import { makeFakeToolchain, makeTmpDir } from "./fixtures/build.mjs";
 
 test("reports missing required tools and fails even without --strict", async () => {
@@ -83,6 +85,36 @@ test("never reads or exposes the content of auth.json", async () => {
     await rm(target, { recursive: true, force: true });
     await rm(binDir, { recursive: true, force: true });
   }
+});
+
+test("installed mode fails on stale executors, missing servers and unfiltered upstream LSP", async () => {
+  const target = await makeTmpDir("pi-installed-doctor-");
+  const binDir = await makeFakeToolchain([...REQUIRED_COMMANDS, ...OPTIONAL_COMMANDS]);
+  const env = { PATH: binDir };
+  try {
+    assert.equal((await runDoctor({ target, installed: true, env })).ok, false);
+    const cli = spawnSync(process.execPath, [fileURLToPath(new URL("../scripts/doctor.mjs", import.meta.url)), "--target", target, "--installed"], { env, encoding: "utf8" });
+    assert.equal(cli.status, 1);
+    assert.match(cli.stdout, /extensions\/confined-lsp\/index\.ts: missing/);
+    for (const file of CONFINED_RUNTIME_FILES) {
+      await mkdir(dirname(join(target, file)), { recursive: true });
+      await writeFile(join(target, file), await readFile(new URL(`../${file}`, import.meta.url)));
+    }
+    const settings = { shellPath: join(target, "scripts/codex-shell.mjs"), packages: [{ source: "npm:@ian-pascoe/pi-lsp@0.4.4", extensions: [] }] };
+    await writeFile(join(target, "settings.json"), JSON.stringify(settings));
+    for (const [name, version] of [["@ian-pascoe/pi-lsp", "0.4.4"], ["typescript", "7.0.2"]]) {
+      const dir = join(target, "npm/node_modules", name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "package.json"), JSON.stringify({ name, version }));
+    }
+    assert.equal((await runDoctor({ target, installed: true, env })).ok, true);
+    await writeFile(join(target, "extensions/tool-policy/index.ts"), "// outdated policy\n");
+    const stale = await runDoctor({ target, installed: true, env });
+    assert.ok(stale.missingRequired.some(r => r.name === "extensions/tool-policy/index.ts"));
+    settings.packages = ["npm:@ian-pascoe/pi-lsp@0.4.4"];
+    await writeFile(join(target, "settings.json"), JSON.stringify(settings));
+    assert.ok((await runDoctor({ target, installed: true, env })).missingRequired.some(r => r.name === "upstream LSP hooks filtered"));
+  } finally { await rm(target, { recursive: true, force: true }); await rm(binDir, { recursive: true, force: true }); }
 });
 
 test("node:sqlite and the node version are checked", async () => {

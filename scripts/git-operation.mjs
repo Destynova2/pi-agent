@@ -1,5 +1,5 @@
 // Fixed Git worker. The broker starts it inside Codex, never as a host fallback.
-import { inspectGit, performGit, validateGitRequest } from "../extensions/tool-policy/git-access-core.ts";
+import { inspectGit, performGit, setGitTransaction, validateGitRequest } from "../extensions/tool-policy/git-access-core.ts";
 let input = "";
 const controller = new AbortController();
 const cancel = () => controller.abort();
@@ -11,6 +11,10 @@ try {
   }
   const data = JSON.parse(input), request = validateGitRequest(data.request);
   if (!["inspect", "execute"].includes(data.action)) throw new Error("Invalid Git worker action");
+  if (data.transaction) {
+    if (data.action !== "execute" || !data.expected) throw new Error("Invalid Git transaction action");
+    setGitTransaction(data.expected, data.transaction);
+  }
   const result = data.action === "inspect" ? await inspectGit(process.cwd(), request, controller.signal) : await performGit(process.cwd(), request, data.expected, controller.signal);
   process.stdout.write(JSON.stringify({ result }));
 } catch (error) {

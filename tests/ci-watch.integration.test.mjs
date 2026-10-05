@@ -17,7 +17,7 @@ test("CI helper queries run inside Codex and cancellation stops the nested helpe
 const fs = require('node:fs');
 let denied = false;
 try { fs.writeFileSync(${JSON.stringify(outside)}, 'bad'); } catch (error) { denied = ['EPERM','EACCES','EROFS'].includes(error.code); }
-fs.writeFileSync('proof', JSON.stringify({denied, sandbox: process.env.CODEX_SANDBOX}));
+fs.writeFileSync('proof', JSON.stringify({denied, sandbox: process.env.PI_CONFINED}));
 if (process.env.CI_FIXTURE_HANG === '1') {
   process.on('SIGTERM', ()=>{}); fs.writeFileSync('pid', String(process.pid)); setInterval(()=>{}, 1000);
 } else console.log(JSON.stringify({number: 7}));

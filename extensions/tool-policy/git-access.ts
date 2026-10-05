@@ -6,6 +6,7 @@ import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { McpApprovals, fingerprint, serverIdentity } from "../../lib/mcp-approvals.ts";
 import { runProcess } from "../../lib/process.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
+import { closeGitTransaction, createGitTransaction, publishGitTransaction } from "../../lib/git-transaction.ts";
 import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
 import { networkHosts, normalizeHost } from "../../scripts/codex-network.mjs";
 import { gitRepositoryRoot, gitWritePaths, validateGitRequest, type GitSnapshot } from "./git-access-core.ts";
@@ -48,12 +49,18 @@ export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (c
           const validate = () => { owned.throwIfAborted(); verify(ctx); if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("git_access")) throw new Error("Git access requires the interactive parent in the same workspace"); };
           validate();
           const query = async (action: "inspect" | "execute", expected?: GitSnapshot) => {
-            const roots = expected ? commandWritableRoots(gitWritePaths(expected, request), cwd, agentDir, [getPackageDir()]) : [];
-            const args = expected ? ["--write-roots", JSON.stringify(roots), "-c", command] : ["--offline", "-c", command];
-            const raw = await execute(launcher, args, { cwd, signal: owned, input: JSON.stringify({ action, request, expected }), timeoutMs: action === "execute" ? 300000 : 60000, maxBytes: 1024 * 1024 });
-            const output = JSON.parse(raw);
-            if (output.error) throw new Error(`${output.error}. ${output.notice ?? ""}`);
-            return output.result;
+            const transaction = expected && process.platform === "linux" ? createGitTransaction(expected, request) : undefined;
+            try {
+              const paths = transaction ? [transaction.commonDir] : expected ? gitWritePaths(expected, request) : [];
+              const roots = expected ? commandWritableRoots(paths, cwd, agentDir, [getPackageDir()]) : [];
+              const args = expected ? ["--write-roots", JSON.stringify(roots), ...(transaction ? ["--read-roots", JSON.stringify(transaction.readOnlyRoots)] : []), "-c", command] : ["--offline", "-c", command];
+              const raw = await execute(launcher, args, { cwd, signal: owned, input: JSON.stringify({ action, request, expected, transaction: transaction?.commonDir }), timeoutMs: action === "execute" ? 300000 : 60000, maxBytes: 1024 * 1024 });
+              const output = JSON.parse(raw);
+              if (output.error) throw new Error(`${output.error}. ${output.notice ?? ""}`);
+              validate();
+              if (transaction) publishGitTransaction(transaction);
+              return output.result;
+            } finally { if (transaction) closeGitTransaction(transaction); }
           };
           const snapshot: GitSnapshot = await query("inspect");
           const binary = serverIdentity("/usr/bin/git", [], cwd);

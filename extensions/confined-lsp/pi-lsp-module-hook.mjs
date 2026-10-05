@@ -66,6 +66,7 @@ export function findPinnedPiLspRoot(env = process.env) {
 
 function registerPiLspHooks(pinned) {
   if (!piPackageJson) throw new Error("Confined LSP requires the installed Pi SDK compiler");
+  const valueUrl = pathToFileURL(createRequire(piPackageJson).resolve("typebox/value")).href;
   // Native ESM avoids Node 24's CommonJS load-hook resolution gap for ESM-only SDKs.
   const nativeTransform = process.allowedNodeEnvironmentFlags.has("--experimental-transform-types");
   const compiler = nativeTransform ? undefined : createRequire(piPackageJson)("jiti").createJiti(
@@ -82,6 +83,12 @@ function registerPiLspHooks(pinned) {
 
   registerHooks({
     resolve(specifier, context, nextResolve) {
+      if (process.platform === "linux" && specifier === "cross-spawn" && context.parentURL === `${srcDirUrl}lsp-server-client.ts`) {
+        return { url: new URL("piped-spawn.mjs", import.meta.url).href, shortCircuit: true };
+      }
+      if (specifier === "typebox/value" && context.parentURL?.startsWith(srcDirUrl)) {
+        return { url: valueUrl, shortCircuit: true };
+      }
       if (specifier === "@earendil-works/pi-coding-agent" && context.parentURL?.startsWith(srcDirUrl)) {
         return { url: new URL("readonly-settings.mjs", import.meta.url).href, shortCircuit: true };
       }

@@ -19,6 +19,7 @@ export function readServers(agentDir: string, cwd: string): Record<string, Serve
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > 65536) throw new Error("Invalid MCP configuration file");
     const data = JSON.parse(readFileSync(fd, "utf8"));
+    if (data && Object.hasOwn(data, "mcpServers")) throw new Error("This confined MCP adapter uses servers, not native mcpServers. pi mcp commands configure native MCP, not this adapter. See docs/ORCHESTRATION.md.");
     if (!data || typeof data.servers !== "object" || !data.servers || Array.isArray(data.servers)) throw new Error("Expected MCP servers object");
     for (const server of Object.values(data.servers) as Server[]) {
       if (!server || typeof server !== "object" || typeof server.command !== "string" || !server.command ||

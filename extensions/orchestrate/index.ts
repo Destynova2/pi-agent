@@ -39,11 +39,18 @@ Deliver a first usable, tested slice before broad write delegation, then continu
 Give each child the objective, relevant paths, constraints and acceptance check. Check its available capabilities: headless children cannot approve ask-policy tools. Resume an owned child for a follow-up on the same task instead of making it rediscover everything; do not reuse unrelated history. Do not bypass permissions or invent independent review.
 Stop exploring when the next scoped change and its acceptance check are clear. Scouts return findings with source ranges and open questions; verify disputed/high-risk findings without repeating their whole scans. After compaction, resume from the latest checkpoint, remaining requirements and current diff; re-read only changed or missing evidence. Keep original-request/artifact pointers and child resume IDs in checkpoints. Verify the combined result against the original request. Explain the chosen split briefly only when delegation helps; no ceremony for trivial work. Ask before material ambiguity or an unapproved scope change. No commit, push or deployment without explicit user authorization.`;
 
+const JJ_WORKFLOW_PROMPT = `For repository work, prefer jj when available and initialized unless the user/project requires Git. Check once per repository/session: executable (command -v jj, jj --version), Git root, existing jj workspace. A missing .jj directory does not mean jj needs installing. Check parent roots from subdirectories.
+Before each new authorized modification task, use jj_checkpoint when available. It initializes jj/Git only if missing and snapshots preexisting changes before edits; save its full operationId and commitId, plus gitRef, with the task. Reuse that checkpoint during continuation, taking another before a separately requested risky phase. Never reinitialize existing jj. Initialization alone is not a recovery point. Ignored files and external state are excluded; a failed checkpoint is not proof of recoverability. Restoration requires a separate explicit user request.
+Prepare jj without asking whether to proceed with routine checks. If absent, identify the platform/package manager, propose the exact install command and obtain the required installation/capability approval; never bootstrap a package manager or run curl | sh. Verify jj --version after installation.
+Inspect the root and preexisting status. Run jj git init --colocate only through a capability explicitly permitting the metadata writes. Do not initialize during read-only audits, in bare repositories, linked worktrees, submodules, or an existing jj workspace. If no supported capability exists, report the exact host command once; do not attempt a known-forbidden .git write. Never widen sandbox permissions, change Git configuration or use a host workaround. Verify jj root and jj status after initialization within available permissions; do not overwrite preexisting changes.
+Even jj status may snapshot: use --ignore-working-copy for read-only inspection. A jj preference authorizes no Git commit, push, child conversion, or bypass of git_access. Children reuse the parent's preparation and report missing prerequisites. If a checkpoint is blocked, continue read-only work and report the blocker before edits requiring recovery coverage. Gate policy configuration remains a separate prerequisite: initialization does not enable gates.`;
+
 /** Adaptive instructions for ordinary turns, plus explicit orchestration/gate commands. */
 export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", (event) => {
     const sections = event.systemPromptOptions.sections;
     sections.task_completion = TASK_COMPLETION_PROMPT;
+    sections.jj_workflow = JJ_WORKFLOW_PROMPT;
     if (process.env.PI_SUBAGENT_CHILD || !pi.getActiveTools().includes("subagent") || event.prompt.startsWith(ORCHESTRATE_PROMPT)) {
       delete sections.adaptive_delegation;
       return;
@@ -102,7 +109,8 @@ export default function (pi: ExtensionAPI) {
         const signals = ctx.signal ? [active.signal, ctx.signal] : [active.signal];
         // Official binary copied into the agent dir; PI_GATES_BIN remains an escape hatch (tests, alternative install).
         const gatesBin = process.env.PI_GATES_BIN || join(getAgentDir(), "gates/pi-prek");
-        task = runProcess(gatesBin, [mode], {
+        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+        task = runProcess(join(getAgentDir(), "scripts/codex-shell.mjs"), ["-c", `${quote(gatesBin)} ${quote(mode)}`], {
           cwd: ctx.cwd, signal: AbortSignal.any(signals), timeoutMs: 2 * 60 * 60 * 1000,
           maxBytes: 8 * 1024 * 1024,
         });

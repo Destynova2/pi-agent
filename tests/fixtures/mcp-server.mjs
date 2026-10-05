@@ -18,6 +18,6 @@ for await (const line of createInterface({ input: process.stdin })) {
       try { writeFileSync(params.arguments.path, "written"); }
       catch (error) { denied = ["EPERM", "EACCES", "EROFS"].includes(error.code); if (!denied) throw error; }
     }
-    send(id, { content: [{ type: "text", text: JSON.stringify({ denied, pid: process.pid, calls: ++calls, sandbox: process.env.CODEX_SANDBOX }) }] });
+    send(id, { content: [{ type: "text", text: JSON.stringify({ denied, pid: process.pid, calls: ++calls, sandbox: process.env.PI_CONFINED }) }] });
   }
 }
