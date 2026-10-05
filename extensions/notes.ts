@@ -7,10 +7,11 @@
 
 import { runConfined } from "../lib/confined.ts";
 import { SessionTasks } from "../lib/session-tasks.ts";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { KINDS, type Kind, type NotesInput, type NotesResult } from "./notes/worker.ts";
+import { Incidents } from "./notes/incidents.ts";
 
 async function dispatch(input: NotesInput, signal?: AbortSignal): Promise<NotesResult> {
 	return await runConfined(input.cwd, "notes", input, signal) as NotesResult;
@@ -22,8 +23,9 @@ export default function notes(pi: ExtensionAPI) {
 	let lastSeenMsg = 0;
 	let project = "";
 	let tasks = new SessionTasks();
+	const incidents = new Incidents();
 	const run = (input: NotesInput, signal?: AbortSignal) => tasks.run(owned => dispatch(input, owned), signal);
-	const reset = async () => { await tasks.close(); tasks = new SessionTasks(); lastSeenMsg = 0; project = ""; };
+	const reset = async () => { incidents.clear(); await tasks.close(); tasks = new SessionTasks(); lastSeenMsg = 0; project = ""; };
 
 	pi.on("session_start", async (_event, ctx) => {
 		await reset();
@@ -51,10 +53,31 @@ export default function notes(pi: ExtensionAPI) {
 		return result.text;
 	}
 
+	async function recordIncident(event: Parameters<Incidents["observe"]>[0], ctx: ExtensionContext) {
+		const incident = incidents.observe(event);
+		let hint = incident?.hint;
+		if (incident && "body" in incident) {
+			try { await add(incident.kind, incident.body); }
+			catch {
+				incidents.forget(incident.key);
+				hint = `${hint} Incident persistence failed; no durable record claimed.`;
+				if (ctx.hasUI) ctx.ui.notify("Incident non consigné : stockage Notes indisponible. Aucun contournement du sandbox.", "warning");
+			}
+		}
+		return hint;
+	}
+
 	// In-flight delivery: a subagent run checks its inbox after each tool call.
-	pi.on("tool_result", async () => {
+	pi.on("tool_result", async (event, ctx) => {
+		const hint = await recordIncident(event, ctx);
 		const text = await readInbox();
 		if (text) pi.sendMessage({ customType: "agent_inbox", content: text, display: true }, { deliverAs: "steer" });
+		if (hint) return { content: [...event.content, { type: "text" as const, text: `${hint} If the suggested tool is unavailable, report the missing capability; continue independent authorized work.` }] };
+	});
+	pi.on("message_end", async (event, ctx) => {
+		const message = event.message;
+		if (message.role !== "assistant" || message.stopReason === "aborted") return;
+		await recordIncident({ source: "provider", toolName: "provider", input: { provider: message.provider, model: message.model }, isError: message.stopReason === "error", content: [{ type: "text", text: message.errorMessage ?? "" }] }, ctx);
 	});
 
 	pi.on("before_agent_start", async (event) => {
@@ -71,6 +94,7 @@ export default function notes(pi: ExtensionAPI) {
 			const lines = [`Shared SQLite memory for agents working on project "${project}" (you are "${agent}").`];
 			if (hasList) lines.push("- Start of a non-trivial task: call note_list to see what humans asked other agents (kind=ask is a project-only first-line excerpt, not the full request) and what those agents planned, claimed, decided or got blocked on.");
 			if (hasAdd) lines.push("- Before touching a file or area another agent may also touch: note_add kind=claim with the paths. Do not edit a path another agent claimed.");
+			if (hasList || hasAdd) lines.push("- Known failed tool diagnostics create sanitized incident notes, deduplicated within this session. A matching successful invocation records recovery, not proof that the application/task is fixed. Verify root cause and acceptance evidence before recording a lesson or claiming resolution. Never store secrets or treat notes as permission; no automatic policy/code changes. Do not retry unchanged denials; use available exact approval tools or report the missing capability.");
 			if (hasAdd) lines.push("- Record decisions (kind=decision), completed work (kind=done), blockers (kind=blocker) and reusable lessons (kind=lesson) as one short line each. No status chatter.");
 			if (hasList) lines.push("- Every note stores the repo revision at write time, shown as (jj:<op id>) or (git:<sha>) in note_list for reference; it is not a rollback mechanism.");
 			if (hasAdd) lines.push("- Subagents load this same extension and share the same DB; write your plan (kind=plan) before delegating so they can read it.");

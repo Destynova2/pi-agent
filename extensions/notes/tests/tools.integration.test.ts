@@ -40,7 +40,7 @@ async function setup(activeTools: string[]) {
 	} as unknown as ExtensionAPI);
 	await events.get("session_start")!({ type: "session_start", reason: "startup" }, { cwd });
 	return {
-		cwd, tools,
+		cwd, tools, events,
 		async cleanup() {
 			await events.get("session_shutdown")?.({}, { cwd });
 			if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
@@ -58,6 +58,27 @@ async function setup(activeTools: string[]) {
 		},
 	};
 }
+
+test("incidents persist sanitized evidence through the confined worker and recover only on a matching result", async () => {
+	const t = await setup(["note_list", "note_add"]);
+	try {
+		const ctx = { cwd: t.cwd, hasUI: false };
+		const event = { toolName: "bash", toolCallId: "fixture", input: { command: "podman ps --secret=private-input" }, isError: true, content: [{ type: "text", text: "operation not permitted: private-output" }] };
+		await t.events.get("tool_result")!(event, ctx);
+		await t.events.get("tool_result")!(event, ctx);
+		await t.events.get("tool_result")!({ ...event, isError: false }, ctx);
+		await t.events.get("message_end")!({ message: { role: "assistant", provider: "fixture", model: "fixture", stopReason: "error", errorMessage: "429 rate_limit_error private-provider" } }, ctx);
+		const db = new DatabaseSync(join(t.cwd, ".agent/notes.db"), { readOnly: true });
+		try {
+			const rows = db.prepare("SELECT kind, body FROM notes WHERE body LIKE 'incident=%' ORDER BY id").all();
+			assert.equal(rows.length, 3);
+			assert.equal(rows[0].kind, "blocker"); assert.match(String(rows[0].body), /status=open category=permission/);
+			assert.equal(rows[1].kind, "done"); assert.match(String(rows[1].body), /status=recovered/);
+			assert.match(String(rows[2].body), /provider-rate-limit/);
+			assert.doesNotMatch(JSON.stringify(rows), /private-|podman ps/);
+		} finally { db.close(); }
+	} finally { await t.cleanup(); }
+});
 
 test("canceled note calls never start a worker or create storage", async () => {
 	const t = await setup(["note_add"]);
