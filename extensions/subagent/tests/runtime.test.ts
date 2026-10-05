@@ -50,7 +50,7 @@ if (task.includes('SIGNAL')) {
 }
 `;
 
-async function withTool(fn: (execute: (...args: any[]) => Promise<any>, root: string, render: (result: any) => string) => Promise<void>, policy?: Record<string, string>) {
+async function withTool(fn: (execute: (...args: any[]) => Promise<any>, root: string, render: (result: any) => string) => Promise<void>, activeTools = ["read", "write", "bash", "subagent"]) {
   const root = await mkdtemp(join(tmpdir(), "pi-subagent-runtime-"));
   const oldDir = process.env.PI_CODING_AGENT_DIR;
   const oldChild = process.env.PI_SUBAGENT_CHILD;
@@ -60,11 +60,10 @@ async function withTool(fn: (execute: (...args: any[]) => Promise<any>, root: st
     delete process.env.PI_SUBAGENT_CHILD;
     await mkdir(join(root, "agent/agents"), { recursive: true });
     await writeFile(join(root, "agent/agents/fixture.md"), "---\nname: fixture\ndescription: offline process fixture\nmodel: fixture/model\n---\nReturn the requested fixture.\n");
-    if (policy) await writeFile(join(root, "agent/tool-policy.json"), JSON.stringify(policy));
     process.argv[1] = join(root, "fake-pi.mjs");
     await writeFile(process.argv[1], fixture);
     let tool: any;
-    register({ on: () => {}, registerTool: (value: any) => { tool = value; }, getActiveTools: () => ["read", "write", "bash", "subagent"] } as any);
+    register({ on: () => {}, registerTool: (value: any) => { tool = value; }, getActiveTools: () => activeTools } as any);
     const execute = (params: any, signal?: AbortSignal, onUpdate?: any) => tool.execute("test", params, signal, onUpdate, { cwd: root, hasUI: false, isProjectTrusted: () => true, sessionManager: { getSessionId: () => "parent-test", getSessionFile: () => undefined } });
     const render = (result: any) => tool.renderResult(result, { expanded: false }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, {}).render(120).join("\n");
     await fn(execute, root, render);
@@ -92,7 +91,7 @@ test("file task transport handles large input, split UTF-8, all text blocks and 
     assert.match(env.name, /^fixture-run-/);
     assert.ok(env.args.includes("--no-approve"));
     assert.ok(!env.args.includes("--no-session"));
-    assert.equal(env.args[env.args.indexOf("--tools") + 1], "read,write", "headless children cannot gain ask/deny tools or recurse");
+    assert.equal(env.args[env.args.indexOf("--tools") + 1], "read,write,bash", "children inherit only active confined tools, without recursion");
     assert.equal(env.args[env.args.indexOf("--session") + 1], details.sessionPath);
     const resumed = await execute({ agent: "fixture", task: "next task", resume: details.resumeId });
     assert.ok(!resumed.isError);
@@ -206,14 +205,14 @@ test("already canceled parallel requests never spawn queued children", async () 
   });
 });
 
-test("explicit empty/malformed role tools do not inherit; requested tools cannot widen the parent policy", async () => {
+test("explicit empty/malformed role tools do not inherit; requested tools cannot widen parent capabilities", async () => {
   await withTool(async (execute, root) => {
     for (const value of ["[]", "123", "[read, bash, subagent, hidden_tool]"]) {
       await writeFile(join(root, "agent/agents/fixture.md"), `---\nname: fixture\ndescription: fixture\ntools: ${value}\n---\nRead only.\n`);
       const result = await execute({ agent: "fixture", task: "ok" });
       assert.ok(!result.isError);
       const { args } = JSON.parse(await readFile(join(root, "child-env"), "utf8"));
-      if (value.startsWith("[read")) assert.equal(args[args.indexOf("--tools") + 1], "read");
+      if (value.startsWith("[read")) assert.equal(args[args.indexOf("--tools") + 1], "read,bash");
       else assert.ok(args.includes("--no-tools"));
     }
   });
@@ -232,7 +231,7 @@ test("headless project agents cannot bypass confirmation with flags or general p
   });
 });
 
-test("task tools are inherited but a model cannot widen scope through child cwd", async () => {
+test("confined tools are inherited but a model cannot widen scope through child cwd", async () => {
   const outside = await mkdtemp(join(tmpdir(), "pi-child-outside-"));
   try {
     await withTool(async (execute, root) => {
@@ -250,24 +249,22 @@ test("task tools are inherited but a model cannot widen scope through child cwd"
       assert.ok(!result.isError);
       const { args } = JSON.parse(await readFile(join(root, "src/child-env"), "utf8"));
       assert.equal(args[args.indexOf("--tools") + 1], "read,write,bash");
-    }, { read: "task", write: "task", bash: "task", subagent: "allow" });
+    });
   } finally { await rm(outside, { recursive: true, force: true }); }
 });
 
-test("delegation re-reads policy changes without recreating the extension", async () => {
+test("delegation inherits live confined capabilities, not a legacy policy file", async () => {
+  const active = ["read", "subagent", "lsp", "mcp", "web_search", "ci_watch", "dunst", "request_network_access", "request_command_access", "unknown"];
   await withTool(async (execute, root) => {
+    await writeFile(join(root, "agent/tool-policy.json"), '{broken');
     await execute({ agent: "fixture", task: "ok" });
     const initial = JSON.parse(await readFile(join(root, "child-env"), "utf8"));
-    assert.equal(initial.args[initial.args.indexOf("--tools") + 1], "read,write");
-    await writeFile(join(root, "agent/tool-policy.json"), '{"bash":"allow","read":"deny","write":"deny"}');
+    assert.equal(initial.args[initial.args.indexOf("--tools") + 1], "read,lsp,mcp,web_search,ci_watch");
+    active.splice(0, active.length, "bash", "note_list", "project_graph");
     await execute({ agent: "fixture", task: "ok" });
     const updated = JSON.parse(await readFile(join(root, "child-env"), "utf8"));
-    assert.equal(updated.args[updated.args.indexOf("--tools") + 1], "bash");
-    const before = await readFile(join(root, "started"), "utf8");
-    await writeFile(join(root, "agent/tool-policy.json"), '{broken');
-    await assert.rejects(execute({ agent: "fixture", task: "ok" }), /policy failed to load/);
-    assert.equal(await readFile(join(root, "started"), "utf8"), before);
-  });
+    assert.equal(updated.args[updated.args.indexOf("--tools") + 1], "bash,note_list,project_graph");
+  }, active);
 });
 
 test("UI history stays bounded while the full trace preserves earlier turns", async () => {

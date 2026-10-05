@@ -11,28 +11,33 @@ function fixture() {
   const agent = join(root, "agent"), cwd = join(root, "project");
   mkdirSync(join(agent, "scripts"), { recursive: true });
   mkdirSync(cwd);
-  for (const name of ["codex-shell.mjs", "codex-tool.mjs", "codex-network.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(agent, "scripts", name));
+  for (const name of ["codex-shell.mjs", "codex-tool.mjs", "codex-network.mjs", "metal-backend.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(agent, "scripts", name));
   const launcher = join(agent, "scripts/codex-shell.mjs");
   chmodSync(launcher, 0o755);
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ shellPath: launcher }));
   return { root, agent, cwd, launcher, worker: join(agent, "scripts/codex-tool.mjs"), sdk: join(getPackageDir(), "dist/index.js") };
 }
 
-test("strict policy never asks, ignores legacy exceptions, and fails closed before session load", async () => {
+test("routine strict calls never ask, ignore legacy exceptions, and fail closed before session load", async () => {
   const f = fixture(), previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = f.agent;
   try {
     const handlers = new Map(), tools = new Map();
-    register({ on: (name, handler) => handlers.set(name, handler), registerTool: tool => tools.set(tool.name, tool), registerCommand() {} });
+    register({ on: (name, handler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerTool: tool => tools.set(tool.name, tool), registerCommand() {}, getActiveTools: () => [...STRICT_TOOLS] });
     const ctx = { cwd: f.cwd, isProjectTrusted: () => false, hasUI: true, ui: { confirm() { assert.fail("must never ask"); } } };
-    const call = name => handlers.get("tool_call")({ toolName: name }, ctx);
+    const call = name => {
+      for (const handler of handlers.get("tool_call")) {
+        const result = handler({ toolName: name, input: {} }, ctx);
+        if (result?.block) return result;
+      }
+    };
     assert.equal(call("bash").block, true);
-    assert.deepEqual(handlers.get("project_trust")({}), { trusted: "no" });
-    handlers.get("session_start")({}, ctx);
+    assert.deepEqual(handlers.get("project_trust")[0]({}), { trusted: "no" });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
     writeFileSync(join(f.agent, "tool-policy.json"), '{"*":"allow"}');
     for (const name of STRICT_TOOLS) assert.equal(call(name), undefined, name);
-    for (const name of ["lsp", "subagent", "web_fetch", "dunst", "note_add", "note_list", "project_graph", "git_inspect", "unknown", "codemode"]) assert.equal(call(name).block, true, name);
-    assert.deepEqual([...tools.keys()].sort(), ["edit", "find", "grep", "ls", "read", "request_network_access", "write"]);
+    for (const name of ["unknown", "codemode", "remote_mcp"]) assert.equal(call(name).block, true, name);
+    assert.deepEqual([...tools.keys()].sort(), ["edit", "find", "git_access", "grep", "jj_checkpoint", "ls", "model_catalog", "read", "request_command_access", "request_host_access", "request_network_access", "write"]);
     ctx.isProjectTrusted = () => true;
     assert.equal(call("write").block, true, "trusted project extensions must not run on the host");
     ctx.isProjectTrusted = () => false;
@@ -69,7 +74,7 @@ test("native file tools run inside Codex: writes, edits, symlinks, metadata and 
     await assert.rejects(call("edit", { path: "link", edits: [{ oldText: "outside", newText: "bad" }] }), /not permitted|denied|read-only|\b(?:EACCES|EPERM|EROFS)\b/i);
     assert.equal(readFileSync(join(f.root, "outside"), "utf8"), "outside stays unchanged");
     assert.match((await call("read", { path: "../outside" })).content[0].text, /outside stays/);
-    await assert.rejects(call("write", { path: "canceled", content: "bad" }, AbortSignal.abort()), /aborted/);
+    await assert.rejects(call("write", { path: "canceled", content: "bad" }, AbortSignal.abort()), /canceled/);
     process.env.PI_CODEX_SANDBOX_BIN = join(f.root, "missing");
     await assert.rejects(call("write", { path: "unconfined", content: "bad" }));
     assert.equal(existsSync(join(f.cwd, "unconfined")), false);

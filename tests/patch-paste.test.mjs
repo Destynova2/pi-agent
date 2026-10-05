@@ -254,6 +254,14 @@ test("patchPaste(): accepts the pinned 0.99.1 version without accepting arbitrar
   await assert.rejects(() => patchPaste(root), /chunk-AXPY26X7/);
 });
 
+test("patchPaste(): accepts pinned 1.0.1 and selects its own required bundle", async (t) => {
+  const target = makeSyntheticTarget({ id: "runtime-101", required: true, body: "hello" });
+  const root = await buildSyntheticRoot([target], { version: "1.0.1" });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.equal((await patchPaste(root, { targets: [target] })).version, "1.0.1");
+  await assert.rejects(() => patchPaste(root), /chunk-6FX7UEPL/);
+});
+
 test("patchPaste(): fails closed on a package.json version mismatch", async (t) => {
   const required = makeSyntheticTarget({ id: "req-b", required: true, body: "hello" });
   const root = await buildSyntheticRoot([required], { version: "0.0.1" });
@@ -314,6 +322,8 @@ test("patchPaste(): patches required + present optional targets, idempotent on r
   assert.deepEqual(second.alreadyPatched.sort(), ["opt-g", "req-g"]);
   const stillPatched = await readFile(join(root, required.relativePath), "utf8");
   assert.equal(stillPatched, patchedRequired, "replay must not rewrite an already-patched file");
+  await writeFile(join(root, required.relativePath), `${stillPatched}\n// tampered after patch\n`);
+  await assert.rejects(() => patchPaste(root, { targets: [required, optional] }), /modified patched artifact/);
 });
 
 test("patchPaste(): missing optional target is skipped without error", async (t) => {

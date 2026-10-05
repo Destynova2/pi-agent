@@ -1,5 +1,5 @@
 // Data-only description of the bracketed-paste keepalive patch for npm
-// @earendil-works/pi-coding-agent 0.87.1 and 0.99.1 (private runtime paste fix).
+// @earendil-works/pi-coding-agent 0.87.1, 0.99.1 and 1.0.0–1.0.3 (private runtime paste fix).
 // No logic here on purpose: scripts/patch-paste.mjs owns validation/writes,
 // this file only pins the exact byte-for-byte transform for one known version.
 //
@@ -127,9 +127,33 @@ export const TARGETS = [
 	},
 ];
 
-// Verified against the published 0.99.1 artifacts; all replacement anchors are unchanged.
+// Verified against the published artifacts; all replacement anchors are unchanged.
 export const TARGETS_BY_VERSION = {
+	"1.0.3": TARGETS.map((target) => ({
+		...target,
+		...(target.id === "bundled-cli-chunk"
+			? { relativePath: "dist/bundle/chunks/chunk-AXOERKKW.js", pristineSha256: "adb0198a720bf829a23abc4f89e81dee16d0d2f803117e33e11e22f880e4e1d2" }
+			: { pristineSha256: "e3a594cb638d57da4e195bee6a4ad10e4ebeb3335dbf2bd9990d913ef03ee4fb" }),
+	})),
+	"1.0.2": TARGETS.map((target) => ({
+		...target,
+		...(target.id === "bundled-cli-chunk"
+			? { relativePath: "dist/bundle/chunks/chunk-6FX7UEPL.js", pristineSha256: "4f7b77ab6db82671390fddbe157b3ae53b1c5e537233fec1f02816cd45367bb9" }
+			: { pristineSha256: "e3a594cb638d57da4e195bee6a4ad10e4ebeb3335dbf2bd9990d913ef03ee4fb" }),
+	})),
+	"1.0.1": TARGETS.map((target) => ({
+		...target,
+		...(target.id === "bundled-cli-chunk"
+			? { relativePath: "dist/bundle/chunks/chunk-6FX7UEPL.js", pristineSha256: "4f7b77ab6db82671390fddbe157b3ae53b1c5e537233fec1f02816cd45367bb9" }
+			: { pristineSha256: "e3a594cb638d57da4e195bee6a4ad10e4ebeb3335dbf2bd9990d913ef03ee4fb" }),
+	})),
 	[EXPECTED_VERSION]: TARGETS,
+	"1.0.0": TARGETS.map((target) => ({
+		...target,
+		...(target.id === "bundled-cli-chunk"
+			? { relativePath: "dist/bundle/chunks/chunk-2KTBZM5G.js", pristineSha256: "433a8756206a1a7096a280ce33e6f2406b354596b51fb1f5d61db9d8f8e50d74" }
+			: { pristineSha256: "e3a594cb638d57da4e195bee6a4ad10e4ebeb3335dbf2bd9990d913ef03ee4fb" }),
+	})),
 	"0.99.1": TARGETS.map((target) => ({
 		...target,
 		...(target.id === "bundled-cli-chunk"

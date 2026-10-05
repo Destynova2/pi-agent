@@ -16,7 +16,7 @@ test("real managed proxy permits only allowed hosts, blocks direct sockets, and 
   const server = createServer(socket => socket.destroy());
   try {
     for (const path of [join(agent, "scripts"), join(agent, "network-grants"), cwd, home, join(root, "outside")]) mkdirSync(path, { recursive: true });
-    for (const name of ["codex-shell.mjs", "codex-network.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(agent, "scripts", name));
+    for (const name of ["codex-shell.mjs", "codex-network.mjs", "metal-backend.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(agent, "scripts", name));
     const launcher = join(agent, "scripts/codex-shell.mjs");
     chmodSync(launcher, 0o755);
     writeFileSync(join(agent, "network-policy.json"), JSON.stringify({ allow: ["registry.npmjs.org"] }));

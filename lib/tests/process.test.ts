@@ -71,6 +71,13 @@ test("Node cancellation → Python runner → distinct hook group", async () => 
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
+test("stdin transports a bounded request and closes at EOF", async () => {
+  const input = JSON.stringify({ text: "é".repeat(100000) });
+  assert.equal(await runProcess(process.execPath, ["-e", "process.stdout.write(require('fs').readFileSync(0))"], {
+    cwd: tmpdir(), input,
+  }), input);
+});
+
 test("bounded output, launch error and success", async () => {
   const cwd = tmpdir();
   assert.equal(await runProcess(process.execPath, ["-e", "console.log('OK')"], { cwd }), "OK");

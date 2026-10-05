@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { commandExists } from "./lib.mjs";
+import { sandboxBackend } from "./codex-shell.mjs";
 
 const EXCLUDE_DIRS = new Set(["node_modules", ".git", "bin", "git", "npm", "sessions", ".agent", "skills"]);
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -96,13 +97,20 @@ async function main() {
   }
 
   const useBootstrap = shouldBootstrap(args) && existsSync(BOOTSTRAP_PATH);
+  if (useBootstrap && !(await import("../lib/resolve-pi.mjs")).piPackageJson) {
+    console.error("test: Pi SDK not found. If pi is a shell wrapper, set PI_PACKAGE_JSON to the installed @earendil-works/pi-coding-agent/package.json (see INSTALLATION.md). No tests executed.");
+    process.exitCode = 1;
+    return;
+  }
 
   console.log(`test: ${files.length} file(s)${args.integration ? " (full suite, PI_TEST_INTEGRATION=1)" : ""}`);
-  const nodeArgs = ["--test"];
+  // Native fixtures spawn their own process trees, compilers and sandbox brokers.
+  // Bound file concurrency so startup is not starved by one worker per CPU.
+  const nodeArgs = ["--test", "--test-concurrency=4"];
   if (useBootstrap) nodeArgs.push("--import", BOOTSTRAP_PATH);
   nodeArgs.push(...files);
 
-  const env = args.integration ? { ...process.env, PI_TEST_INTEGRATION: "1" } : process.env;
+  const env = { ...process.env, PI_CODEX_SANDBOX_BIN: sandboxBackend(), ...(args.integration ? { PI_TEST_INTEGRATION: "1" } : {}) };
   const result = spawnSync(process.execPath, nodeArgs, { stdio: "inherit", env });
   let exitCode = result.status ?? 1;
 

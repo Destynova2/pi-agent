@@ -6,11 +6,16 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import { isSubPath, isSymlink, pathExists } from "./lib.mjs";
 
 export const MANAGED_DIRS = ["agents", "extensions", "lib", "gates"];
-export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs"];
-export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json"];
+export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs",
+  "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", "scripts/web-read-worker.mjs", "scripts/jj-checkpoint.mjs",
+  ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`),
+];
+const RETIRED_FILES = ["extensions/model-fallback/index.ts", "tool-policy.json", "extensions/tool-policy/core.ts", "extensions/tool-policy/task.ts", "extensions/tool-policy/tests/policy.test.ts", "extensions/tool-policy/tests/task.test.ts", "extensions/tool-policy/tests/skills.test.ts"];
+export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json", "tool-policy.json"];
 
 const DEFAULT_SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -182,8 +187,11 @@ function validateSettingsSchema(value, label) {
     throw new Error(`refuse: ${label} is not a valid JSON object (${label})`);
   }
   if ("packages" in value) {
-    const ok = Array.isArray(value.packages) && value.packages.every((p) => typeof p === "string");
-    if (!ok) throw new Error(`refuse: ${label}.packages must be an array of strings`);
+    const ok = Array.isArray(value.packages) && value.packages.every((p) => typeof p === "string" ||
+      (p && typeof p === "object" && !Array.isArray(p) && typeof p.source === "string" &&
+        Object.entries(p).every(([key, entry]) => key === "source" ||
+          (["extensions", "skills", "prompts", "themes"].includes(key) && Array.isArray(entry) && entry.every(item => typeof item === "string")))));
+    if (!ok) throw new Error(`refuse: ${label}.packages must contain strings or filtered package objects`);
   }
 }
 
@@ -207,6 +215,7 @@ async function readSettings(path, label) {
  * not a version marker: it is not stripped.
  */
 export function packageIdentity(spec) {
+  if (typeof spec !== "string") spec = spec.source;
   const at = spec.lastIndexOf("@");
   if (at <= 0) return spec;
   const before = spec[at - 1];
@@ -222,6 +231,27 @@ export function packageIdentity(spec) {
  */
 export function mergeSettings(sourceSettings, targetSettings) {
   const merged = { ...sourceSettings, ...targetSettings };
+  if (sourceSettings.lsp) {
+    merged.lsp = { ...sourceSettings.lsp, ...targetSettings.lsp,
+      servers: { ...sourceSettings.lsp.servers, ...targetSettings.lsp?.servers } };
+    const legacy = {
+      command: "npx", args: ["--no-install", "tsc", "--lsp", "--stdio"],
+      languages: [{ extensions: [".ts", ".mts", ".cts"], languageId: "typescript" }, { extensions: [".tsx"], languageId: "typescriptreact" }],
+      requireRootMarker: true, rootMarkers: ["tsconfig.json"],
+    };
+    if (sourceSettings.lsp.servers?.typescript && isDeepStrictEqual(targetSettings.lsp?.servers?.typescript, legacy)) {
+      merged.lsp.servers.typescript = sourceSettings.lsp.servers.typescript;
+    }
+  }
+  // Retire the old virtual router, not an unrelated user-selected model or native retry policy.
+  if (merged.defaultProvider === "fallback" && merged.defaultModel === "anthropic-astra") {
+    delete merged.defaultProvider;
+    delete merged.defaultModel;
+    if (sourceSettings.defaultProvider && sourceSettings.defaultProvider !== "fallback") {
+      merged.defaultProvider = sourceSettings.defaultProvider;
+      if (sourceSettings.defaultModel) merged.defaultModel = sourceSettings.defaultModel;
+    }
+  }
   const sourcePackages = Array.isArray(sourceSettings.packages) ? sourceSettings.packages : [];
   const targetPackages = Array.isArray(targetSettings.packages) ? targetSettings.packages : [];
   const managedIdentities = new Set(sourcePackages.map(packageIdentity));
@@ -233,7 +263,8 @@ export function mergeSettings(sourceSettings, targetSettings) {
 function installPackages(packages, target, env) {
   const failures = [];
   const installed = [];
-  for (const source of packages) {
+  for (const entry of packages) {
+    const source = typeof entry === "string" ? entry : entry.source;
     const res = spawnSync("pi", ["install", source, "--no-approve"], {
       env: { ...env, PI_CODING_AGENT_DIR: target },
       stdio: "pipe",
@@ -280,6 +311,12 @@ export async function runInstall({
   const mergedSettings = mergeSettings(sourceSettings, targetSettings);
   // Strict tool execution has no unrestricted-shell mode.
   mergedSettings.shellPath = join(resolvedTarget, "scripts/codex-shell.mjs");
+  const typescript = mergedSettings.lsp?.servers?.typescript;
+  if (typescript?.command === "tsc" && isDeepStrictEqual(typescript, sourceSettings.lsp?.servers?.typescript)) {
+    // Resolve the pinned server from the protected installation, never project PATH/npx.
+    mergedSettings.lsp.servers.typescript = { ...typescript, command: process.execPath,
+      args: [join(resolvedTarget, "npm/node_modules/typescript/bin/tsc"), ...typescript.args] };
+  }
 
   await mkdir(resolvedTarget, { recursive: true });
   const backupDir = await backupExisting(resolvedTarget, MANAGED_ENTRIES);
@@ -293,16 +330,21 @@ export async function runInstall({
     for (const file of MANAGED_FILES) {
       if (await syncFile(join(sourceRoot, file), join(resolvedTarget, file))) {
         syncedFiles.push(file);
-        if (file === "scripts/codex-shell.mjs") await chmod(join(resolvedTarget, file), 0o755);
+        if (file === "scripts/codex-shell.mjs" || file.startsWith("scripts/git-hooks/")) await chmod(join(resolvedTarget, file), 0o755);
       }
     }
 
+    // Retire only known legacy files, after backup; preserve personal extensions.
+    for (const file of RETIRED_FILES) await rm(join(resolvedTarget, file), { force: true });
     await writeFile(join(resolvedTarget, "settings.json"), `${JSON.stringify(mergedSettings, null, 2)}\n`);
 
     let installed = [];
     let packageFailures = [];
     if (!noPackages) {
       ({ installed, failures: packageFailures } = installPackages(sourceSettings.packages ?? [], resolvedTarget, env));
+      // pi install may rewrite package entries; preserve the resource filters selected above.
+      const installedSettings = await readSettings(join(resolvedTarget, "settings.json"), "installed settings.json");
+      await writeFile(join(resolvedTarget, "settings.json"), `${JSON.stringify({ ...installedSettings, packages: mergedSettings.packages }, null, 2)}\n`);
     }
 
     return {

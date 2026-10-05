@@ -1,0 +1,35 @@
+--- a/codex-rs/linux-sandbox/src/bwrap.rs
++++ b/codex-rs/linux-sandbox/src/bwrap.rs
+@@ -606,7 +606,13 @@
+             .filter(|path| !unreadable_paths.contains(path))
+             .filter(|path| !missing_auto_metadata_read_only_project_root_subpaths.contains(path))
+             .collect();
+-        let protected_metadata_names = writable_root.protected_metadata_names.clone();
++        // A bind-mounted regular file cannot contain protected metadata children.
++        // Directory roots still receive every metadata protection.
++        let protected_metadata_names = if mount_root.is_file() {
++            Vec::new()
++        } else {
++            writable_root.protected_metadata_names.clone()
++        };
+         append_metadata_path_masks_for_writable_root(
+             &mut read_only_subpaths,
+             root,
+@@ -2450,6 +2456,17 @@
+         let allowed_dir_str = path_to_string(allowed_dir.as_path());
+         let allowed_file_str = path_to_string(allowed_file.as_path());
+
++        let file_children: Vec<_> = args
++            .args
++            .iter()
++            .filter(|arg| arg.starts_with(&format!("{allowed_file_str}/")))
++            .collect();
++        assert_eq!(
++            file_children,
++            Vec::<&String>::new(),
++            "a writable regular file cannot contain metadata mount targets"
++        );
++
+         assert!(
+             args.args
+                 .windows(2)

@@ -1,11 +1,21 @@
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { cacheDirectory, command } from '../core.ts';
 import registerExtension from '../index.ts';
+
+// Integration-only: extensions/graphify/index.ts dispatches every op (including the
+// session_start automatic-index root/graph calls this file exercises) through
+// lib/confined.ts's runConfined, which shells out to the real codex sandbox
+// (scripts/codex-shell.mjs) with no in-process fallback. That needs a working,
+// non-nested sandbox-exec and a codex binary (PI_CODEX_SANDBOX_BIN or ~/.local/bin/codex);
+// inside another sandbox it fails with EPERM instead of indexing, which this suite would
+// otherwise misread as "no repo found" for the 'simple'/'nested' cases. Run via
+// `npm run test:integration`, not the default suite.
 
 // index.ts imports the bare specifier "typebox" as a value (not `import type`), so it must resolve
 // at runtime. "typebox" is not a dependency of this test file or of the agent repo: it ships with
@@ -14,7 +24,7 @@ import registerExtension from '../index.ts';
 // version did, and a security review rejected it for loading code from a runtime-built string).
 // Resolution is instead the job of the static bootstrap module tests/resolve-pi.mjs, which uses
 // node:module.registerHooks with a fixed, file-based (not string-generated) implementation. Run
-// this suite as: node --import ../../../tests/resolve-pi.mjs --test extensions/graphify/tests/startup.test.mjs
+// this suite as: node --import ../../../tests/resolve-pi.mjs --test extensions/graphify/tests/startup.integration.test.mjs
 // (or via the repo test runner, which wires that --import flag). Without that bootstrap in the
 // process, the static `import registerExtension from '../index.ts'` above fails fast with a
 // module-not-found error instead of silently skipping, because a required dependency of the code
@@ -37,7 +47,15 @@ for (const mode of ['simple', 'nested', 'outside']) {
   test(`startup/reload: ${mode} has no automatic root-selection prompt`, async (t) => {
     if (!requireDependency(t, 'git', gitFound)) return;
     if (mode !== 'outside' && !requireDependency(t, 'graphify', graphifyFound)) return;
-    const root = await realpath(await mkdtemp(join(tmpdir(), 'pi-auto-startup-')));
+    const temp = await realpath(await mkdtemp(join(tmpdir(), 'pi-auto-startup-')));
+    const root = join(temp, 'project'), home = join(temp, 'home');
+    await mkdir(root); await mkdir(home);
+    const previousHome = process.env.HOME;
+    const previousBackend = process.env.PI_CODEX_SANDBOX_BIN;
+    process.env.PI_CODEX_SANDBOX_BIN = await realpath(previousBackend ?? join(homedir(), '.local/bin/codex'));
+    process.env.HOME = home;
+    const cache = cacheDirectory(root, join(home, '.cache/pi-codex-sandbox', createHash('sha256').update(root).digest('hex'), 'tmp/pi-graphify'));
+    const graphPath = join(cache, 'graphify-out/graph.json');
     const events = new Map();
     const notifications = [];
     let questions = 0;
@@ -72,14 +90,13 @@ for (const mode of ['simple', 'nested', 'outside']) {
         assert.equal(questions, 0);
         if (mode === 'outside') {
           assert.equal(finalStatus, undefined);
-          await assert.rejects(access(join(cacheDirectory(root), 'graphify-out/graph.json')));
+          await assert.rejects(access(graphPath));
         } else {
           assert.match(finalStatus, /Graphify ready/);
-          await access(join(cacheDirectory(root), 'graphify-out/graph.json'));
+          await access(graphPath);
         }
       }
       if (mode === 'nested') {
-        const graphPath = join(cacheDirectory(root), 'graphify-out/graph.json');
         const before = await readFile(graphPath, 'utf8');
         assert.doesNotMatch(before, /excluded_child_fixture/);
         await graphifyCommand.handler('--include-nested', ctx);
@@ -92,8 +109,9 @@ for (const mode of ['simple', 'nested', 'outside']) {
       await events.get('session_shutdown')?.({}, ctx);
       if (previous === undefined) delete process.env.PI_GRAPHIFY_AUTO;
       else process.env.PI_GRAPHIFY_AUTO = previous;
-      await rm(cacheDirectory(root), { recursive: true, force: true });
-      await rm(root, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      if (previousBackend === undefined) delete process.env.PI_CODEX_SANDBOX_BIN; else process.env.PI_CODEX_SANDBOX_BIN = previousBackend;
+      await rm(temp, { recursive: true, force: true });
     }
   });
 }

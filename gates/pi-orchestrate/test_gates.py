@@ -7,8 +7,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from gates import run
+from gates import cache_directory, run
 
 GATES = Path(__file__).with_name('gates.py')
 
@@ -19,7 +20,9 @@ class GatesTest(unittest.TestCase):
         self.home = Path(self.temp.name).resolve()
         self.repo = self.home / 'repo'
         self.repo.mkdir()
-        self.env = dict(os.environ, HOME=str(self.home))
+        scratch = self.home / 'tmp'
+        scratch.mkdir()
+        self.env = dict(os.environ, HOME=str(self.home), TMPDIR=str(scratch))
         for name in ('SKIP', 'PREK_SKIP', 'GITLEAKS_CONFIG', 'GITLEAKS_CONFIG_TOML', 'PRE_COMMIT_ALLOW_NO_CONFIG'):
             self.env.pop(name, None)
         self.cmd('git', 'init', '-q')
@@ -62,7 +65,8 @@ always_run = true
         return subprocess.run([sys.executable, str(GATES), mode, self.base], cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=60, check=False)
 
     def receipt(self):
-        return self.home / '.cache/pi-orchestrate/gates' / self.id / 'approved.json'
+        base = Path(self.env['TMPDIR']) if (self.env.get('PI_CONFINED') == '1' or self.env.get('CODEX_SANDBOX')) else self.home / '.cache'
+        return base / 'pi-orchestrate/gates' / self.id / 'approved.json'
 
     def test_full_creates_sha_bound_receipt_without_publishing(self):
         before = self.cmd('git', 'status', '--porcelain').stdout
@@ -188,6 +192,17 @@ always_run = true
         result = self.gate('quick')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.receipt().exists())
+
+
+class CacheTest(unittest.TestCase):
+    def test_confined_cache_uses_private_scratch_not_home(self):
+        root = Path('/project')
+        suffix = Path('pi-orchestrate/gates') / hashlib.sha256(str(root).encode()).hexdigest()[:20]
+        for env in ({'PI_CONFINED': '1', 'CODEX_SANDBOX': ''}, {'PI_CONFINED': '', 'CODEX_SANDBOX': 'fixture'}):
+            with patch.dict(os.environ, env), patch('tempfile.gettempdir', return_value='/private/scratch'):
+                self.assertEqual(cache_directory(root), Path('/private/scratch') / suffix)
+        with patch.dict(os.environ, {'PI_CONFINED': '', 'CODEX_SANDBOX': ''}), patch('pathlib.Path.home', return_value=Path('/home/fixture')):
+            self.assertEqual(cache_directory(root), Path('/home/fixture/.cache') / suffix)
 
 
 if __name__ == '__main__':

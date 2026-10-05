@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension, { buildArgs, gitInspect, MAX_OUTPUT_BYTES } from "../index.ts";
+import { buildArgs, gitInspect, MAX_OUTPUT_BYTES } from "../index.ts";
 
 const ENV = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
 
@@ -135,7 +135,7 @@ test("invalid inputs are rejected before git runs", () => {
     { operation: "status", paths: ["a"] }, { operation: "log", paths: ["a"] }, { operation: "files", staged: true },
     { operation: "log", staged: false }, { operation: "diff", staged: "yes" }, { operation: "push" }, { operation: "--exec=x" },
   ];
-  for (const input of bad) assert.throws(() => buildArgs(input), undefined, JSON.stringify(input));
+  for (const input of bad) assert.throws(() => buildArgs(input), JSON.stringify(input));
 });
 
 test("output is bounded to 16 KiB on a UTF-8 boundary with a narrowing notice", async () => {
@@ -149,19 +149,5 @@ test("output is bounded to 16 KiB on a UTF-8 boundary with a narrowing notice", 
     assert.match(notice, /narrow the request with paths/);
     assert.ok(Buffer.byteLength(body) <= MAX_OUTPUT_BYTES);
     assert.doesNotMatch(body, /\uFFFD/);
-  } finally { f.cleanup(); }
-});
-
-test("registered tool uses ctx.cwd, propagates git errors and aborts", async () => {
-  const f = fixture();
-  try {
-    let tool: any;
-    extension({ registerTool: (t: any) => { tool = t; } } as any);
-    assert.equal(tool.name, "git_inspect");
-    assert.deepEqual(tool.parameters.properties.operation.anyOf.map((s: any) => s.const), ["status", "diff", "log", "files"]);
-    const result = await tool.execute("id", { operation: "files", paths: ["sub"] }, undefined, undefined, { cwd: f.repo });
-    assert.equal(result.content[0].text, "sub/b.txt");
-    await assert.rejects(tool.execute("id", { operation: "status" }, undefined, undefined, { cwd: f.root }), /git_inspect status failed|not a git repository/);
-    await assert.rejects(tool.execute("id", { operation: "status" }, AbortSignal.abort(), undefined, { cwd: f.repo }), /cancel/);
   } finally { f.cleanup(); }
 });

@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { collectTests, shouldBootstrap } from "../scripts/test.mjs";
 import { makeTmpDir } from "./fixtures/build.mjs";
 
@@ -33,6 +35,24 @@ test("collects .test.ts and .test.mjs outside vendor, excludes .integration.test
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("missing Pi SDK fails once before executing tests, without affecting standalone fixtures", async () => {
+  const root = await makeTmpDir("pi-agent-test-preflight-");
+  try {
+    await writeFile(join(root, "probe.test.mjs"), 'throw new Error("fixture executed");\n');
+    const runner = fileURLToPath(new URL("../scripts/test.mjs", import.meta.url));
+    const env = { ...process.env, PI_PACKAGE_JSON: join(root, "missing.json") };
+    delete env.NODE_TEST_CONTEXT; // The child starts its own test runner.
+    const blocked = spawnSync(process.execPath, [runner, "--dir", root, "--bootstrap"], { env, encoding: "utf8" });
+    assert.equal(blocked.status, 1);
+    assert.match(blocked.stderr, /PI_PACKAGE_JSON.*No tests executed/);
+    assert.doesNotMatch(blocked.stdout + blocked.stderr, /fixture executed/);
+    const standalone = spawnSync(process.execPath, [runner, "--dir", root], { env, encoding: "utf8" });
+    assert.equal(standalone.status, 1);
+    assert.match(standalone.stdout + standalone.stderr, /fixture executed/);
+    assert.doesNotMatch(standalone.stderr, /Pi SDK not found/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("shouldBootstrap: real repo by default, never a fixture without asking explicitly", () => {

@@ -26,6 +26,7 @@ test("Codex shell enforces boundaries through native and background Bash without
     const launcher = join(agent, "scripts/codex-shell.mjs");
     copyFileSync(launcherSource, launcher);
     copyFileSync(new URL("../scripts/codex-network.mjs", import.meta.url), join(agent, "scripts/codex-network.mjs"));
+    copyFileSync(new URL("../scripts/metal-backend.mjs", import.meta.url), join(agent, "scripts/metal-backend.mjs"));
     chmodSync(launcher, 0o755);
     writeFileSync(join(agent, "settings.json"), JSON.stringify({ shellPath: launcher }));
     symlinkSync(join(root, "outside"), join(project, "escape"));
@@ -38,6 +39,7 @@ import { writeFileSync, readFileSync, readlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 if (process.platform === 'darwin') assert.equal(process.env.CODEX_SANDBOX, 'seatbelt');
+assert.equal(process.env.PI_CONFINED, '1');
 writeFileSync('inside.txt', 'inside');
 writeFileSync(process.env.TMPDIR + '/scratch.txt', 'scratch');
 for (const path of ['../outside/relative.txt', ${JSON.stringify(join(root, "outside/absolute.txt"))}, 'escape/link.txt', '.git/blocked.txt', '.codex/blocked.txt', '.agents/blocked.txt']) {
@@ -123,7 +125,12 @@ console.log('boundaries passed');
     const killed = await processes.execute("stop", { action: "kill", pgid: waiting.details.pgid }, undefined, undefined, ctx);
     assert.match(killed.content[0].text, /Killed background process/);
     for (let i = 0; i < 100; i++) {
-      try { process.kill(processGroup, 0); } catch (error) { if (error.code === "ESRCH") break; throw error; }
+      try { process.kill(processGroup, 0); } catch (error) {
+        if (error.code === "ESRCH") break;
+        // Darwin may report EPERM while a killed group still contains zombies.
+        // Yield for reaping; the final assertion still requires actual ESRCH.
+        if (process.platform !== "darwin" || error.code !== "EPERM") throw error;
+      }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.throws(() => process.kill(processGroup, 0), error => error.code === "ESRCH");

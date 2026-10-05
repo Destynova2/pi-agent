@@ -29,6 +29,7 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
     name: "request_network_access",
     label: "Request network access",
     description: "Request additional exact public DNS hosts for subsequent sandbox commands in this workspace/session. Already allowed hosts need no prompt; new hosts require the human. No filesystem escalation, wildcard, private-network or automatic command retry.",
+    promptGuidelines: ["For an exact URL supplied by the user, use web_fetch directly; its fixed public GET reader needs no additional network grant. Do not request session-wide access merely to read that URL or after its HTTP 403. This tool grants broader access, including uploads, and is reserved for tasks that actually require that scope."],
     parameters: Type.Object({
       hosts: Type.Array(Type.String({ minLength: 1, maxLength: 253 }), { minItems: 1, maxItems: 10 }),
       reason: Type.String({ minLength: 1, maxLength: 1000 }),
@@ -83,7 +84,7 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
           grantPath = destination;
           process.env.PI_CODEX_NETWORK_GRANTS = destination;
         }
-        return { content: [{ type: "text", text: `Network destinations available to new sandbox commands: ${requested.join(", ")}. Existing commands keep their old proxy policy. No command was retried.` }], details: undefined };
+        return { content: [{ type: "text" as const, text: `Network destinations available to new sandbox commands: ${requested.join(", ")}. Existing commands keep their old proxy policy. No command was retried.` }], details: undefined };
       };
       const result = tail.then(run, run);
       tail = result.catch(() => undefined);
@@ -94,6 +95,6 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
     let description: string;
     try { description = `Automatically allowed public hosts: ${networkHosts(agentDir, ctx.cwd, grantPath).join(", ") || "none"}.`; }
     catch { description = "Network policy cannot be read; sandbox launches will fail closed."; }
-    event.systemPromptOptions.sections.network_access = `${description} Network commands must use Codex's managed HTTP(S) proxy; direct sockets/private networks are blocked. For another exact public host, call request_network_access with hosts and reason. Only the human can approve additional hosts for this workspace/session. No UI means denial. Do not rerun a failed command automatically: earlier steps may already have had effects. Network grants never authorize filesystem escape or otherwise unsupported tools.`;
+    event.systemPromptOptions.sections.network_access = `${description} Network commands must use Codex's managed HTTP(S) proxy; direct sockets/private networks are blocked. Reading an exact public URL supplied by the user is already authorized through web_fetch's fixed GET reader; no request_network_access is needed, and no grant reaches Bash or other URLs. For broader access to another exact public host, call request_network_access with hosts and reason. Only the human can approve additional hosts for this workspace/session. No UI means denial of that broader grant. Do not rerun a failed command automatically: earlier steps may already have had effects. Network grants never authorize filesystem escape or otherwise unsupported tools.`;
   });
 }

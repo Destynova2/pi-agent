@@ -7,9 +7,27 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { commandExists } from "./lib.mjs";
 
-export const REQUIRED_COMMANDS = ["git", "curl", "pi"];
-export const OPTIONAL_COMMANDS = ["graphify", "jj", "prek", "gitleaks", "python3", "claude", "gh"];
+export const REQUIRED_COMMANDS = ["git", "curl", "pi", "codex"];
+export const OPTIONAL_COMMANDS = ["graphify", "jj", "prek", "gitleaks", "python3", "claude", "gh", "podman"];
 export const BUNDLED_TOOLS = ["gates/pi-prek"];
+// Deployment readiness, not an end-to-end proof. Compare the executable boundaries to this source.
+export const CONFINED_RUNTIME_FILES = [
+  "scripts/codex-shell.mjs", "scripts/codex-network.mjs", "scripts/codex-tool.mjs",
+  "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs",
+  "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", "scripts/web-read-worker.mjs", "scripts/jj-checkpoint.mjs",
+  "lib/jj-checkpoint.ts", "extensions/tool-policy/jj-checkpoint.ts",
+  "lib/git-transaction.ts", "extensions/tool-policy/git-access.ts", "extensions/tool-policy/git-access-core.ts",
+  "lib/confined.ts", "lib/confined-tools.ts", "lib/resolve-pi.mjs", "lib/rpc-process.ts", "lib/process.ts",
+  "extensions/tool-policy/index.ts", "extensions/confined-lsp/index.ts",
+  "extensions/confined-lsp/pi-lsp-module-hook.mjs", "extensions/confined-lsp/worker-session.mjs",
+  "extensions/confined-lsp/jail.ts", "extensions/confined-lsp/readonly-settings.mjs",
+  "extensions/confined-lsp/piped-spawn.mjs",
+  "extensions/graphify/index.ts", "extensions/graphify/worker.ts",
+  "extensions/notes.ts", "extensions/notes/worker.ts", "extensions/git-inspect/index.ts",
+  "extensions/ci-watch/index.ts", "extensions/ci-watch/worker.ts", "extensions/web/index.ts", "extensions/web/core.ts",
+  "extensions/mcp/index.ts", "extensions/mcp/client.ts", "extensions/subagent/index.ts",
+  "extensions/orchestrate/index.ts", "gates/pi-orchestrate/gates.py",
+];
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -52,11 +70,34 @@ async function checkBundledTool(target, relPath) {
   }
 }
 
+async function checkInstalledRuntime(target) {
+  const results = [];
+  for (const file of CONFINED_RUNTIME_FILES) {
+    try {
+      const [source, installed] = await Promise.all([readFile(join(SCRIPT_DIR, "..", file)), readFile(join(target, file))]);
+      results.push({ name: file, required: true, ok: source.equals(installed), detail: source.equals(installed) ? "matches source" : "differs from source; not deployed" });
+    } catch (error) { results.push({ name: file, required: true, ok: false, detail: error.message }); }
+  }
+  try {
+    const settings = JSON.parse(await readFile(join(target, "settings.json"), "utf8"));
+    const lsp = settings.packages?.find(p => typeof p === "object" && p.source === "npm:@ian-pascoe/pi-lsp@0.4.4");
+    results.push({ name: "upstream LSP hooks filtered", required: true, ok: Array.isArray(lsp?.extensions) && lsp.extensions.length === 0 });
+    results.push({ name: "confined shellPath", required: true, ok: settings.shellPath === join(target, "scripts/codex-shell.mjs") });
+    for (const [name, version] of [["@ian-pascoe/pi-lsp", "0.4.4"], ["typescript", "7.0.2"]]) {
+      let actual;
+      try { actual = JSON.parse(await readFile(join(target, "npm/node_modules", name, "package.json"), "utf8")).version; } catch { /* Report missing dependency below. */ }
+      results.push({ name: `${name}@${version}`, required: true, ok: actual === version, detail: actual ?? "not installed" });
+    }
+    results.push({ name: "MCP configuration file", required: false, ok: await access(join(target, "mcp.json")).then(() => true, () => false), detail: "presence only; local stdio servers still require runtime validation" });
+  } catch (error) { results.push({ name: "installed settings", required: true, ok: false, detail: error.message }); }
+  return results;
+}
+
 /**
  * Runs the environment checks. `strict: true` also fails on missing
  * optional tools; by default they only produce a warning.
  */
-export async function runDoctor({ target, strict = false, env = process.env } = {}) {
+export async function runDoctor({ target, strict = false, installed = false, env = process.env } = {}) {
   const resolvedTarget = resolve(target ?? defaultTarget(env));
   const results = [];
 
@@ -72,6 +113,8 @@ export async function runDoctor({ target, strict = false, env = process.env } = 
     results.push(await checkBundledTool(resolvedTarget, tool));
   }
 
+  if (installed) results.push(...await checkInstalledRuntime(resolvedTarget));
+
   const missingRequired = results.filter((r) => r.required && !r.ok);
   const missingOptional = results.filter((r) => !r.required && !r.ok);
   const ok = missingRequired.length === 0 && (!strict || missingOptional.length === 0);
@@ -80,11 +123,12 @@ export async function runDoctor({ target, strict = false, env = process.env } = 
 }
 
 function parseArgs(argv) {
-  const out = { target: undefined, strict: false, help: false };
+  const out = { target: undefined, strict: false, installed: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--target") out.target = argv[++i];
     else if (arg === "--strict") out.strict = true;
+    else if (arg === "--installed") out.installed = true;
     else if (arg === "-h" || arg === "--help") out.help = true;
     else throw new Error(`unknown option: ${arg}`);
   }
@@ -92,10 +136,11 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/doctor.mjs [--target <path>] [--strict]
+  console.log(`Usage: node scripts/doctor.mjs [--target <path>] [--strict] [--installed]
 
   --target <path>     Agent directory to diagnose (default: $PI_CODING_AGENT_DIR or ~/.pi/agent)
   --strict            Also fail if an optional tool is missing
+  --installed         Also check deployed executors, LSP filtering and pinned server packages
 `);
 }
 
@@ -127,7 +172,7 @@ async function main() {
     printHelp();
     return;
   }
-  const result = await runDoctor({ target: args.target, strict: args.strict });
+  const result = await runDoctor(args);
   printReport(result);
   process.exitCode = result.ok ? 0 : 1;
 }

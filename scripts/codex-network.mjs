@@ -19,6 +19,16 @@ export function normalizeHost(value) {
   return host;
 }
 
+/** Public web reads use default ports, no credentials and no fragment on the wire. */
+export function publicWebUrl(value) {
+  if (typeof value !== "string" || value.length > 8192 || /[\s\\\u0000-\u001f\u007f]/u.test(value)) throw new Error("Expected a public HTTP(S) URL without credentials or control characters");
+  const url = new URL(value);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port) throw new Error("Expected a public HTTP(S) URL on its default port without credentials");
+  normalizeHost(url.hostname); // The managed proxy also blocks private DNS resolutions.
+  url.hash = "";
+  return url.href;
+}
+
 function hosts(value) {
   if (!Array.isArray(value) || value.length > 128) throw new Error("Expected at most 128 network hosts");
   return [...new Set(value.map(normalizeHost))].sort();
@@ -65,15 +75,28 @@ export function requireNetworkProxyVersion(output) {
   }
 }
 
-export function networkSandboxArgs(command, cwd, scratch, allowedHosts) {
-  const allowed = hosts(allowedHosts);
+export function sandboxFilesystem(scratch, writableRoots = [], readOnlyRoots = []) {
   const q = JSON.stringify;
-  const domains = allowed.map(host => `${q(host)}="allow"`).join(",");
   // Inherit Codex's protected metadata roots, but not its shared system-temp write grants.
-  const filesystem = `filesystem={":slash_tmp"="read",${q(scratch)}="write",":workspace_roots"={".pi"="read"}}`;
+  const additional = writableRoots.map(path => `,${q(path)}="write"`).join("");
+  const protectedPaths = readOnlyRoots.map(path => `,${q(path)}="read"`).join("");
+  return `filesystem={":slash_tmp"="read",${q(scratch)}="write",":workspace_roots"={".pi"="read"}${additional}${protectedPaths}}`;
+}
+
+export function confinedCommand(command) {
+  // This handoff marker is set by env INSIDE Codex, after OS confinement succeeds.
+  // It prevents accidental direct worker launches; the OS policy enforces permissions.
+  // CODEX_SANDBOX is not supplied by the Linux CLI and is not a portable contract.
+  return ["--", "/usr/bin/env", "PI_CONFINED=1", "/bin/bash", "--noprofile", "--norc", "-c", command];
+}
+
+export function networkSandboxArgs(command, cwd, scratch, allowedHosts, writableRoots = [], readOnlyRoots = []) {
+  const allowed = hosts(allowedHosts);
+  const domains = allowed.map(host => `${JSON.stringify(host)}="allow"`).join(",");
+  const filesystem = sandboxFilesystem(scratch, writableRoots, readOnlyRoots);
   const network = `network={enabled=true,proxy_url="http://127.0.0.1:0",enable_socks5=false,enable_socks5_udp=false,allow_upstream_proxy=false,allow_local_binding=false,dangerously_allow_non_loopback_proxy=false,dangerously_allow_all_unix_sockets=false,mode="full",domains={${domains}}}`;
   return ["sandbox", "-C", cwd, "-P", "pi", "--include-managed-config",
     "-c", 'features.network_proxy=true',
     "-c", `permissions={pi={extends=":workspace",${filesystem},${network}}}`,
-    "--", "/bin/bash", "--noprofile", "--norc", "-c", command];
+    ...confinedCommand(command)];
 }
