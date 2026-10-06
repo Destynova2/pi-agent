@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { PermissionAudit } from "../../lib/permission-audit.ts";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { networkHosts, normalizeHost, readNetworkPolicy } from "../../scripts/codex-network.mjs";
@@ -35,60 +36,67 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
       reason: Type.String({ minLength: 1, maxLength: 1000 }),
     }),
     async execute(_id, input, signal, _onUpdate, ctx) {
-      const generation = epoch;
-      const run = async () => {
-        verify(ctx);
-        if (!root || root !== realpathSync(ctx.cwd) || generation !== epoch || signal?.aborted) throw new Error("Network request is stale or aborted");
-        const requested = [...new Set(input.hosts.map(normalizeHost))];
-        const policy = readNetworkPolicy(agentDir);
-        if (requested.some(host => policy.deny.includes(host))) throw new Error("A requested host is explicitly denied by network-policy.json; it cannot be approved");
-        const allowed = networkHosts(agentDir, root, grantPath);
-        const missing = requested.filter(host => !allowed.includes(host));
-        if (missing.some(host => refused.has(host))) throw new Error("Network access was refused earlier in this session; no repeated prompt");
-        if (missing.length) {
-          if (!ctx.hasUI) throw new Error(`Network access requires human approval: ${missing.join(", ")}. No UI available; denied. Configure network-policy.json outside Pi for headless use.`);
-          if (new Set([...allowed, ...missing]).size > 128) throw new Error("Network host limit reached (128)");
-          let abort = () => {};
-          const aborted = new Promise<false>(resolve => {
-            abort = () => resolve(false);
-            signal?.addEventListener("abort", abort, { once: true });
-            if (signal?.aborted) abort();
-          });
-          let approved = false;
-          try {
-            approved = await Promise.race([
-              ctx.ui.confirm("Allow additional network destinations?", `Hosts: ${missing.join(", ")}\nWorkspace: ${root}\nScope: new commands in this Pi session; proxy traffic to these hosts on any port, including uploads. Filesystem jail stays unchanged.\nAgent justification: ${input.reason}`, { signal }),
-              aborted,
-            ]);
-          } finally { signal?.removeEventListener("abort", abort); }
+      const audit = new PermissionAudit(agentDir, ctx, { resource: "network-access", operation: "allow-hosts", toolCallId: _id, payload: input, targets: input.hosts });
+      try {
+        const generation = epoch;
+        const hosts = [...input.hosts], reason = input.reason;
+        const run = async () => {
           verify(ctx);
-          if (generation !== epoch || signal?.aborted) throw new Error("Network request became stale or aborted; no grant saved");
-          if (!approved) {
-            missing.forEach(host => refused.add(host));
-            throw new Error("Network access refused; no grant saved");
+          if (!root || root !== realpathSync(ctx.cwd) || generation !== epoch || signal?.aborted) throw new Error("Network request is stale or aborted");
+          const requested = [...new Set(hosts.map(normalizeHost))];
+          const policy = readNetworkPolicy(agentDir);
+          if (requested.some(host => policy.deny.includes(host))) { audit.finish("denied", "policy"); throw new Error("A requested host is explicitly denied by network-policy.json; it cannot be approved"); }
+          const allowed = networkHosts(agentDir, root, grantPath);
+          const missing = requested.filter(host => !allowed.includes(host));
+          if (missing.some(host => refused.has(host))) { audit.finish("denied", "refusal_cache"); throw new Error("Network access was refused earlier in this session; no repeated prompt"); }
+          if (missing.length) {
+            if (!ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error(`Network access requires human approval: ${missing.join(", ")}. No UI available; denied. Configure network-policy.json outside Pi for headless use.`); }
+            if (new Set([...allowed, ...missing]).size > 128) throw new Error("Network host limit reached (128)");
+            let abort = () => {};
+            const aborted = new Promise<false>(resolve => {
+              abort = () => resolve(false);
+              signal?.addEventListener("abort", abort, { once: true });
+              if (signal?.aborted) abort();
+            });
+            let approved = false;
+            try {
+              audit.prompted();
+              approved = await Promise.race([
+                ctx.ui.confirm("Allow additional network destinations?", `Hosts: ${missing.join(", ")}\nWorkspace: ${root}\nScope: new commands in this Pi session; proxy traffic to these hosts on any port, including uploads. Filesystem jail stays unchanged.\nAgent justification: ${reason}`, { signal }),
+                aborted,
+              ]);
+            } finally { signal?.removeEventListener("abort", abort); }
+            audit.answered(signal?.aborted ? "cancel" : approved ? "allow" : "deny", "session");
+            verify(ctx);
+            if (generation !== epoch || signal?.aborted) throw new Error("Network request became stale or aborted; no grant saved");
+            if (!approved) {
+              missing.forEach(host => refused.add(host));
+              throw new Error("Network access refused; no grant saved");
+            }
+            // Re-read after the dialog: new explicit denies must win over the answer.
+            const latest = readNetworkPolicy(agentDir);
+            if (requested.some(host => latest.deny.includes(host))) throw new Error("Network policy changed while awaiting approval");
+            const directory = join(realpathSync(agentDir), "network-grants");
+            mkdirSync(directory, { recursive: true, mode: 0o700 });
+            if (realpathSync(directory) !== directory) throw new Error("Network grant directory cannot be a symlink");
+            const destination = grantPath ?? join(directory, `${randomUUID()}.json`);
+            const temporary = join(directory, `${randomUUID()}.tmp`);
+            // Store approved additions only: removing a baseline host must actually revoke it.
+            const previous = grantPath ? networkHosts(agentDir, root, grantPath).filter(host => !latest.allow.includes(host)) : [];
+            try {
+              writeFileSync(temporary, JSON.stringify({ cwd: root, hosts: [...new Set([...previous, ...missing])] }), { flag: "wx", mode: 0o600 });
+              renameSync(temporary, destination);
+            } finally { rmSync(temporary, { force: true }); }
+            grantPath = destination;
+            process.env.PI_CODEX_NETWORK_GRANTS = destination;
           }
-          // Re-read after the dialog: new explicit denies must win over the answer.
-          const latest = readNetworkPolicy(agentDir);
-          if (requested.some(host => latest.deny.includes(host))) throw new Error("Network policy changed while awaiting approval");
-          const directory = join(realpathSync(agentDir), "network-grants");
-          mkdirSync(directory, { recursive: true, mode: 0o700 });
-          if (realpathSync(directory) !== directory) throw new Error("Network grant directory cannot be a symlink");
-          const destination = grantPath ?? join(directory, `${randomUUID()}.json`);
-          const temporary = join(directory, `${randomUUID()}.tmp`);
-          // Store approved additions only: removing a baseline host must actually revoke it.
-          const previous = grantPath ? networkHosts(agentDir, root, grantPath).filter(host => !latest.allow.includes(host)) : [];
-          try {
-            writeFileSync(temporary, JSON.stringify({ cwd: root, hosts: [...new Set([...previous, ...missing])] }), { flag: "wx", mode: 0o600 });
-            renameSync(temporary, destination);
-          } finally { rmSync(temporary, { force: true }); }
-          grantPath = destination;
-          process.env.PI_CODEX_NETWORK_GRANTS = destination;
-        }
-        return { content: [{ type: "text" as const, text: `Network destinations available to new sandbox commands: ${requested.join(", ")}. Existing commands keep their old proxy policy. No command was retried.` }], details: undefined };
-      };
-      const result = tail.then(run, run);
-      tail = result.catch(() => undefined);
-      return result;
+          audit.finish("granted", missing.length ? "human" : requested.every(host => policy.allow.includes(host)) ? "policy" : "session", missing.length || !requested.every(host => policy.allow.includes(host)) ? "session" : "policy");
+          return { content: [{ type: "text" as const, text: `Network destinations available to new sandbox commands: ${requested.join(", ")}. Existing commands keep their old proxy policy. No command was retried.` }], details: undefined };
+        };
+        const result = tail.then(run, run);
+        tail = result.catch(() => undefined);
+        return await result;
+      } catch (error) { audit.fail(signal); throw error; }
     },
   });
   pi.on("before_agent_start", (event, ctx) => {

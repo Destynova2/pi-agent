@@ -172,6 +172,7 @@ export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (
         const detail = `HORS SANDBOX, une fois, 60 s. Podman utilise votre connexion configurée, locale ou distante (non attestée), et peut agir hors projet. Aucun droit ajouté à Bash/sous-agents. Aucun login/envoi automatique.\n${request.operation.startsWith("clipboard_") ? "Secret hors transcript, mais presse-papiers partagé et historique possible.\n" : request.operation === "podman_logs" ? "Journaux affichés dans la conversation : secrets applicatifs possibles.\n" : ""}${JSON.stringify({ ...request, args: undefined, executable: executable.command, argv: args })}`;
         const visible = approvalDisplayText(`${title}\nProjet : ${JSON.stringify(cwd)}\n${detail}`);
         const ticket = await approvals.authorize(ctx, {
+          auditOperation: request.operation, toolCallId: _id,
           resource: "host-access", identity, operation: fingerprint({ ...request, reason: undefined }), remember: false, interactiveOnly: true,
           title, detail, revalidate,
         }, owned);

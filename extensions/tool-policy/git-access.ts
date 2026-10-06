@@ -78,6 +78,7 @@ export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (c
             return ctx.ui.select(title, choices, options);
           } } };
           const ticket = await approvals.authorize(scoped, {
+            auditOperation: request.operation, toolCallId: _id,
             resource: "git-access", identity: fingerprint([snapshot.identity, binary]), operation: request.operation === "push" ? fingerprint(["push", request.remote, request.branch, snapshot.head, snapshot.remoteUrl]) : "local-branch-stage-commit-v1",
             remember: request.operation !== "push", interactiveOnly: true,
             title: request.operation === "push" ? "Autoriser ce push uniquement ?" : "Autoriser Git pour ce projet ?",

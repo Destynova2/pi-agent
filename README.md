@@ -44,6 +44,17 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 
 Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts. The first turn loads the last 20 project notes (at most 12,000 characters), even without note tools. Prompt excerpts are not full history: consult native Pi sessions for complete requirements and previous answers. No separate memory model call is made.
 
+Security approval requests are recorded in `<agent-dir>/permission-audit/requests.sqlite` (normally `~/.pi/agent/permission-audit/requests.sqlite`). This covers command/filesystem/Metal and network access, plus the shared Git, host, MCP and Dunst consent broker. The installer includes the journal automatically; restart Pi after updating. Existing JSON grant files still control remembered permissions. The journal grants no access and contains no retrospective history.
+
+Each `permission_requests` row includes request/prompt/answer/completion times, session ID and file, tool-call ID, workspace, process ID, resource, operation name, human decision, scope and decision source. Network/command requests also include requested hosts/write paths; `retry-metal` identifies a GPU request. `source` distinguishes human input from session/project consent, configured policy, cached refusal and unavailable UI. Raw commands, MCP/Dunst arguments, prompt text, reasons and errors are fingerprinted or omitted; use the linked session for their context. `decision` records the answer; `status` records the authorization outcome (`pending`, `granted`, `denied`, `cancelled`, `error`). A `granted` permission does not certify that its operation ran or succeeded. A positive answer invalidated by a session/configuration change remains visible with an error/cancellation outcome. An interrupted process can leave a pending row. Confirm dialogs expose `false` for both refusal and dismissal/timeout, so these appear as `deny` unless an abort signal identifies cancellation.
+
+The host-owned directory is mode `0700`, the database `0600`; concurrent processes use SQLite WAL with a five-second busy timeout. A failed request/answer journal write prevents proceeding to consent or execution. This records requests reaching these security brokers, not arbitrary extension dialogs, textual questions from the model, or validation failures before the broker is called. No automatic retention or deletion is applied. To inspect the latest requests:
+
+```bash
+sqlite3 -header -column ~/.pi/agent/permission-audit/requests.sqlite \
+  'SELECT requested_at, resource, operation, decision, scope, source, status, cwd FROM permission_requests ORDER BY rowid DESC LIMIT 30;'
+```
+
 Installing these adapters does not activate them in an already-running session; restart Pi after deployment. The upstream LSP extension stays filtered out: its replacement runs the same lifecycle inside Codex. MCP support is local stdio only. `web_search` uses the existing Claude login and quota, but authenticated live search still needs validation; no paid model call was used for testing. See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for boundaries. Model transport, trusted host internals, the explicitly confirmed host operation bridge are not jailed. Dunst remains denied by the local strict dispatcher.
 
 See [Latency and context](docs/PERFORMANCE.md) for measured startup/context costs, Jcode comparisons, and native batching of queued follow-ups.

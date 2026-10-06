@@ -2,6 +2,7 @@
 auth.json
 mcp.json
 mcp-approvals/
+permission-audit/
 models-store.json
 trust.json
 sessions/

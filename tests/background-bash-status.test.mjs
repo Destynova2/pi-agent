@@ -50,8 +50,8 @@ test("linked targets/backups and oversized metadata are refused without mutation
 });
 
 test("real SDK + package propagate failed foreground exits, preserve successful text, background failure and cancellation", async t => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "bash-status-sdk-"))), pkg = join(root, "package"), agent = join(root, "agent");
-  mkdirSync(agent); cpSync(original, pkg, { recursive: true }); await patchBackgroundBash(pkg);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "bash-status-sdk-"))), pkg = join(root, "package"), agent = join(root, "agent"), cwd = join(root, "project");
+  mkdirSync(agent); mkdirSync(cwd); cpSync(original, pkg, { recursive: true }); await patchBackgroundBash(pkg);
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const entry = join(root, "fixture.ts");
   writeFileSync(entry, `import { registerTools } from ${JSON.stringify(join(pkg, "src/tools.ts"))};
@@ -78,10 +78,10 @@ export default function(pi) {
   const previous = process.env.PI_CODING_AGENT_DIR, home = process.env.HOME; process.env.PI_CODING_AGENT_DIR = agent;
   process.env.HOME = join(root, "home"); mkdirSync(process.env.HOME);
   t.after(() => { delete globalThis.__bashStatusCompletion; if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; if (home === undefined) delete process.env.HOME; else process.env.HOME = home; });
-  const loader = new DefaultResourceLoader({ cwd: root, agentDir: agent, settingsManager: SettingsManager.inMemory({}), noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, additionalExtensionPaths: [entry] });
+  const loader = new DefaultResourceLoader({ cwd, agentDir: agent, settingsManager: SettingsManager.inMemory({}), noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, additionalExtensionPaths: [entry] });
   await loader.reload(); const loaded = loader.getExtensions(); assert.deepEqual(loaded.errors, []);
   const tool = loaded.extensions[0].tools.get("bash").definition;
-  const ctx = { cwd: root, sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
+  const ctx = { cwd, sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
   const run = args => tool.execute("fixture-call", args, undefined, undefined, ctx);
   const success = await run({ command: "ok" }); assert.match(success.content[0].text, /operation not permitted/);
   for (const timeoutAction of ["kill", "background"]) await assert.rejects(run({ command: "failed", timeoutAction }), /Command exited with code 7/);

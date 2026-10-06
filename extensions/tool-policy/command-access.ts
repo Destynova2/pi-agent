@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runProcess } from "../../lib/process.ts";
+import { PermissionAudit } from "../../lib/permission-audit.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
 import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
 import { metalBackend } from "../../scripts/metal-backend.mjs";
@@ -68,64 +69,76 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
     }),
     executionMode: "sequential",
     async execute(_id, input, signal, _update, ctx) {
-      // Snapshot before queuing or awaiting human input; no mutable arguments survive approval.
-      const id = input.failed_call_id, reason = input.reason, paths = [...(input.write_paths ?? [])], gpu = input.gpu;
-      if ((!paths.length && !gpu) || (gpu !== undefined && gpu !== "metal")) throw new Error("Request exact write paths and/or gpu=metal");
-      const request = failed.get(id);
-      if (!request) throw new Error("No eligible failed Bash call in this session; no retry");
-      failed.delete(id);
-      return tasks.run(async owned => {
-        const run = async () => {
-          const validate = () => {
-            owned.throwIfAborted();
-            verify(ctx);
-            if (root !== request.cwd || realpathSync(ctx.cwd) !== request.cwd || Date.now() > request.expires) throw new Error("Command approval is stale, expired or belongs to another workspace");
-            if (!ctx.hasUI || !pi.getActiveTools().includes("request_command_access")) throw new Error("Command access requires interactive human confirmation in the parent session");
-            return paths.length ? commandWritableRoots(paths, request.cwd, agentDir, [getPackageDir()]) : [];
-          };
-          const roots = validate();
-          const backend = gpu ? metalBackend(agentDir) : undefined;
-          const display = JSON.stringify({ command: request.command, cwd: request.cwd, additional_write_paths: roots, gpu, backend_sha256: backend?.sha256, reason }, null, 2)
-            .replace(/[\u007f-\u009f\u200e-\u200f\u202a-\u202e\u2066-\u2069]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-          let abort = () => {};
-          const canceled = new Promise<false>(resolve => {
-            abort = () => resolve(false);
-            owned.addEventListener("abort", abort, { once: true });
-            if (owned.aborted) abort();
-          });
-          let approved: boolean;
-          try {
-            approved = await Promise.race([
-              ctx.ui.confirm("Retry once with additional command access?", `The ENTIRE failed command will run again; earlier effects may repeat. Directories include their contents, but Codex may still forbid deleting or renaming the granted directory itself. ${gpu ? "Metal grants the command tree access to the GPU driver and shader compiler. " : ""}Workspace/temp permissions and network policy stay unchanged. No permanent grant, no execution outside Codex. Deadline: 60 seconds.\n${display}`, { signal: owned, timeout: Math.max(1, request.expires - Date.now()) }),
-              canceled,
-            ]);
-          } finally { owned.removeEventListener("abort", abort); }
-          validate();
-          if (!approved) throw new Error("Command access refused; nothing executed");
-          if (backend && metalBackend(agentDir).sha256 !== backend.sha256) throw new Error("Metal backend changed during approval; nothing executed");
-          const output: Buffer[] = [];
-          const journal = (status: string, error?: string) => {
-            if (backend) pi.appendEntry("metal_command", { status, at: new Date().toISOString(), failedCallId: id, command: request.command, cwd: request.cwd, writePaths: roots, backendSha256: backend.sha256, timeoutMs: 60_000, output: Buffer.concat(output).toString("utf8").slice(-6000), error });
-          };
-          // A missing result journal must prevent execution, not silently drop the audit trail.
-          journal("started");
-          try {
-            await runProcess(join(agentDir, "scripts/codex-shell.mjs"), [...(backend ? ["--metal", backend.sha256] : []), ...(roots.length ? ["--write-roots", JSON.stringify(roots)] : []), "-c", request.command], {
-              cwd: request.cwd, signal: owned, timeoutMs: 60_000, maxBytes: 1024 * 1024,
-              onStdout: chunk => output.push(chunk), onStderr: chunk => output.push(chunk),
+      const audit = new PermissionAudit(agentDir, { ...ctx, cwd: root ?? ctx.cwd }, {
+        resource: "command-access", operation: input.gpu === "metal" ? "retry-metal" : "retry",
+        toolCallId: _id, payload: input, targets: input.write_paths,
+      });
+      try {
+        // Snapshot before queuing or awaiting human input; no mutable arguments survive approval.
+        const id = input.failed_call_id, reason = input.reason, paths = [...(input.write_paths ?? [])], gpu = input.gpu;
+        if ((!paths.length && !gpu) || (gpu !== undefined && gpu !== "metal")) throw new Error("Request exact write paths and/or gpu=metal");
+        const request = failed.get(id);
+        if (!request) throw new Error("No eligible failed Bash call in this session; no retry");
+        failed.delete(id);
+        return await tasks.run(async owned => {
+          const run = async () => {
+            const validate = () => {
+              owned.throwIfAborted();
+              verify(ctx);
+              if (root !== request.cwd || realpathSync(ctx.cwd) !== request.cwd || Date.now() > request.expires) throw new Error("Command approval is stale, expired or belongs to another workspace");
+              if (!ctx.hasUI || !pi.getActiveTools().includes("request_command_access")) {
+                audit.finish("denied", "unavailable");
+                throw new Error("Command access requires interactive human confirmation in the parent session");
+              }
+              return paths.length ? commandWritableRoots(paths, request.cwd, agentDir, [getPackageDir()]) : [];
+            };
+            const roots = validate();
+            const backend = gpu ? metalBackend(agentDir) : undefined;
+            const display = JSON.stringify({ command: request.command, cwd: request.cwd, additional_write_paths: roots, gpu, backend_sha256: backend?.sha256, reason }, null, 2)
+              .replace(/[\u007f-\u009f\u200e-\u200f\u202a-\u202e\u2066-\u2069]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+            let abort = () => {};
+            const canceled = new Promise<false>(resolve => {
+              abort = () => resolve(false);
+              owned.addEventListener("abort", abort, { once: true });
+              if (owned.aborted) abort();
             });
-          } catch (error) {
-            journal(owned.aborted ? "canceled" : "failed", (error as Error).message);
-            throw new Error(`${(error as Error).message}\n${Buffer.concat(output).toString("utf8").slice(-6000)}\nOne-shot access consumed; no automatic retry.`);
-          }
-          const text = Buffer.concat(output).toString("utf8");
-          journal("completed");
-          return { content: [{ type: "text" as const, text: `${text.length > 60000 ? "[Output truncated to last 60000 characters]\n" : ""}${text.slice(-60000)}\nOne-shot access consumed; subsequent commands retain their original permissions.` }], details: { failedCallId: id, writePaths: roots, ...(backend ? { gpu, backendSha256: backend.sha256 } : {}) } };
-        };
-        const result = tail.then(run, run);
-        tail = result.catch(() => undefined);
-        return result;
-      }, signal);
+            let approved: boolean;
+            try {
+              audit.prompted();
+              approved = await Promise.race([
+                ctx.ui.confirm("Retry once with additional command access?", `The ENTIRE failed command will run again; earlier effects may repeat. Directories include their contents, but Codex may still forbid deleting or renaming the granted directory itself. ${gpu ? "Metal grants the command tree access to the GPU driver and shader compiler. " : ""}Workspace/temp permissions and network policy stay unchanged. No permanent grant, no execution outside Codex. Deadline: 60 seconds.\n${display}`, { signal: owned, timeout: Math.max(1, request.expires - Date.now()) }),
+                canceled,
+              ]);
+            } finally { owned.removeEventListener("abort", abort); }
+            audit.answered(owned.aborted ? "cancel" : approved ? "allow" : "deny");
+            validate();
+            if (!approved) throw new Error("Command access refused; nothing executed");
+            if (backend && metalBackend(agentDir).sha256 !== backend.sha256) throw new Error("Metal backend changed during approval; nothing executed");
+            const output: Buffer[] = [];
+            const journal = (status: string, error?: string) => {
+              if (backend) pi.appendEntry("metal_command", { status, at: new Date().toISOString(), failedCallId: id, command: request.command, cwd: request.cwd, writePaths: roots, backendSha256: backend.sha256, timeoutMs: 60_000, output: Buffer.concat(output).toString("utf8").slice(-6000), error });
+            };
+            // A missing result journal must prevent execution, not silently drop the audit trail.
+            audit.finish("granted", "human", "once");
+            journal("started");
+            try {
+              await runProcess(join(agentDir, "scripts/codex-shell.mjs"), [...(backend ? ["--metal", backend.sha256] : []), ...(roots.length ? ["--write-roots", JSON.stringify(roots)] : []), "-c", request.command], {
+                cwd: request.cwd, signal: owned, timeoutMs: 60_000, maxBytes: 1024 * 1024,
+                onStdout: chunk => output.push(chunk), onStderr: chunk => output.push(chunk),
+              });
+            } catch (error) {
+              journal(owned.aborted ? "canceled" : "failed", (error as Error).message);
+              throw new Error(`${(error as Error).message}\n${Buffer.concat(output).toString("utf8").slice(-6000)}\nOne-shot access consumed; no automatic retry.`);
+            }
+            const text = Buffer.concat(output).toString("utf8");
+            journal("completed");
+            return { content: [{ type: "text" as const, text: `${text.length > 60000 ? "[Output truncated to last 60000 characters]\n" : ""}${text.slice(-60000)}\nOne-shot access consumed; subsequent commands retain their original permissions.` }], details: { failedCallId: id, writePaths: roots, ...(backend ? { gpu, backendSha256: backend.sha256 } : {}) } };
+          };
+          const result = tail.then(run, run);
+          tail = result.catch(() => undefined);
+          return result;
+        }, signal);
+      } catch (error) { audit.fail(signal); throw error; }
     },
   });
 }

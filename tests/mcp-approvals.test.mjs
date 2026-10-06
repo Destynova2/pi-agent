@@ -93,7 +93,7 @@ test("refusal does not nag; aborted, stale and changed-configuration answers cre
   let valid = true;
   f.ctx.ui.select = async () => { valid = false; return APPROVAL_CHOICES[3]; };
   await assert.rejects(f.approvals.authorize(f.ctx, { ...f.request, revalidate: () => { if (!valid) throw new Error("changed config"); } }), /changed config/);
-  assert.deepEqual(readdirSync(f.agent), [], "failed approvals never create private grant files");
+  assert.deepEqual(readdirSync(f.agent), ["permission-audit"], "failed approvals only create an audit trail, never grant files");
 });
 
 test("parallel requests share only remembered consent and preserve complete request display", async t => {

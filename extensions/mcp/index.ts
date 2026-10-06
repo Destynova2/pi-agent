@@ -109,6 +109,7 @@ export default function (pi: ExtensionAPI) {
           const manifest = fingerprint(tool);
           const remember = tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint !== true;
           authorized = await approvals.authorize(ctx, {
+            auditOperation: request.tool, toolCallId: _id,
             resource: `mcp:${name}`, identity: fingerprint([config, manifest]), operation: remember ? request.tool : serialized,
             title: `MCP : ${name} / ${request.tool}`,
             detail: remember
