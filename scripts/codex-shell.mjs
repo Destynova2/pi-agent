@@ -9,6 +9,21 @@ import { fileURLToPath } from "node:url";
 import { confinedCommand, networkHosts, networkSandboxArgs, publicWebUrl, readNetworkPolicy, requireNetworkProxyVersion, sandboxFilesystem } from "./codex-network.mjs";
 import { metalBackend } from "./metal-backend.mjs";
 
+// Own both process substitutions in the supervisor, not a pipeline subshell.
+// Reap stderr after EOF and stop stdin if the command exits without consuming it.
+export const LINUX_STDIO_RELAY = `set -o pipefail
+exec 3< <(/bin/cat)
+input_pid=$!
+exec 4> >(/bin/cat >&2)
+error_pid=$!
+"$@" <&3 2>&4 3<&- 4>&- | /bin/cat 3<&- 4>&-
+status=$?
+exec 3<&- 4>&-
+kill "$input_pid" 2>/dev/null || :
+wait "$input_pid" 2>/dev/null || :
+wait "$error_pid"
+exit "$status"`;
+
 export function sandboxBackend(env = process.env) {
   if (env.PI_CODEX_SANDBOX_BIN) return env.PI_CODEX_SANDBOX_BIN;
   const home = env.HOME ?? homedir();
@@ -159,7 +174,7 @@ export function launch(argv = process.argv.slice(2)) {
   // The command stays an argv value to Codex, never evaluated by this outer shell.
   if (process.platform === "linux") {
     process.execve("/bin/bash", ["bash", "--noprofile", "--norc", "-c",
-      'set -o pipefail; "$@" < <(/bin/cat) 2> >(/bin/cat >&2) | /bin/cat',
+      LINUX_STDIO_RELAY,
       "pi-codex-sandbox", codex, ...args], env);
   } else {
     // Keep the original PGID for cancellation/timeout on both platforms.
