@@ -182,8 +182,9 @@ async function writeAtomic(filePath, content) {
  * @param {string} packageRoot absolute or relative path to the root of an
  *   installed/staged @earendil-works/pi-coding-agent package (the directory
  *   containing its package.json).
- * @param {{ targets?: typeof TARGETS }} [options] `targets` overrides the
- *   version-specific target list; only used by tests, real callers should omit it.
+ * @param {{ targets?: typeof TARGETS, checkOnly?: boolean }} [options] `targets`
+ *   overrides the version-specific target list for tests. `checkOnly` requires
+ *   existing patches and refuses unpatched content without writing.
  * @returns {Promise<{ root: string, version: string, patched: string[], alreadyPatched: string[], skipped: string[] }>}
  */
 export async function patchPaste(packageRoot, options = {}) {
@@ -197,6 +198,9 @@ export async function patchPaste(packageRoot, options = {}) {
 	const targets = options.targets;
 
 	const { manifest, plan } = await planPatches(root, targets);
+	if (options.checkOnly && plan.some(entry => entry.action === "patch")) {
+		throw new PastePatchError("Paste patch is missing; validate a patched runtime before activation");
+	}
 
 	const patched = [];
 	const alreadyPatched = [];

@@ -142,6 +142,25 @@ For the separate bracketed-paste keepalive mitigation, back up both the coding-a
 
 Already-running processes need one normal restart, not `/reload`: reload retains their old trust state and cannot undo host code that already ran. Quit Pi, then use `pi --resume` in the same project and select the existing conversation. Future launches use plain `pi`.
 
+### Updating a private patched runtime
+
+A shell launcher pointing into `~/.local/share/pi-runtime/` is not a global npm installation. Upstream `pi update` cannot replace it. Enable this repo's updater from a host terminal capable of running the native integration gate:
+
+```bash
+node scripts/update-runtime.mjs --install-launcher \
+  --package-json /absolute/path/to/node_modules/@earendil-works/pi-coding-agent/package.json
+```
+
+The default launcher is `~/.local/bin/pi`; use `--launcher <path>` for another regular file. The command checks that both runtime patches are already present, runs `npm run verify:integration` against that runtime, and only then backs up and replaces the launcher. It does not patch the active runtime. Keep this source checkout at the same location: the launcher invokes its updater directly, so future reviewed patch definitions are available without reinstalling the launcher. The configuration installer does not enable this runtime launcher.
+
+After activation, `pi update` and `pi update --self` query npm's latest stable version. A supported version is installed in a new sibling runtime directory with lifecycle scripts disabled and the matching `pi-tui` version pinned. Both patches must pass their artifact checks, followed by the full native integration gate, before the launcher switches atomically. An up-to-date runtime has both patches checked without reinstalling; `--force` stages a fresh copy and reruns the gate. The old runtime and a `pi.backup-<id>` launcher remain available for rollback. Restore that launcher backup to select the old runtime; restart running sessions to use a new runtime.
+
+`pi update --all` and `pi update --self --extensions` update the runtime first, then invoke Pi's extension updater. An extension failure retains its native exit status but does not roll back a successfully activated runtime. Extension-only updates, positional extension sources, model updates, help and invalid arguments are passed to Pi unchanged.
+
+Unknown versions are refused before downloading or activating a candidate. The validated patch versions remain those in `scripts/patch-project-trust.mjs` and `patches/paste-keepalive.mjs`; adding the updater does not establish compatibility with newer releases. Validate the published artifacts and add their pins before upgrading. The updater never guesses hashes or removes trust protections.
+
+Logs and the separate pristine Pi 1.0.0 paste fixture live under `$TMPDIR` (or the OS temporary directory). Set `PI_PASTE_PACKAGE_JSON` to an existing pristine fixture to reuse it. Failed candidates are retained for diagnosis; the launcher remains unchanged on install, patch or gate failure. Concurrent updates are refused by a sibling `<launcher>.update-lock` directory. After an interrupted process, remove that directory only once no updater is running. Network access to npm, write access to the private runtime/launcher, and a working host sandbox are required; an agent's restricted shell is not sufficient to activate an update.
+
 ### Recovering after a problem
 
 The previous backup remains at `<target>.backup-<timestamp>/` — restore it manually (`cp -a <backup>/<entry> <target>/<entry>`), entry by entry if needed. This is **not** a `git checkout` nor a `jj restore`: the install target is not necessarily a Git/jj repo, and the installer never assumes it is one.

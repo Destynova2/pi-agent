@@ -67,7 +67,7 @@ export function transformTrust(source, target, reverse = false) {
   return source;
 }
 
-export async function patchProjectTrust(packageRoot) {
+export async function patchProjectTrust(packageRoot, { checkOnly = false } = {}) {
   const root = resolve(packageRoot);
   const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   if (manifest.name !== "@earendil-works/pi-coding-agent" || !Object.hasOwn(TRUST_TARGETS_BY_VERSION, manifest.version)) {
@@ -85,6 +85,7 @@ export async function patchProjectTrust(packageRoot) {
       throw new Error(`Unknown trust patch content: ${target.path}`);
     }
   }
+  if (checkOnly && plan.length) throw new Error("Project-trust patch is missing; validate a patched runtime before activation");
   for (const entry of plan) {
     const temporary = `${entry.path}.${randomUUID()}.tmp`;
     try {
