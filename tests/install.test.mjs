@@ -21,6 +21,7 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     await writeFile(join(source, "scripts/codex-tool.mjs"), "// confined file worker\n");
     await writeFile(join(source, "scripts/codex-network.mjs"), "// managed network policy\n");
     await writeFile(join(source, "scripts/metal-backend.mjs"), "// qualified Metal backend\n");
+    await writeFile(join(source, "scripts/build-worker.mjs"), "// fixed KVM build worker\n");
     await writeFile(join(source, "scripts/web-read-worker.mjs"), "// fixed public GET reader\n");
     await writeFile(join(source, "scripts/jj-checkpoint.mjs"), "// fixed jj snapshot worker\n");
     await writeFile(join(source, "scripts/confined-tool.mjs"), "// confined service worker\n");
@@ -51,6 +52,7 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     assert.equal(await readFile(join(target, "network-policy.json"), "utf8"), '{"allow":[]}\n');
     assert.equal(await readFile(join(target, "scripts/codex-network.mjs"), "utf8"), "// managed network policy\n");
     assert.equal(await readFile(join(target, "scripts/metal-backend.mjs"), "utf8"), "// qualified Metal backend\n");
+    assert.equal(await readFile(join(target, "scripts/build-worker.mjs"), "utf8"), "// fixed KVM build worker\n");
     assert.equal(await readFile(join(target, "scripts/web-read-worker.mjs"), "utf8"), "// fixed public GET reader\n");
     assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, relative));
     assert.equal((await readJson(join(result.backupDir, "settings.json"))).shellPath, "/bin/bash");

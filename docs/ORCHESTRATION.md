@@ -71,7 +71,7 @@ Missing, corrupt, oversized (64 MiB) or incomplete session files are rejected wi
 
 Routine calls need no approval. `request_network_access` can add exact public hosts, never filesystem permissions. `request_command_access` can rerun one failed foreground Bash command with human-approved additional write paths, still inside Codex. Unknown tools and executors not yet confined are denied. There is no unrestricted fallback. The legacy `tool-policy.json`, parser and shell classifier are removed; the installer backs up and deletes known legacy files. The dispatcher directory retains its name to replace the old installed entry point without loading two dispatchers.
 
-Children inherit the intersection of role tools, active parent tools and the fixed confined-executor set, without recursive delegation, interactive network grants, `request_command_access`, `request_host_access`, `git_access`, `jj_checkpoint` or `model_catalog`. Canonical child cwd must remain within its parent workspace in every mode, even with no policy file. Private session/report storage and model transport remain trusted host operations. Resumes can only narrow capabilities.
+Children inherit the intersection of role tools, active parent tools and the fixed confined-executor set, without recursive delegation, interactive network grants, `request_command_access`, `request_host_access`, `request_build_access`, `git_access`, `jj_checkpoint` or `model_catalog`. Canonical child cwd must remain within its parent workspace in every mode, even with no policy file. Private session/report storage and model transport remain trusted host operations. Resumes can only narrow capabilities.
 
 The installer sets `shellPath` and deploys the launchers, workers and SDK resolver. After a validated installation and the [pinned trust-order correction](../INSTALLATION.md#plain-pi-startup-on-supported-runtimes), restart Pi normally; the recurring `--no-approve` workaround is no longer needed. Project resources are refused through `project_trust`; a session started with trusted project resources blocks permitted tools too. `/confined-tools` reports configuration, not proof that the backend can run. A missing adapter, changed cwd/shell or backend failure blocks execution.
 
@@ -275,6 +275,31 @@ Podman management output is withheld because it can contain secrets. A zero exit
 The request is snapshotted, limited to 2,000 bytes and expires after five minutes. Exact arguments use compact JSON. A dialog that cannot show the complete request and both choices is rejected before prompting: shorten the reason/arguments or enlarge the terminal, rather than approving truncated text. Current workspace, capability, cancellation and executable metadata are rechecked before dispatch. Project dotenv files (64 KiB maximum) and Kubernetes manifests (1 MiB maximum) are read as bounded regular, single-link files and content-checked again after consent. This is not a security review of manifest contents or Podman's transitive configuration. Podman uses the current user's configured connection; the grant can affect that remote service. Executable lookup uses fixed system/Homebrew directories, or the trusted operator's `PI_PODMAN_BIN`, never a workspace executable.
 
 Execution uses the existing supervisor without a shell, with a 60-second total deadline and 1 MiB per-process output ceiling. There is no automatic replay. Canceling the CLI cannot undo container changes or a clipboard write already performed. Session transitions cancel pending operations; `/host-access reset` clears pending consent and locally cached refusals. It grants nothing. Linux clipboard transfer is unsupported; the new approval flow is tested on macOS, not validated on Linux.
+
+### KVM image builds
+
+For an authorized Packer/Ansible image build, `request_build_access` runs the fixed command `ansible-playbook -i localhost, ansible/build.yml` in the current Linux project. Inspect `ansible/build.yml`, `packer/`, `config/` and `ansible.cfg` before requesting it. The only parameters are `reason` and an optional `timeout_minutes` (default 120, maximum 240). No preceding failed Bash call is required.
+
+The interactive parent asks **Refuser / Autoriser cette fois** for each build. The approval identifies the project, executable, source digest, deadline and capabilities. Source changes during approval cancel execution. The digest covers `ansible/`, `packer/`, `config/` and `ansible.cfg`, not cached dependencies or the whole installed toolchain. These sources must be bounded regular files without links. Project code and cached dependencies are executable build inputs, not independently attested software.
+
+The build uses `/usr/bin/bwrap` directly with isolated user/process/mount namespaces, dropped capabilities, disabled nested user namespaces, a read-only root and a minimal `/dev` plus **only `/dev/kvm`**. Only the project's `.cache/`, `output/` and private temporary directory are writable. Project sources and root metadata remain read-only. The runtime and launcher must be outside the project. The ordinary Codex launcher and its policy do not change.
+
+This capability explicitly grants the **full native host network**, including local services, TCP/UDP and Unix sockets. This is necessary for the guest's Nexus access and Packer/Ansible SSH connections; it is broader than one allowed public host. Build code can reach host services, whose APIs may themselves have effects outside the writable directories. No credentials or proxy environment are inherited by the launcher; existing host files remain readable under the same outside-read policy as ordinary tools. The prompt describes these permissions before execution.
+
+The host must provide accessible KVM, Bubblewrap supporting `--disable-userns`, `/usr/bin/python3` and the project's installed Ansible/Packer/QEMU dependencies. A host metadata/access check precedes approval. Inside the actual sandbox, isolated Python verifies the KVM API and creates/closes an empty VM before Ansible starts. Missing `/dev/kvm` in ordinary Bash does not establish that it is absent on the host. No automatic `chmod`, group change, module load, unconfined fallback or replay is attempted.
+
+Execution remains in the foreground under the existing process-group supervisor. Progress updates report pending execution; completion is not announced early. Output is capped at 32 MiB and kept in a private log under the host's `$TMPDIR`, outside the build's writable scratch directory. Session navigation, cancellation and `/build-access reset` stop the process tree; reset also clears refusals. Existing artifacts and logs are retained for inspection. Consent is recorded in the permission audit and start/completion/failure in `kvm_build` session entries. A zero exit status still requires validation of the delivered image.
+
+Install the updated configuration through the normal staged installer and restart Pi. No separate Codex rebuild is needed. Native validation requires a Linux host with accessible KVM:
+
+```bash
+node --import ./tests/resolve-pi.mjs --test tests/build-sandbox.integration.test.mjs
+npm run verify:integration
+```
+
+Use the installed SDK's `PI_PACKAGE_JSON` and the integration prerequisites from `INSTALLATION.md`. The native test creates a VM, reaches a synthetic local HTTP service and verifies allowed/denied writes. It does not run a real RHEL build or establish image correctness. A missing native prerequisite fails the test; it is never treated as a successful sandbox check.
+
+KVM incidents now identify this supported capability. For other capability gaps, record the precise missing operation and prepare a reviewed source change with regression checks. This workflow does not grant the agent permission to modify the active harness or approve its own permissions.
 
 ### Requirement checkpoints and autonomy
 

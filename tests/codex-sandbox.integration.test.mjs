@@ -35,11 +35,12 @@ test("Codex shell enforces boundaries through native and background Bash without
     writeFileSync(join(project, ".codex/config.toml"), 'sandbox_mode="danger-full-access"\n[sandbox_workspace_write]\nnetwork_access=true\nwritable_roots=["/"]\n');
     writeFileSync(join(project, "boundaries.mjs"), `
 import assert from 'node:assert/strict';
-import { writeFileSync, readFileSync, readlinkSync } from 'node:fs';
+import { writeFileSync, readFileSync, readlinkSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 if (process.platform === 'darwin') assert.equal(process.env.CODEX_SANDBOX, 'seatbelt');
 assert.equal(process.env.PI_CONFINED, '1');
+if (process.platform === 'linux') assert.equal(existsSync('/dev/kvm'), false, 'ordinary Bash must not inherit KVM access');
 writeFileSync('inside.txt', 'inside');
 writeFileSync(process.env.TMPDIR + '/scratch.txt', 'scratch');
 for (const path of ['../outside/relative.txt', ${JSON.stringify(join(root, "outside/absolute.txt"))}, 'escape/link.txt', '.git/blocked.txt', '.codex/blocked.txt', '.agents/blocked.txt']) {

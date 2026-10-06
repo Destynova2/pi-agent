@@ -37,7 +37,7 @@ test("routine strict calls never ask, ignore legacy exceptions, and fail closed 
     writeFileSync(join(f.agent, "tool-policy.json"), '{"*":"allow"}');
     for (const name of STRICT_TOOLS) assert.equal(call(name), undefined, name);
     for (const name of ["unknown", "codemode", "remote_mcp"]) assert.equal(call(name).block, true, name);
-    assert.deepEqual([...tools.keys()].sort(), ["edit", "find", "git_access", "grep", "jj_checkpoint", "ls", "model_catalog", "read", "request_command_access", "request_host_access", "request_network_access", "write"]);
+    assert.deepEqual([...tools.keys()].sort(), ["edit", "find", "git_access", "grep", "jj_checkpoint", "ls", "model_catalog", "read", "request_build_access", "request_command_access", "request_host_access", "request_network_access", "write"]);
     ctx.isProjectTrusted = () => true;
     assert.equal(call("write").block, true, "trusted project extensions must not run on the host");
     ctx.isProjectTrusted = () => false;
