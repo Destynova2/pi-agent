@@ -110,7 +110,8 @@ function writeEntry(root: string, path: string, entry: Entry, replace = false) {
   } finally { if (replace) rmSync(temporary, { force: true }); }
 }
 
-function identity(root: string) {
+/** The parent binds consent and publication to host metadata, not sandbox mount identities. */
+export function checkpointIdentity(root: string) {
   return hash(JSON.stringify([root, ...[root, join(root, ".git"), join(root, ".jj")].map(path => {
     if (absent(path)) return null;
     const stat = lstatSync(path);
@@ -151,7 +152,8 @@ export async function inspectCheckpoint(cwd: string, binary: string, signal?: Ab
   let scratch: string | undefined;
   try {
     let prefix: string[] = [];
-    if (absent(join(root, ".git"))) {
+    // An empty metadata directory is not an initialized repository.
+    if (absent(join(root, ".git")) || readdirSync(join(root, ".git")).length === 0) {
       scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-jj-inspect-")));
       await git(scratch, ["init", "--template=", "--initial-branch=main"], signal);
       prefix = ["--git-dir=" + join(scratch, ".git"), "--work-tree=" + root];
@@ -160,12 +162,12 @@ export async function inspectCheckpoint(cwd: string, binary: string, signal?: Ab
     }
     const paths = (await git(root, [...prefix, "ls-files", "--cached", "--others", "--exclude-standard", "-z"], signal)).split("\0").filter(Boolean);
     if (initialized) paths.push(...(await jj(binary, root, ["--ignore-working-copy", "file", "list", "-T", 'path ++ "\\0"'], signal)).split("\0").filter(Boolean));
-    return { root, identity: identity(root), initialized, files: [...new Set(paths.filter(path => !path.startsWith(".jj/") && !path.startsWith(".git/")))].sort() };
+    return { root, identity: checkpointIdentity(root), initialized, files: [...new Set(paths.filter(path => !path.startsWith(".jj/") && !path.startsWith(".git/")))].sort() };
   } finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); }
 }
 
 export function createCheckpointTransaction(info: CheckpointInspection) {
-  if (checkpointRoot(info.root) !== info.root || identity(info.root) !== info.identity) throw new Error("Checkpoint repository changed before preparation");
+  if (checkpointRoot(info.root) !== info.root || checkpointIdentity(info.root) !== info.identity) throw new Error("Checkpoint repository changed before preparation");
   const gitBefore = readTree(join(info.root, ".git")), jjBefore = readTree(join(info.root, ".jj")), files = workFiles(info.root, info.files);
   const temporary = realpathSync(mkdtempSync(join(tmpdir(), "pi-jj-checkpoint-"))), stage = join(temporary, "repo");
   if (inside(info.root, temporary)) { rmSync(temporary, { recursive: true }); throw new Error("Checkpoint temporary storage must be outside the project"); }
@@ -263,7 +265,7 @@ export function publishCheckpoint(tx: CheckpointTransaction, result: CheckpointR
   if (!same(tx.files, workFiles(tx.stage, [...tx.files.keys()]))) throw new Error("Checkpoint worker changed working files");
   const root = tx.info.root;
   const verifySource = (omitGit = new Set<string>(), omitJj = new Set<string>()) => {
-    if (identity(root) !== tx.info.identity || !same(tx.gitBefore, readTree(join(root, ".git"), omitGit)) || !same(tx.jjBefore, readTree(join(root, ".jj"), omitJj)) || !same(tx.files, workFiles(root, tx.info.files))) throw new Error("Checkpoint source changed; nothing published");
+    if (checkpointIdentity(root) !== tx.info.identity || !same(tx.gitBefore, readTree(join(root, ".git"), omitGit)) || !same(tx.jjBefore, readTree(join(root, ".jj"), omitJj)) || !same(tx.files, workFiles(root, tx.info.files))) throw new Error("Checkpoint source changed; nothing published");
   };
   verifySource();
   const locks: { path: string; fd: number; ino: number; dev: number }[] = [];
@@ -276,7 +278,7 @@ export function publishCheckpoint(tx: CheckpointTransaction, result: CheckpointR
       }
     }
     verifySource(new Set(locks.map(lock => relative(join(root, ".git"), lock.path))));
-    if (!tx.gitBefore.size) { mkdirSync(join(root, ".git"), { mode: 0o700 }); published = true; }
+    if (!tx.gitBefore.size && absent(join(root, ".git"))) { mkdirSync(join(root, ".git"), { mode: 0o700 }); published = true; }
     for (const [path, entry] of [...additions].sort(([a], [b]) => a.localeCompare(b))) { writeEntry(join(root, ".git"), path, entry); published = true; }
     // Objects precede operation data; the operation head and checkout move last.
     if (!tx.info.initialized) { mkdirSync(join(root, ".jj"), { mode: 0o700 }); published = true; }

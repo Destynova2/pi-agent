@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { McpApprovals, fingerprint, serverIdentity } from "../../lib/mcp-approvals.ts";
-import { checkpointReason, checkpointRoot, createCheckpointTransaction, closeCheckpointTransaction, publishCheckpoint, type CheckpointInspection, type CheckpointResult } from "../../lib/jj-checkpoint.ts";
+import { checkpointReason, checkpointRoot, checkpointIdentity, createCheckpointTransaction, closeCheckpointTransaction, publishCheckpoint, type CheckpointInspection, type CheckpointResult } from "../../lib/jj-checkpoint.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
 import { runProcess } from "../../lib/process.ts";
 import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
@@ -52,7 +52,15 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
             if (output.error) throw new Error(output.error);
             validate(); return output.result;
           };
-          const info: CheckpointInspection = await query("inspect", cwd);
+          const inspect = async (): Promise<CheckpointInspection> => {
+            const root = checkpointRoot(cwd), identity = checkpointIdentity(root);
+            const inspected: CheckpointInspection = await query("inspect", cwd);
+            if (inspected.root !== root || checkpointRoot(cwd) !== root || checkpointIdentity(root) !== identity) throw new Error("Checkpoint repository changed during inspection");
+            // Codex can replace an empty .git with a protected mount. Keep the
+            // parent's identity, checked on both sides of every confined read.
+            return { ...inspected, identity };
+          };
+          const info = await inspect();
           if (info.root !== checkpointRoot(cwd)) throw new Error("Checkpoint root differs from the current project");
           const writePaths = [join(info.root, ".git"), join(info.root, ".jj")];
           commandWritableRoots(writePaths, cwd, agentDir, [getPackageDir()]);
@@ -73,7 +81,7 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
             revalidate,
           }, owned);
           ticket();
-          const current: CheckpointInspection = await query("inspect", cwd);
+          const current = await inspect();
           if (fingerprint(current) !== fingerprint(info)) throw new Error("Checkpoint project changed during approval");
           const tx = createCheckpointTransaction(info);
           try {
@@ -83,7 +91,7 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
             const roots = commandWritableRoots([join(tx.stage, ".git")], tx.stage, agentDir, [getPackageDir()]);
             const protectedMetadata = tx.gitBefore.size ? [join(tx.stage, ".git/config"), join(tx.stage, ".git/hooks")] : [];
             const result: CheckpointResult = await query("snapshot", tx.stage, roots, protectedMetadata);
-            const latest: CheckpointInspection = await query("inspect", cwd);
+            const latest = await inspect();
             if (fingerprint(latest) !== fingerprint(info)) throw new Error("Checkpoint project changed while snapshotting");
             ticket();
             const published = publishCheckpoint(tx, result);

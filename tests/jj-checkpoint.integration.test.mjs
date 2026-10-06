@@ -8,7 +8,7 @@ import { registerJjCheckpoint } from "../extensions/tool-policy/jj-checkpoint.ts
 import { runProcess } from "../lib/process.ts";
 import { sandboxBackend } from "../scripts/codex-shell.mjs";
 
-test("native checkpoint initializes and snapshots in Codex without granting ordinary Bash Git access", { timeout: 60000 }, async () => {
+for (const initializedGit of [true, false]) test(`native checkpoint initializes and snapshots in Codex without granting ordinary Bash Git access (initialized Git: ${initializedGit})`, { timeout: 60000 }, async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "jj-checkpoint-jail-"))), agent = join(root, "agent"), cwd = join(root, "repo"), home = join(root, "home");
   for (const path of [agent, cwd, home]) mkdirSync(path);
   const keys = ["HOME", "PI_CODING_AGENT_DIR", "PI_CODEX_SANDBOX_BIN", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "JJ_CONFIG"];
@@ -22,12 +22,14 @@ test("native checkpoint initializes and snapshots in Codex without granting ordi
     }
     const launcher = join(agent, "scripts/codex-shell.mjs"); chmodSync(launcher, 0o755);
     writeFileSync(join(agent, "settings.json"), "{}"); writeFileSync(join(agent, "network-policy.json"), '{"allow":[]}');
-    execFileSync("/usr/bin/git", ["init", "-b", "main"], { cwd, stdio: "ignore" }); writeFileSync(join(cwd, "file"), "before\n");
-    const config = readFileSync(join(cwd, ".git/config"));
+    if (initializedGit) execFileSync("/usr/bin/git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+    else mkdirSync(join(cwd, ".git"));
+    writeFileSync(join(cwd, "file"), "before\n");
+    const config = initializedGit ? readFileSync(join(cwd, ".git/config")) : undefined;
     // Fail on a missing host sandbox before checking an expected Git denial.
     await runProcess(launcher, ["--offline", "-c", "true"], { cwd, timeoutMs: 15000 });
     const ordinary = () => runProcess(launcher, ["--offline", "-c", "/usr/bin/git add -- file"], { cwd, timeoutMs: 15000 });
-    await assert.rejects(ordinary(), /denied|not permitted|read-only/i);
+    if (initializedGit) await assert.rejects(ordinary(), /denied|not permitted|read-only/i);
     registerJjCheckpoint({ on: (name, handler) => handlers.set(name, handler), registerCommand() {}, registerTool: value => { tool = value; }, getActiveTools: () => ["jj_checkpoint"] }, agent, () => {});
     const ctx = { cwd, hasUI: true, ui: { select: async (_title, choices) => choices[1], notify() {} } };
     const first = JSON.parse((await tool.execute("test", { reason: "isolated fixture" }, undefined, undefined, ctx)).content[0].text);
@@ -35,7 +37,8 @@ test("native checkpoint initializes and snapshots in Codex without granting ordi
     writeFileSync(join(cwd, "file"), "next\n");
     const second = JSON.parse((await tool.execute("test", { reason: "next task" }, undefined, undefined, ctx)).content[0].text);
     assert.equal(second.initialized, false); assert.notEqual(second.operationId, first.operationId);
-    assert.deepEqual(readFileSync(join(cwd, ".git/config")), config); assert.equal(readFileSync(join(cwd, "file"), "utf8"), "next\n");
+    if (config) assert.deepEqual(readFileSync(join(cwd, ".git/config")), config);
+    assert.equal(readFileSync(join(cwd, "file"), "utf8"), "next\n");
     await assert.rejects(ordinary(), /denied|not permitted|read-only/i);
   } finally {
     await handlers.get("session_shutdown")?.();

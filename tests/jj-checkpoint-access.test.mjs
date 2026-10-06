@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerJjCheckpoint } from "../extensions/tool-policy/jj-checkpoint.ts";
@@ -27,7 +27,11 @@ function fixture(t) {
   registerJjCheckpoint({ on: (name, fn) => handlers.set(name, fn), registerTool: value => { tool = value; }, registerCommand: (name, command) => commands.set(name, command), getActiveTools: () => state.active ? ["jj_checkpoint"] : [] }, agent, () => {}, async (_program, args, options) => {
     assert.ok(args.includes("--offline"), "no network grant for checkpoints");
     const data = JSON.parse(options.input);
-    if (data.action === "inspect") return JSON.stringify({ result: await inspectCheckpoint(options.cwd, data.binary, options.signal) });
+    if (data.action === "inspect") {
+      const result = await inspectCheckpoint(options.cwd, data.binary, options.signal);
+      state.afterInspection?.();
+      return JSON.stringify({ result });
+    }
     state.dispatches++; assert.notEqual(options.cwd, cwd, "worker uses disposable workspace");
     const roots = JSON.parse(args[args.indexOf("--write-roots") + 1]);
     assert.deepEqual(roots, [join(options.cwd, ".git")]);
@@ -67,6 +71,19 @@ test("refusal, missing UI, inactive tool and children cannot initialize or snaps
   f.ctx.ui.select = async () => APPROVAL_CHOICES[0]; await assert.rejects(f.request(), /not approved/);
   f.ctx.ui.select = async () => APPROVAL_CHOICES[1]; await assert.rejects(f.request(), /refused earlier/);
   assert.equal(f.state.dispatches, 0); assert.equal(existsSync(join(f.cwd, ".jj")), false);
+});
+
+for (const phase of ["inspection", "approval"]) test(`replacing Git metadata during ${phase} prevents a checkpoint`, async t => {
+  const f = fixture(t); if (!f) return;
+  const replace = () => {
+    renameSync(join(f.cwd, ".git"), join(f.cwd, "../original-git"));
+    mkdirSync(join(f.cwd, ".git"));
+  };
+  if (phase === "inspection") f.state.afterInspection = replace;
+  else f.ctx.ui.select = async () => { replace(); return APPROVAL_CHOICES[1]; };
+  await assert.rejects(f.request(), /changed during (inspection|approval)/);
+  assert.equal(f.state.dispatches, 0);
+  assert.equal(existsSync(join(f.cwd, ".jj")), false);
 });
 
 test("source changes and worker failure cannot publish; session cancellation invalidates pending consent", { timeout: 20000 }, async t => {

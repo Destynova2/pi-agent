@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpointReason, checkpointRoot, inspectCheckpoint, createCheckpointTransaction, runCheckpoint, publishCheckpoint, closeCheckpointTransaction } from "../lib/jj-checkpoint.ts";
@@ -60,11 +60,24 @@ test("initialization and later checkpoints recover dirty and untracked files whi
   assert.equal(readFileSync(join(f.cwd, "ignored"), "utf8"), "private\n");
 });
 
-test("a plain directory gets an empty Git repository and a recoverable jj checkpoint without a Git commit", { timeout: 15000 }, async t => {
+for (const emptyGit of [false, true]) test(`a plain directory gets a recoverable jj checkpoint without a Git commit (empty .git: ${emptyGit})`, { timeout: 15000 }, async t => {
   const f = fixture(t, false); if (!f) return; writeFileSync(join(f.cwd, "file"), "original\n");
+  if (emptyGit) mkdirSync(join(f.cwd, ".git"));
+  const gitInode = emptyGit ? lstatSync(join(f.cwd, ".git")).ino : undefined;
   const result = await f.checkpoint();
+  if (emptyGit) assert.equal(lstatSync(join(f.cwd, ".git")).ino, gitInode, "preserve the existing empty metadata directory");
   assert.equal(f.git("rev-parse", "--revs-only", "HEAD"), "");
   assert.equal(f.jj("--ignore-working-copy", "file", "show", "-r", result.commitId, "file"), "original");
+});
+
+test("nonempty invalid Git metadata is refused and preserved", async t => {
+  const f = fixture(t, false); if (!f) return;
+  mkdirSync(join(f.cwd, ".git"));
+  writeFileSync(join(f.cwd, ".git/owned"), "existing metadata\n");
+  await assert.rejects(inspectCheckpoint(f.cwd, f.binary), /not a git repository/);
+  assert.equal(readFileSync(join(f.cwd, ".git/owned"), "utf8"), "existing metadata\n");
+  assert.equal(existsSync(join(f.cwd, ".git/HEAD")), false);
+  assert.equal(existsSync(join(f.cwd, ".jj")), false);
 });
 
 test("absent protected resources never become files in the checkpoint", { timeout: 15000 }, async t => {
