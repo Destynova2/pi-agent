@@ -1,5 +1,5 @@
 // Data-only description of the bracketed-paste keepalive patch for npm
-// @earendil-works/pi-coding-agent 0.87.1, 0.99.1 and 1.0.0–1.0.3 (private runtime paste fix).
+// @earendil-works/pi-coding-agent 0.87.1, 0.99.1 and 1.0.0–1.0.4 (private runtime paste fix).
 // No logic here on purpose: scripts/patch-paste.mjs owns validation/writes,
 // this file only pins the exact byte-for-byte transform for one known version.
 //
@@ -129,6 +129,12 @@ export const TARGETS = [
 
 // Verified against the published artifacts; all replacement anchors are unchanged.
 export const TARGETS_BY_VERSION = {
+	"1.0.4": TARGETS.map((target) => ({
+		...target,
+		...(target.id === "bundled-cli-chunk"
+			? { relativePath: "dist/bundle/chunks/chunk-64GOPQSC.js", pristineSha256: "377fe53ebc07e7fd61b1ad3f61680db761b6141ce4eb7879eca8a3f0e928f6e3" }
+			: { pristineSha256: "e3a594cb638d57da4e195bee6a4ad10e4ebeb3335dbf2bd9990d913ef03ee4fb" }),
+	})),
 	"1.0.3": TARGETS.map((target) => ({
 		...target,
 		...(target.id === "bundled-cli-chunk"

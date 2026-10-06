@@ -46,7 +46,7 @@ node scripts/patch-paste.mjs "$RUNTIME/node_modules/@earendil-works/pi-coding-ag
 
 Run the pristine-runtime tests before patching it. Unknown artifact hashes or versions remain refused. No global install, shell wrapper or running session is changed by these commands. Pi 1.0.0 defaults to fullscreen; use `"tuiMode": "regular"` if desired, and `"quietStartup": "header"` to hide resource listings. These display preferences are not imposed by the installer.
 
-Pi **1.0.3** is the current upgrade target. Apply the pinned trust-order and paste corrections to its staged runtime, then run the native integration gate with the installed SDK manifest and the separate pristine 1.0.0 paste fixture. Linux Git approval uses the [metadata transaction path](docs/ORCHESTRATION.md#linux-git-transactions); it preserves read-only configuration and hooks and keeps ordinary Bash confined.
+Pi **1.0.4** is the current upgrade target. Apply the pinned trust-order and paste corrections to its staged runtime, then run the native integration gate with the installed SDK manifest and the separate pristine 1.0.0 paste fixture. The installed-runtime paste regression also checks the selected SDK's exact published CLI artifact before and after patching. Linux Git approval uses the [metadata transaction path](docs/ORCHESTRATION.md#linux-git-transactions); it preserves read-only configuration and hooks and keeps ordinary Bash confined.
 
 ## Quickstart
 
@@ -126,7 +126,7 @@ The host needs accessible KVM, `/usr/bin/bwrap` with `--disable-userns`, `/usr/b
 
 ### Plain `pi` startup on supported runtimes
 
-Unpatched Pi 0.99.1 and 1.0.1–1.0.3 skip personal `project_trust` handlers when a directory has no protected project resources. It marks that directory trusted, which the confined-tool broker correctly refuses. `defaultProjectTrust: "never"` does not fix that early return.
+Unpatched Pi 0.99.1 and 1.0.1–1.0.4 skip personal `project_trust` handlers when a directory has no protected project resources. It marks that directory trusted, which the confined-tool broker correctly refuses. `defaultProjectTrust: "never"` does not fix that early return.
 
 After backing up the Pi package, apply the pinned runtime correction:
 
@@ -136,7 +136,7 @@ node scripts/patch-project-trust.mjs <Pi-package-root>
 
 This changes the CLI startup condition and moves the empty-project shortcut after personal trust handlers in both the bundled CLI and unbundled runtime. Our existing handler then declines host-side project resources automatically, including previously trusted projects. Tool guards, native explicit CLI overrides, and the no-handler fallback remain unchanged. No alias, recurring flag, or trust-store edit is needed.
 
-The patch accepts only exact known Pi 0.99.1 and 1.0.1–1.0.3 artifacts, validates every target before writing, and is idempotent. The 1.0.1–1.0.3 pins were matched against registry tarballs with SHA-512 integrity checks, not inferred from old filenames. Unknown versions or modified artifacts are refused. It does not touch the paste patch. The paste mitigation also supports the verified 1.0.3 artifacts.
+The patch accepts only exact known Pi 0.99.1 and 1.0.1–1.0.4 artifacts, validates every target before writing, and is idempotent. The 1.0.1–1.0.4 pins were matched against registry tarballs with SHA-512 integrity checks, not inferred from old filenames. Unknown versions or modified artifacts are refused. It does not touch the paste patch. The paste mitigation also supports the verified 1.0.4 artifacts.
 
 For the separate bracketed-paste keepalive mitigation, back up both the coding-agent package and its resolved `pi-tui` dependency, then apply `node scripts/patch-paste.mjs <Pi-package-root>`. Supported versions are pinned in `patches/paste-keepalive.mjs`, including 1.0.1. Already-patched content is reverse-validated against its pristine hash. This mitigation re-enables paste mode on TTYs; it does not establish the original cause of every paste failure. Upgrades replace both runtime patches. Never force old hashes or remove sandbox guards. The configuration installer does not modify the Pi runtime; after a Pi upgrade, revalidate runtime compatibility instead of forcing this patch onto a new version.
 

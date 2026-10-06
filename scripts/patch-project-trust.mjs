@@ -35,6 +35,11 @@ export const TRUST_TARGETS = [
 // Verified byte-for-byte against registry tarballs; transforms have unchanged anchors.
 export const TRUST_TARGETS_BY_VERSION = {
   "0.99.1": TRUST_TARGETS,
+  "1.0.4": TRUST_TARGETS.map((target, index) => ({
+    ...target,
+    ...(index === 1 ? { path: "dist/bundle/chunks/chunk-H33F2TZD.js", sha256: "ffefe09d06cc357cade211d8123c971f0327e04f627c08f37e4e97c79da4dd11" } : {}),
+    ...(index === 2 ? { sha256: "866d65f2d42f74d2bb72ed4a755c8ace1b8a2c497a32cb57cc4db594a4fcb2bf" } : {}),
+  })),
   "1.0.3": TRUST_TARGETS.map((target, index) => ({
     ...target,
     ...(index === 1 ? { path: "dist/bundle/chunks/chunk-BFNE7BHG.js", sha256: "d8e4b8827fc70a6192967db26adf024d7c4672ca533068c09069717b0b9faad7" } : {}),

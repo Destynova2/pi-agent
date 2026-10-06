@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
 import { piPackageJson } from "./resolve-pi.mjs";
 import { patchPaste } from "../scripts/patch-paste.mjs";
+import { PATCHED_MARKER, TARGETS_BY_VERSION } from "../patches/paste-keepalive.mjs";
 
 // Execute the published CLI's actual ProcessTerminal class with simulated terminal I/O.
 // This tests a mode-2004 reset, not the user's physical terminal or desktop clipboard.
@@ -65,6 +67,31 @@ test("Pi 1.0.0 published CLI: reset still needs keepalive; pinned patch repairs 
     const result = await patchPaste(root);
     assert.deepEqual(result.patched, ["bundled-cli-chunk"]);
     await terminalCheck(await readFile(join(root, chunk), "utf8"), true);
+    assert.deepEqual((await patchPaste(root)).alreadyPatched, ["bundled-cli-chunk"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("installed Pi CLI: exact published artifact reproduces the reset and the patch repairs it", async () => {
+  assert.ok(piPackageJson, "Installed Pi SDK is required");
+  const manifest = JSON.parse(await readFile(piPackageJson, "utf8"));
+  const target = TARGETS_BY_VERSION[manifest.version]?.find(target => target.id === "bundled-cli-chunk");
+  assert.ok(target, `Unsupported paste runtime: ${manifest.version}`);
+  let pristine = await readFile(join(dirname(piPackageJson), target.relativePath), "utf8");
+  if (pristine.includes(PATCHED_MARKER)) {
+    for (const { search, replace } of [...target.replacements].reverse()) {
+      assert.equal(pristine.split(replace).length, 2);
+      pristine = pristine.replace(replace, search);
+    }
+  }
+  assert.equal(createHash("sha256").update(pristine).digest("hex"), target.pristineSha256);
+  await terminalCheck(pristine, false);
+  const root = await mkdtemp(join(tmpdir(), "pi-paste-installed-"));
+  try {
+    await mkdir(dirname(join(root, target.relativePath)), { recursive: true });
+    await writeFile(join(root, "package.json"), JSON.stringify(manifest));
+    await writeFile(join(root, target.relativePath), pristine);
+    assert.deepEqual((await patchPaste(root)).patched, ["bundled-cli-chunk"]);
+    await terminalCheck(await readFile(join(root, target.relativePath), "utf8"), true);
     assert.deepEqual((await patchPaste(root)).alreadyPatched, ["bundled-cli-chunk"]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
