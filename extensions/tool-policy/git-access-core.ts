@@ -46,7 +46,7 @@ function originalPath(path: string) {
 }
 
 export function validateGitRequest(value: unknown): GitRequest {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value)) > 16000) throw new Error("Invalid or oversized Git request");
+  if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value)) > 256 * 1024) throw new Error("Invalid or oversized Git request (maximum 256 KiB)");
   const input = value as Record<string, unknown>;
   const fields: Record<string, string[]> = { branch: ["branch"], stage: ["paths"], commit: ["paths", "message"], push: ["remote", "branch"] };
   if (typeof input.operation !== "string" || !Object.hasOwn(fields, input.operation)) throw new Error("Only branch, stage, commit and push are supported");
@@ -57,7 +57,7 @@ export function validateGitRequest(value: unknown): GitRequest {
   if (input.remote !== undefined && (typeof input.remote !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(input.remote))) throw new Error("Expected a configured remote name, not a URL or flags");
   if (input.message !== undefined && (typeof input.message !== "string" || !input.message.trim() || input.message.length > 8000 || control.test(input.message.replaceAll("\n", "")))) throw new Error("Invalid commit message");
   if (input.paths !== undefined) {
-    if (!Array.isArray(input.paths) || input.paths.length < 1 || input.paths.length > 100) throw new Error("Name 1–100 explicit files, never a directory or all files");
+    if (!Array.isArray(input.paths) || input.paths.length < 1 || input.paths.length > 1000) throw new Error("Name 1–1000 explicit files, never a directory or all files");
     for (const path of input.paths) {
       if (typeof path !== "string" || !path || path.length > 1024 || control.test(path) || path.includes("\\") || isAbsolute(path) || path.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) throw new Error("Expected literal repository-relative file paths");
     }

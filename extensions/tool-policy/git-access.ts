@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { approvalDialog } from "../../lib/approval-dialog.ts";
 import { McpApprovals, fingerprint, serverIdentity } from "../../lib/mcp-approvals.ts";
 import { runProcess } from "../../lib/process.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
@@ -40,9 +40,9 @@ export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (c
   });
   pi.registerTool({
     name: "git_access", label: "Git operation with scoped consent", executionMode: "sequential", exposure: "model-only",
-    description: "Git-only approved operations inside Codex: branch creates and switches to a NEW branch from current HEAD; stage names explicit repository-relative files (not directories); commit requires the exact complete list of staged paths and a message; push names one configured HTTPS remote and destination branch. Local branch/stage/commit consent can be remembered for the repository; push always asks once for the exact destination and commit ID. No force, amend, reset, clean, arbitrary arguments or upstream-config change. Does not need a previous failed Bash call. Hooks and signing stay enabled and confined.",
+    description: "Git-only approved operations inside Codex: branch creates and switches to a NEW branch from current HEAD; stage names up to 1000 explicit repository-relative files (not directories); long approvals show every page before the allow choices; commit requires the exact complete list of staged paths and a message; push names one configured HTTPS remote and destination branch. Local branch/stage/commit consent can be remembered for the repository; push always asks once for the exact destination and commit ID. No force, amend, reset, clean, arbitrary arguments or upstream-config change. Does not need a previous failed Bash call. Hooks and signing stay enabled and confined.",
     promptGuidelines: ["Use git_access directly for authorized Git writes rather than retrying denied Bash or requesting .git access. A project permission is not an instruction to commit or publish: require the user's request for those actions. Inspect ownership, staged changes and project checks first. Supply only explicit files belonging to the requested commit. Do not bypass hooks, use --no-verify, replay through Dunst, or retry blindly after a partial failure. Inspect hook-modified commits before proposing a push. /git-access permissions revokes remembered consent."],
-    parameters: Type.Object({ operation: Type.Union([Type.Literal("branch"), Type.Literal("stage"), Type.Literal("commit"), Type.Literal("push")]), branch: Type.Optional(Type.String()), paths: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: 100 })), message: Type.Optional(Type.String()), remote: Type.Optional(Type.String()), reason: Type.String() }, { additionalProperties: false }),
+    parameters: Type.Object({ operation: Type.Union([Type.Literal("branch"), Type.Literal("stage"), Type.Literal("commit"), Type.Literal("push")]), branch: Type.Optional(Type.String()), paths: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: 1000 })), message: Type.Optional(Type.String()), remote: Type.Optional(Type.String()), reason: Type.String() }, { additionalProperties: false }),
     async execute(_id, input, signal, _update, ctx) {
       const request = validateGitRequest(input), cwd = realpathSync(ctx.cwd);
       return tasks.run(async owned => {
@@ -74,10 +74,7 @@ export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (c
           checkNetwork();
           const expires = Date.now() + 300000;
           const revalidate = () => { validate(); checkNetwork(); if (Date.now() > expires || fingerprint(serverIdentity("/usr/bin/git", [], cwd)) !== fingerprint(binary)) throw new Error("Git approval expired or executable changed; no operation performed"); commandWritableRoots(roots, cwd, agentDir, [getPackageDir()]); };
-          const scoped: ExtensionContext = { ...ctx, cwd: snapshot.root, ui: { ...ctx.ui, select: async (title, choices, options) => {
-            if (wrapTextWithAnsi(title, Math.max(20, (process.stdout.columns ?? 80) - 4)).length > Math.max(1, (process.stdout.rows ?? 24) - choices.length - 6)) throw new Error("Git approval does not fit the terminal; shorten the request or enlarge the window. Nothing executed.");
-            return ctx.ui.select(title, choices, options);
-          } } };
+          const scoped: ExtensionContext = { ...ctx, cwd: snapshot.root, ui: { ...ctx.ui, select: (title, choices, options) => approvalDialog(ctx, title, choices, options) } };
           const ticket = await approvals.authorize(scoped, {
             auditOperation: request.operation, toolCallId: _id,
             resource: "git-access", identity: fingerprint([snapshot.identity, binary]), operation: request.operation === "push" ? fingerprint(["push", request.remote, request.branch, snapshot.head, snapshot.remoteUrl]) : "local-branch-stage-commit-v1",

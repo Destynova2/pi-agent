@@ -76,7 +76,7 @@ test("push captures one credential-free HTTPS URL and an immutable tip, without 
 
 function broker(t, f, state = {}) {
   const handlers = new Map(), tools = new Map(), commands = new Map(); let prompts = 0, dispatches = 0;
-  const ctx = { cwd: f.cwd, hasUI: true, ui: { select: async (_title, choices) => { prompts++; return state.choice ?? choices[3]; }, notify() {} } };
+  const ctx = { cwd: f.cwd, hasUI: true, ui: { select: async (_title, choices) => { if (choices.includes("Lire la page suivante")) return "Lire la page suivante"; prompts++; return state.choice ?? choices[3]; }, notify() {} } };
   const snapshot = { root: f.cwd, gitDir: join(f.cwd, ".git"), commonDir: join(f.cwd, ".git"), identity: "repo-id", stamp: "same", head: "a".repeat(40), branch: "main", staged: [], remoteUrl: "https://github.com/fixture/project.git" };
   registerGitAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command), getActiveTools: () => ["git_access"] }, f.agent, () => {}, async (_program, args, options) => {
     const data = JSON.parse(options.input);
@@ -100,7 +100,7 @@ test("project consent spans different local operations and restart, but push ask
   const reopened = broker(t, f); await reopened.request({ operation: "branch", branch: "fix/new-session" }); assert.equal(reopened.prompts, 0);
   b.snapshot.identity = "replacement-repository";
   await b.request({ operation: "branch", branch: "fix/changed-repository" }); assert.equal(b.prompts, 2);
-  let pushes = 0; b.ctx.ui.select = async (_title, choices) => { pushes++; assert.deepEqual(choices, APPROVAL_CHOICES.slice(0, 2)); return choices[1]; };
+  let pushes = 0; b.ctx.ui.select = async (_title, choices) => { if (choices.includes("Lire la page suivante")) return "Lire la page suivante"; pushes++; assert.deepEqual(choices.filter(choice => choice !== "Relire la page précédente"), APPROVAL_CHOICES.slice(0, 2)); return choices[1]; };
   await b.request({ operation: "push", remote: "origin", branch: "fix/a" }); await b.request({ operation: "push", remote: "origin", branch: "fix/a" }); assert.equal(pushes, 2);
   await b.commands.get("git-access").handler("permissions", b.ctx);
   b.ctx.ui.select = async () => undefined;
@@ -110,7 +110,7 @@ test("project consent spans different local operations and restart, but push ask
 test("headless, stale, refused and canceled approvals cannot dispatch", async t => {
   const f = fixture(t), state = {}, b = broker(t, f, state);
   b.ctx.hasUI = false; await assert.rejects(b.request({ operation: "branch", branch: "fix/a" }), /interactive parent/); b.ctx.hasUI = true;
-  b.ctx.ui.select = async () => { state.stamp = "changed"; return APPROVAL_CHOICES[1]; };
+  b.ctx.ui.select = async (_title, choices) => { if (choices.includes("Lire la page suivante")) return "Lire la page suivante"; state.stamp = "changed"; return APPROVAL_CHOICES[1]; };
   await assert.rejects(b.request({ operation: "branch", branch: "fix/a" }), /state changed/);
   // Closing an in-flight task must not be awaited from its own UI callback.
   b.ctx.ui.select = async () => { void b.handlers.get("session_start")(); return APPROVAL_CHOICES[1]; };
@@ -132,7 +132,7 @@ test("linked worktrees bind their metadata and literal filenames never expand", 
   assert.equal(f.git("diff", "--cached", "--name-only"), "", "other worktree index is untouched");
 });
 
-test("once/session consent, forged push grants, child use and oversized dialogs stay bounded", async t => {
+test("once/session consent, forged push grants, child use and paginated dialogs stay bounded", async t => {
   const f = fixture(t), state = { choice: APPROVAL_CHOICES[1] }, b = broker(t, f, state);
   await b.request({ operation: "branch", branch: "fix/one" }); await b.request({ operation: "branch", branch: "fix/two" }); assert.equal(b.prompts, 2);
   state.choice = APPROVAL_CHOICES[2]; await b.request({ operation: "stage", paths: ["one"] }); await b.request({ operation: "stage", paths: ["two"] }); assert.equal(b.prompts, 3);
@@ -143,7 +143,21 @@ test("once/session consent, forged push grants, child use and oversized dialogs 
   try { await assert.rejects(b.request({ operation: "stage", paths: ["three"] }), /interactive parent/); }
   finally { if (old === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = old; }
   await b.handlers.get("session_start")();
-  await assert.rejects(b.request({ operation: "branch", branch: "fix/long", reason: "界".repeat(490) }), /does not fit/);
+  let pages = 0;
+  b.ctx.ui.select = async (_title, choices) => { pages++; return choices.includes("Lire la page suivante") ? "Lire la page suivante" : APPROVAL_CHOICES[1]; };
+  await b.request({ operation: "branch", branch: "fix/long", reason: "界".repeat(490) });
+  assert.ok(pages > 1, "the entire long payload is reviewed before approval");
+});
+
+test("160 explicit files can be committed without including another session's files", async t => {
+  const f = fixture(t), paths = Array.from({ length: 160 }, (_, i) => `explicit-file-${i}`);
+  for (const path of paths) writeFileSync(join(f.cwd, path), "fixture\n");
+  writeFileSync(join(f.cwd, "unrelated"), "preserve\n");
+  await f.run({ operation: "stage", paths });
+  await f.run({ operation: "commit", paths, message: "fix: large explicit fixture" });
+  assert.deepEqual(f.git("ls-tree", "--name-only", "HEAD").split("\n").sort(), paths.sort());
+  assert.equal(readFileSync(join(f.cwd, "unrelated"), "utf8"), "preserve\n");
+  assert.throws(() => f.request({ operation: "stage", paths: Array.from({ length: 1001 }, (_, i) => `file-${i}`) }), /1–1000/);
 });
 
 test("index-mutating pre-commit and commit-msg hooks refuse history changes, with effects left for inspection", async t => {

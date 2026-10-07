@@ -21,6 +21,7 @@ export const CONFINED_RUNTIME_FILES = [
   "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", "scripts/web-read-worker.mjs", "scripts/jj-checkpoint.mjs",
   "lib/jj-checkpoint.ts", "extensions/tool-policy/jj-checkpoint.ts",
   "lib/git-transaction.ts", "extensions/tool-policy/git-access.ts", "extensions/tool-policy/git-access-core.ts",
+  "scripts/git-worktree.mjs", "extensions/tool-policy/git-worktree.ts", "lib/git-worktree.ts", "lib/approval-dialog.ts",
   "lib/confined.ts", "lib/confined-tools.ts", "lib/resolve-pi.mjs", "lib/rpc-process.ts", "lib/process.ts",
   "lib/read-request.mjs", "lib/browser-mcp.ts", "lib/podman-connection.ts",
   "extensions/tool-policy/index.ts", "extensions/confined-lsp/index.ts",

@@ -22,6 +22,10 @@ cd ~/src/pi-agent
 
 This repo has **no npm dependencies** (`scripts/` and `tests/` are pure Node stdlib, see `package.json` description). There is no `package-lock.json`: `npm ci` would fail for lack of a lockfile and has nothing to install anyway.
 
+## Worktree cleanup and large commits
+
+The parent-only `git_worktree_cleanup` tool inspects linked worktrees, requests approval for explicit paths, then archives their files and Git metadata. Local branches and all HEAD commits remain recoverable; retiring a worktree does not require publishing its branch. `git_access` accepts up to 1000 explicit paths and paginates long approval details. Restart Pi after installation. See [worktree cleanup](docs/GIT-WORKTREES.md) for scope, archives and recovery.
+
 ## Runtime compatibility
 
 The package targets Pi **1.x, minimum 1.0.4**. The updater requires the native integration gate for each candidate; a compatible major version alone is not proof of compatibility.
