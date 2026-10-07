@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 let calls = 0;
 const send = (id, result) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
@@ -18,6 +18,15 @@ for await (const line of createInterface({ input: process.stdin })) {
       try { writeFileSync(params.arguments.path, "written"); }
       catch (error) { denied = ["EPERM", "EACCES", "EROFS"].includes(error.code); if (!denied) throw error; }
     }
-    send(id, { content: [{ type: "text", text: JSON.stringify({ denied, pid: process.pid, calls: ++calls, sandbox: process.env.PI_CONFINED }) }] });
+    let cacheWritable = false;
+    if (process.env.npm_config_cache) {
+      mkdirSync(process.env.npm_config_cache, { recursive: true });
+      cacheWritable = true;
+    }
+    send(id, { content: [{ type: "text", text: JSON.stringify({
+      denied, pid: process.pid, calls: ++calls, sandbox: process.env.PI_CONFINED,
+      ignoreScripts: process.env.npm_config_ignore_scripts, npmCache: process.env.npm_config_cache,
+      tmpdir: process.env.TMPDIR, cacheWritable,
+    }) }] });
   }
 }

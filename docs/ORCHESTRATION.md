@@ -97,9 +97,18 @@ LSP and local MCP connections reuse the process-group supervisor. JSON frames ar
 }
 ```
 
-This is **not Pi's native MCP configuration**: this adapter uses `servers`, while native Pi uses `mcpServers`. Registering `/mcp` intentionally replaces Pi's built-in session MCP manager; here it stops connections, not opens the native manager. Shell commands `pi mcp add/list/login/remove` still use native MCP and do not configure this adapter; native `pi mcp list` can launch servers outside this adapter. Do not use those commands to validate confinement. Configure the example above manually, then discover tools through the confined `mcp` tool. Native remote/OAuth, exposure controls, `${NAME}`/`!command` expansion and project configs are not supported; `env` values here are literal strings. A native `mcpServers` file is rejected with an explicit migration message rather than silently ignored.
+Pi 1.0.4's global `pi mcp add/remove` commands also configure this adapter through the native `mcpServers` object. Both objects can coexist, with unique names across them. Run the CLI from an operator terminal; the confined agent cannot write its trusted global configuration:
 
-Optional `env` contains string-valued server environment variables. `network: true` uses the managed proxy and existing host grants, never unrestricted networking. A remote MCP server cannot be confined by jailing its local client; remote transports are deliberately not advertised as supported.
+```sh
+pi mcp add playwright -- npx -y @playwright/mcp@0.0.83 --isolated
+pi mcp remove playwright
+```
+
+After installing this adapter update, reload or restart Pi once. Later additions, changes, disablement and removals take effect at the next confined `mcp` tool call, without another reload. Changed or removed connections stop then; unchanged connections keep running. This is not a filesystem watcher: an idle connection remains open until the next call, `/mcp`, or session shutdown. List configured names with `mcp({})`, then discover tools with `mcp({server: "playwright", tool: "help"})`. Discovery starts only the requested server inside the jail.
+
+Keep `-builtin:mcp` in settings. Registering `/mcp` replaces Pi's session MCP manager with connection cleanup and permission revocation. Native **`pi mcp list` can start servers outside this adapter**; use the confined tool above for discovery. Native remote/OAuth, project definitions (`--local`), custom `cwd`/`timeout`, `toolExposure` and non-default exposure modes are unsupported. Unsupported fields fail explicitly; default `codemode` registration still routes through this confined `mcp` tool, not the disabled Codemode executor. Native `type: "stdio"`, `enabled: false` and `description` are accepted. Arguments default to `[]`; environment values are literal strings, with no `${NAME}` or `!command` expansion.
+
+Optional `env` contains string-valued server environment variables. `network: true` uses the managed proxy and existing host grants, never unrestricted networking. Native `mcpServers` definitions default to this managed network so `npx` can reach the npm registry; `network: false` disables it. Existing `servers` definitions remain offline by default. npm's cache lives under the launcher's private `TMPDIR`, and its lifecycle scripts are disabled through `npm_config_ignore_scripts=true`. Adding a package still authorizes execution of its server code; pin its version. Browser installation and navigation can require additional capabilities or host grants: successful tool discovery alone does not validate browser automation. A remote MCP server cannot be confined by jailing its local client; remote transports are deliberately not advertised as supported.
 
 Dunst is **not jailed**: Mac applications can write files or contact external services on its behalf. The strict dispatcher therefore denies it in both parent and delegated sessions. Its separate implementation retains confirmation checks, but those checks do not turn host automation into a confined capability. `/dunst` only reports status or stops a connection. Do not advertise Dunst as functional inside this jail or use it to bypass a denial.
 

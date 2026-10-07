@@ -47,7 +47,7 @@ test("local MCP persists inside the real jail, denies outside writes, and cancel
 test("the approval adapter dispatches confirmed calls through the real jail, never a host retry", { timeout: 30000 }, async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-mcp-consent-")));
   const cwd = join(root, "workspace"), agent = join(root, "agent"); mkdirSync(cwd); mkdirSync(agent);
-  writeFileSync(join(agent, "mcp.json"), JSON.stringify({ servers: { fixture: {
+  writeFileSync(join(agent, "mcp.json"), JSON.stringify({ mcpServers: { fixture: {
     command: process.execPath, args: [fileURLToPath(new URL("fixtures/mcp-server.mjs", import.meta.url))], network: false,
   } } }));
   const oldAgent = process.env.PI_CODING_AGENT_DIR;
@@ -63,6 +63,9 @@ test("the approval adapter dispatches confirmed calls through the real jail, nev
     await call({ tool: "help" }); assert.equal(prompts, 0);
     const first = JSON.parse((await call({ tool: "probe", args: { path: join(cwd, "inside") } })).content[0].text);
     assert.ok(first.sandbox); assert.equal(readFileSync(join(cwd, "inside"), "utf8"), "written");
+    assert.equal(first.ignoreScripts, "true");
+    assert.equal(first.npmCache, join(first.tmpdir, "pi-mcp-npm"));
+    assert.equal(first.cacheWritable, true);
     writeFileSync(join(root, "outside"), "untouched");
     const second = JSON.parse((await call({ tool: "probe", args: { path: join(root, "outside") } })).content[0].text);
     assert.equal(second.pid, first.pid); assert.equal(second.denied, true);
