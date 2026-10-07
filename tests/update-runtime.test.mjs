@@ -29,7 +29,11 @@ async function fixture(t) {
   await writeFile(join(packageRoot, "dist/bundle/cli.js"), 'console.log(JSON.stringify({args:process.argv.slice(2),manifest:process.env.PI_PACKAGE_JSON,cwd:process.cwd()})); process.exitCode=23;\n');
   const updater = await prepareUpdater(agentDir);
   await writeFile(launcher, renderLauncher(packageJson, { agentDir }), { mode: 0o700 });
-  return { root, packageJson, launcher, packageRoot, logDirs, agentDir, updater };
+  // Exercise the launcher's bound default independently of the gate's staged agent.
+  // Explicit override behavior has its own test below.
+  const env = { ...process.env };
+  delete env.PI_CODING_AGENT_DIR;
+  return { root, packageJson, launcher, packageRoot, logDirs, agentDir, updater, env };
 }
 
 
@@ -80,7 +84,7 @@ test("generated launcher forwards arguments, manifest and native exit status thr
   for (const args of [["--version", "a b"], ["update", "--extensions"], ["update", "--models"], ["update", "--self", "--help"], ["update", "--all", "--self"]]) {
     const output = join(f.root, "output.log"), fd = openSync(output, "w");
     let result;
-    try { result = spawnSync(f.launcher, args, { cwd: f.root, stdio: ["ignore", fd, fd] }); }
+    try { result = spawnSync(f.launcher, args, { cwd: f.root, env: f.env, stdio: ["ignore", fd, fd] }); }
     finally { closeSync(fd); }
     assert.ifError(result.error);
     const stdout = readFileSync(output, "utf8");
@@ -225,7 +229,7 @@ test("shell trust normalization agrees with the native forwarding path, includin
   for (const args of cases) {
     const log = join(f.root, "args.log"), fd = openSync(log, "w");
     let result;
-    try { result = spawnSync(f.launcher, args, { cwd: f.root, stdio: ["ignore", fd, fd] }); }
+    try { result = spawnSync(f.launcher, args, { cwd: f.root, env: f.env, stdio: ["ignore", fd, fd] }); }
     finally { closeSync(fd); }
     assert.ifError(result.error);
     const output = readFileSync(log, "utf8");
@@ -253,7 +257,7 @@ test("ordinary and forwarded native update commands keep the launcher PID and re
   for (const args of [[], ["update", "--models"]]) {
     await rm(ready, { force: true }); await rm(stopped, { force: true });
     const fd = openSync(join(f.root, "signal.log"), "w");
-    const child = spawn(f.launcher, args, { stdio: ["ignore", fd, fd] });
+    const child = spawn(f.launcher, args, { env: f.env, stdio: ["ignore", fd, fd] });
     closeSync(fd);
     const exited = once(child, "exit");
     let nativePid;
@@ -295,7 +299,7 @@ test("launcher executes the protected updater after its source checkout disappea
   for (const args of [["--version"], ["update", "--models"]]) {
     const fd = openSync(join(f.root, "independent.log"), "w");
     let result;
-    try { result = spawnSync(f.launcher, args, { cwd: f.root, stdio: ["ignore", fd, fd] }); }
+    try { result = spawnSync(f.launcher, args, { cwd: f.root, env: f.env, stdio: ["ignore", fd, fd] }); }
     finally { closeSync(fd); }
     assert.ifError(result.error);
     assert.equal(result.status, 23, await readFile(join(f.root, "independent.log"), "utf8"));
