@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerPodmanAccess } from "../extensions/tool-policy/podman-access.ts";
@@ -15,7 +15,7 @@ function fixture(t) {
   const saved = process.env.PI_PODMAN_BIN; process.env.PI_PODMAN_BIN = process.execPath;
   const tools = new Map(), handlers = new Map(), commands = new Map(), calls = [], reviews = [], updates = [];
   const connections = [{ Default: true, URI: "ssh://root@127.0.0.1:6000/run/podman/podman.sock", Identity: key }];
-  let prompts = 0, active = true, result = "built\n", failure, onRun, verdict = "allow";
+  let prompts = 0, active = true, result = "built\n", failure, onRun, onCommand, verdict = "allow";
   const model = { provider: "fixture", id: "reviewer" };
   const ctx = { cwd, hasUI: true, model,
     sessionManager: { getBranch: () => [{ type: "message", message: { role: "user", content: "Build the local image" } }], getSessionId: () => "fixture", getSessionFile: () => undefined },
@@ -27,6 +27,7 @@ function fixture(t) {
   registerPodmanAccess(pi, agent, () => {}, async (program, args, options) => {
     calls.push({ program, args, options });
     if (args[0] === "system") return JSON.stringify(connections);
+    if (onCommand) return onCommand(args.slice(6), options);
     if (onRun) await onRun(options);
     options.onStdout?.(Buffer.from(result)); options.onStderr?.(Buffer.from("stderr\n"));
     if (failure) throw failure;
@@ -36,7 +37,7 @@ function fixture(t) {
   return { root, agent, cwd, key, ctx, connections, handlers, commands, calls, reviews, updates,
     activate: () => commands.get("approvals").handler("auto-deny Build local images; do not push or delete volumes", ctx),
     run: (input = {}, signal) => tools.get("request_podman_access").execute("fixture", { args: ["version"], reason: "local verification", ...input }, signal, value => updates.push(value), ctx),
-    disable() { active = false; }, get prompts() { return prompts; }, set result(value) { result = value; }, set failure(value) { failure = value; }, set onRun(value) { onRun = value; }, set verdict(value) { verdict = value; },
+    disable() { active = false; }, get prompts() { return prompts; }, set result(value) { result = value; }, set failure(value) { failure = value; }, set onRun(value) { onRun = value; }, set onCommand(value) { onCommand = value; }, set verdict(value) { verdict = value; },
   };
 }
 
@@ -128,4 +129,89 @@ test("session navigation cancels an ongoing build and no automatic retry occurs"
   const pending = assert.rejects(f.run({ args: ["build", "."] }), /canceled/);
   await started; await f.handlers.get("session_before_switch")(); await pending;
   assert.equal(f.calls.length, 2);
+});
+
+const sourceId = "a".repeat(64), candidateId = "b".repeat(64);
+const createRequest = { args: ["create", "--pull=never", "--name", "candidate", "localhost/demo:local"], env_from_container: sourceId };
+
+test("private create transfers exact environment by stdin and verifies equality without exposing values", async t => {
+  const f = fixture(t); await f.activate();
+  const secret = "private-env-value-123", environment = ["EMPTY=", `TOKEN=${secret}=with spaces`, "OTHER=#literal", `TOKEN=${secret}=with spaces`];
+  f.onCommand = (args, options) => {
+    assert.equal(options.onStdout, undefined); assert.equal(options.onStderr, undefined);
+    if (args[0] === "container") {
+      assert.deepEqual(args.slice(0, -1), ["container", "inspect", "--format", "{{json .Config.Env}}"]);
+      assert.ok([sourceId, candidateId].includes(args.at(-1)));
+      assert.equal(options.input, undefined);
+      return JSON.stringify(args.at(-1) === sourceId ? environment : [...new Set(environment)].reverse());
+    }
+    assert.deepEqual(args, ["create", "--unsetenv-all", "--env-file", "/dev/stdin", "--http-proxy=false", ...createRequest.args.slice(1)]);
+    assert.equal(options.input, [...new Set(environment)].sort().join("\n") + "\n");
+    return candidateId + "\n";
+  };
+  const result = await f.run(createRequest);
+  assert.equal(result.details.environmentPreserved, true); assert.equal(result.details.containerId, candidateId);
+  assert.equal(f.calls.length, 4); assert.equal(f.prompts, 0); assert.equal(f.reviews.length, 1);
+  assert.match(f.reviews[0].messages[0].content, /Config.Env/);
+  assert.equal(f.updates.length, 0);
+  assert.equal(JSON.stringify([result, f.reviews, f.calls.map(call => call.args)]).includes(secret), false);
+  for (const name of readdirSync(join(f.agent, "permission-audit"))) assert.equal(readFileSync(join(f.agent, "permission-audit", name)).includes(Buffer.from(secret)), false);
+  assert.deepEqual(readdirSync(f.cwd), []);
+});
+
+test("private environment transfer rejects ambiguous sources and overrides before any process", async t => {
+  const f = fixture(t);
+  for (const env_from_container of ["demo", "abc123", "a".repeat(63), "A".repeat(64), null, 1]) await assert.rejects(f.run({ ...createRequest, env_from_container }), /full container ID/);
+  for (const args of [["run", "image"], ["exec", "demo", "env"], ["container", "clone", sourceId]]) await assert.rejects(f.run({ ...createRequest, args }), /requires create/);
+  for (const flag of ["-eTOKEN=value", "-ie", "--env", "--env-file=/a", "--env-merge", "--env-host", "--unsetenv=TOKEN", "--unsetenv-all=false", "--secret", "--http-proxy=true"]) await assert.rejects(f.run({ ...createRequest, args: ["create", flag, "image"] }), /overrides/);
+  assert.equal(f.calls.length, 0);
+});
+
+test("private transfer refuses malformed or multiline environment before create", async t => {
+  for (const value of ["not json", "null", "{}", JSON.stringify(["NO_EQUALS"]), JSON.stringify(["=value"]), JSON.stringify(["A=one", "A=two"]), JSON.stringify(["TOKEN=one\ntwo"]), JSON.stringify(["TOKEN=one\rtwo"]), JSON.stringify(["TOKEN=one\0two"])]) {
+    const f = fixture(t); await f.activate(); f.onCommand = () => value;
+    await assert.rejects(f.run(createRequest), /source environment read.*output suppressed/);
+    assert.equal(f.calls.length, 2); assert.equal(f.updates.length, 0);
+  }
+});
+
+test("private transfer suppresses secrets in failures and detects incomplete or altered results", async t => {
+  for (const failure of ["read", "create", "verify", "mismatch", "bad-id"]) {
+    const f = fixture(t); await f.activate(); const secret = "never-display-this-secret";
+    f.onCommand = (args, options) => {
+      const phase = args[0] !== "container" ? "create" : args.at(-1) === sourceId ? "read" : "verify";
+      assert.equal(options.onStdout, undefined); assert.equal(options.onStderr, undefined);
+      if (failure === phase) throw new Error(secret);
+      if (phase === "create") return failure === "bad-id" ? secret : candidateId;
+      return JSON.stringify([`TOKEN=${failure === "mismatch" && phase === "verify" ? "changed" : secret}`]);
+    };
+    await assert.rejects(f.run(createRequest), error => !error.message.includes(secret) && /secret-bearing output suppressed/.test(error.message) && !error.cause);
+    assert.ok(f.calls.length <= 4); assert.equal(f.updates.length, 0);
+  }
+});
+
+test("denial never reads secrets; revoked approval or cancellation after read never creates", async t => {
+  const denied = fixture(t); await denied.activate(); denied.verdict = "deny";
+  await assert.rejects(denied.run(createRequest), /out_of_scope/); assert.equal(denied.calls.length, 1);
+  for (const cancel of [false, true]) {
+    const f = fixture(t); await f.activate(); const controller = new AbortController();
+    f.onCommand = () => { if (cancel) controller.abort(); else f.disable(); return '["TOKEN=private"]'; };
+    await assert.rejects(f.run(createRequest, controller.signal), /create failed or was canceled/);
+    assert.equal(f.calls.length, 2);
+  }
+});
+
+test("container create supports empty environments and one deadline for all private phases", async t => {
+  const f = fixture(t); await f.activate(); let now = Date.now(), step = 0;
+  t.mock.method(Date, "now", () => now);
+  f.onCommand = (args, options) => {
+    assert.equal(options.timeoutMs, 3000 - step++ * 1000); now += 1000;
+    if (args[1] === "create") {
+      assert.deepEqual(args.slice(0, 6), ["container", "create", "--unsetenv-all", "--env-file", "/dev/stdin", "--http-proxy=false"]);
+      assert.equal(options.input, ""); return candidateId;
+    }
+    return "[]";
+  };
+  const result = await f.run({ ...createRequest, args: ["container", ...createRequest.args], timeout_seconds: 3 });
+  assert.equal(result.details.environmentPreserved, true);
 });

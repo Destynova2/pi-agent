@@ -15,6 +15,40 @@ Pi's ordinary Bash remains sandboxed. A `cargo xtask` process does not gain host
 access from this tool: use the corresponding native Podman operations explicitly.
 No project-specific deployment behavior, seed or pod replacement is implied.
 
+## Preserve a container environment privately
+
+For `create` or `container create`, set `env_from_container` to the source's full
+64-character container ID. The bridge reads that container's environment after
+approval, passes it through stdin to `--env-file /dev/stdin`, then compares the
+created container's environment with the source. Values never enter tool arguments,
+reviewer prompts, temporary files, progress output or permission records. Errors
+from these private subprocesses are suppressed. The result contains only the new
+container ID and whether verification succeeded.
+
+```json
+{
+  "args": ["create", "--pull=never", "--name", "demo-candidate", "localhost/demo:new"],
+  "env_from_container": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "reason": "Create the requested replacement with the existing service environment"
+}
+```
+
+Obtain the real source ID using `inspect --format {{.Id}}`. The example copies
+environment only. Supply the source's pod, volumes, user, entrypoint, command,
+security options and other required runtime settings in `args`, then verify them
+before activation. This is useful when `container clone` loses runtime settings.
+The bridge injects `--unsetenv-all`, `--env-file /dev/stdin` and
+`--http-proxy=false`; do not supply environment, secret or proxy override flags.
+Environment entries must have ordinary variable names and single-line values;
+conflicting duplicates and malformed entries are refused before creation.
+
+The one approval covers the source inspection, exact creation and private equality
+check on the pinned connection. The deadline spans all three operations. A failed
+verification is an error, with the created ID when available; a candidate may
+remain. The bridge never starts, swaps or removes containers automatically.
+Inspect before retrying. For deployments, still follow the project's runtime
+parity checks, rollback, health checks and restrictions on seeds and volumes.
+
 ## Connection and authorization
 
 The bridge resolves Podman from the protected host PATH (or a host-set
@@ -55,7 +89,8 @@ deadline is 300 seconds, maximum 1800; output is limited to 8 MiB, with the last
 60,000 characters shown and terminal controls escaped. Stdout and stderr,
 including failures, enter the conversation: do not request secret-bearing
 inspection output. Prefer `request_host_access`'s sanitized `podman_inspect`.
-There is no stdin/TTY. Cancellation stops the local process group; effects already
+There is no arbitrary stdin/TTY; only the private environment transfer above.
+Cancellation stops the local process group; effects already
 submitted to the engine may remain. Always inspect before retrying.
 
 ## Installation and validation
