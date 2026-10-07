@@ -15,8 +15,8 @@ function fixture(t, gitRepository = true) {
     t.skip("jj is not installed; checkpoint fixtures require jj"); return;
   }
   const root = realpathSync(mkdtempSync(join(tmpdir(), "jj-checkpoint-test-"))), cwd = join(root, "project"); mkdirSync(cwd);
-  const keys = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "JJ_CONFIG"], before = Object.fromEntries(keys.map(key => [key, process.env[key]]));
-  Object.assign(process.env, { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", JJ_CONFIG: join(root, "jj.toml") });
+  const keys = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "JJ_CONFIG", "XDG_CONFIG_HOME"], before = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", JJ_CONFIG: join(root, "jj.toml"), XDG_CONFIG_HOME: join(root, "config") });
   writeFileSync(process.env.JJ_CONFIG, '[user]\nname = "Fixture"\nemail = "fixture@example.com"\n');
   const git = (...args) => execFileSync("/usr/bin/git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   const jj = (...args) => execFileSync(binary, ["--no-pager", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -78,6 +78,37 @@ test("nonempty invalid Git metadata is refused and preserved", async t => {
   assert.equal(readFileSync(join(f.cwd, ".git/owned"), "utf8"), "existing metadata\n");
   assert.equal(existsSync(join(f.cwd, ".git/HEAD")), false);
   assert.equal(existsSync(join(f.cwd, ".jj")), false);
+});
+
+test("copied checkpoints retain secure repository and workspace configuration without publishing temporary IDs", { timeout: 20000 }, async t => {
+  const f = fixture(t); if (!f) return;
+  writeFileSync(join(f.cwd, "file"), "first\n");
+  await f.checkpoint();
+  f.jj("config", "set", "--repo", "user.name", "Repository Fixture");
+  f.jj("config", "set", "--workspace", "user.email", "workspace@example.com");
+  const configuration = ["repo/config-id", "workspace-config-id"].flatMap((path, index) => {
+    const file = join(f.cwd, ".jj", path), id = readFileSync(file, "utf8");
+    return [file, ...["config.toml", "metadata.binpb"].map(name => join(process.env.XDG_CONFIG_HOME, "jj", index ? "workspaces" : "repos", id, name))];
+  });
+  const before = configuration.map(path => readFileSync(path));
+  writeFileSync(join(f.cwd, "file"), "next\n");
+  const checkpoint = await f.checkpoint();
+  assert.equal(f.git("show", "-s", "--format=%cn <%ce>", checkpoint.gitRef), "Repository Fixture <workspace@example.com>");
+  configuration.forEach((path, index) => assert.deepEqual(readFileSync(path), before[index]));
+  assert.equal(f.git("show", `${checkpoint.gitRef}:file`), "next");
+  f.jj("config", "set", "--repo", "snapshot.auto-track", "none()");
+  writeFileSync(join(f.cwd, "new"), "must not bypass repository policy\n");
+  await assert.rejects(f.checkpoint(), /did not capture/);
+});
+
+test("checkpoint refusal identifies the exact Git state marker", async t => {
+  const f = fixture(t); if (!f) return;
+  for (const marker of ["MERGE_HEAD", "worktrees", "info/sparse-checkout"]) {
+    const path = join(f.cwd, ".git", marker);
+    mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, "fixture");
+    await assert.rejects(inspectCheckpoint(f.cwd, f.binary), error => error.message.includes(`.git/${marker}`));
+    rmSync(path);
+  }
 });
 
 test("initial Git metadata accepts filesystem booleans but rejects helpers, redirections and duplicate keys", { timeout: 15000 }, async t => {

@@ -1,8 +1,8 @@
 // Checkpoints run against disposable metadata and files. Only validated metadata
 // is published by the parent; Git/Jujutsu never execute on the host as a fallback.
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { inflateSync } from "node:zlib";
 import { runProcess } from "./process.ts";
@@ -134,12 +134,52 @@ const git = async (cwd: string, args: string[], signal?: AbortSignal) => {
   const output = Buffer.concat(chunks).toString("utf8");
   return args.includes("-z") ? output : output.trim();
 };
-const jj = async (binary: string, cwd: string, args: string[], signal?: AbortSignal) => {
+const jj = async (binary: string, cwd: string, args: string[], signal?: AbortSignal, env: NodeJS.ProcessEnv = {}) => {
   const chunks: Buffer[] = [];
-  await runProcess(binary, ["--no-pager", "--color=never", ...args], { cwd, signal, env: commandEnv(), timeoutMs: 120000, maxBytes: 4 * 1024 * 1024, onStdout: chunk => chunks.push(chunk) });
+  try {
+    await runProcess(binary, ["--no-pager", "--color=never", ...args], { cwd, signal, env: { ...commandEnv(), ...env }, timeoutMs: 120000, maxBytes: 4 * 1024 * 1024, onStdout: chunk => chunks.push(chunk) });
+  } catch (error) {
+    // Classify known failures without exposing helper stderr or config values.
+    if (error instanceof Error && /Failed to determine the secure config/.test(error.message)) throw new Error("Checkpoint cannot access jj secure repository configuration inside the sandbox; no host retry.");
+    throw error;
+  }
   const output = Buffer.concat(chunks).toString("utf8");
   return args.includes("list") ? output : output.trim();
 };
+
+// Jj may write secure per-repository configuration even during initialization or
+// read-only inspection of copied metadata. Keep those writes disposable, while
+// retaining the normal system, HOME, JJ_CONFIG and XDG configuration layers.
+async function withJjConfig<T>(cwd: string, run: (env: NodeJS.ProcessEnv) => Promise<T>): Promise<T> {
+  const original = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  if (!isAbsolute(original)) throw new Error("Checkpoint requires an absolute XDG_CONFIG_HOME");
+  const temporary = realpathSync(mkdtempSync(join(tmpdir(), "pi-jj-config-")));
+  try {
+    mkdirSync(join(temporary, "jj"), { mode: 0o700 });
+    for (const directory of ["", "jj"]) {
+      const source = join(original, directory);
+      if (absent(source)) continue;
+      const names = readdirSync(source);
+      if (names.length > 20000) throw new Error("Checkpoint configuration exceeds its entry limit");
+      for (const name of names) {
+        if (directory ? ["repos", "workspaces"].includes(name) : name === "jj") continue;
+        symlinkSync(join(source, name), join(temporary, directory, name));
+      }
+    }
+    for (const [idPath, kind] of [["repo/config-id", "repos"], ["workspace-config-id", "workspaces"]]) {
+      const path = join(cwd, ".jj", idPath);
+      if (absent(path)) continue;
+      const id = regular(join(cwd, ".jj"), path).data.toString();
+      if (!/^[a-f0-9]{20}$/.test(id)) throw new Error("Checkpoint found an invalid jj configuration ID");
+      const source = join(original, "jj", kind, id), target = join(temporary, "jj", kind, id);
+      for (const name of ["metadata.binpb", "config.toml"]) {
+        if (absent(join(source, name))) continue;
+        writeEntry(target, name, { ...regular(source, join(source, name)), mode: 0o600 });
+      }
+    }
+    return await run({ XDG_CONFIG_HOME: temporary });
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
 
 /** Inspection and commands below are called only by the confined fixed worker. */
 export async function inspectCheckpoint(cwd: string, binary: string, signal?: AbortSignal): Promise<CheckpointInspection> {
@@ -147,7 +187,7 @@ export async function inspectCheckpoint(cwd: string, binary: string, signal?: Ab
   if (!absent(join(root, ".gitmodules"))) throw new Error("Checkpoint refuses repositories with submodules");
   if (initialized && regular(join(root, ".jj"), join(root, ".jj/repo/store/git_target")).data.toString() !== "../../../.git") throw new Error("Checkpoint requires a local colocated Git store");
   for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer", "worktrees", "objects/info/alternates", "info/sparse-checkout"]) {
-    if (!absent(join(root, ".git", name))) throw new Error("Checkpoint refuses unfinished operations, shared stores and sparse repositories");
+    if (!absent(join(root, ".git", name))) throw new Error(`Checkpoint refuses repository state .git/${name}; finish the operation or use an ordinary unshared, non-sparse repository`);
   }
   let scratch: string | undefined;
   try {
@@ -161,7 +201,7 @@ export async function inspectCheckpoint(cwd: string, binary: string, signal?: Ab
       if (await git(root, ["rev-parse", "--show-toplevel"], signal) !== root || await git(root, ["rev-parse", "--is-bare-repository"], signal) !== "false") throw new Error("Checkpoint found redirected Git metadata");
     }
     const paths = (await git(root, [...prefix, "ls-files", "--cached", "--others", "--exclude-standard", "-z"], signal)).split("\0").filter(Boolean);
-    if (initialized) paths.push(...(await jj(binary, root, ["--ignore-working-copy", "file", "list", "-T", 'path ++ "\\0"'], signal)).split("\0").filter(Boolean));
+    if (initialized) paths.push(...(await withJjConfig(root, env => jj(binary, root, ["--ignore-working-copy", "file", "list", "-T", 'path ++ "\\0"'], signal, env))).split("\0").filter(Boolean));
     return { root, identity: checkpointIdentity(root), initialized, files: [...new Set(paths.filter(path => !path.startsWith(".jj/") && !path.startsWith(".git/")))].sort() };
   } finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); }
 }
@@ -192,10 +232,13 @@ export function closeCheckpointTransaction(tx: CheckpointTransaction) { rmSync(t
 export async function runCheckpoint(stage: string, binary: string, signal?: AbortSignal): Promise<CheckpointResult> {
   if (absent(join(stage, ".git/HEAD"))) await git(stage, ["init", "--template=", "--initial-branch=main"], signal);
   const initialized = absent(join(stage, ".jj"));
-  if (initialized) await jj(binary, stage, ["git", "init", "--colocate"], signal);
-  await jj(binary, stage, ["util", "snapshot"], signal);
-  const operationId = await jj(binary, stage, ["--ignore-working-copy", "op", "log", "--no-graph", "-n", "1", "-T", "self.id()"], signal);
-  const commitId = await jj(binary, stage, ["--ignore-working-copy", "log", "--no-graph", "-r", "@", "-T", "commit_id"], signal);
+  const { operationId, commitId } = await withJjConfig(stage, async env => {
+    if (initialized) await jj(binary, stage, ["git", "init", "--colocate"], signal, env);
+    await jj(binary, stage, ["util", "snapshot"], signal, env);
+    const operationId = await jj(binary, stage, ["--ignore-working-copy", "op", "log", "--no-graph", "-n", "1", "-T", "self.id()"], signal, env);
+    const commitId = await jj(binary, stage, ["--ignore-working-copy", "log", "--no-graph", "-r", "@", "-T", "commit_id"], signal, env);
+    return { operationId, commitId };
+  });
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commitId)) throw new Error("Checkpoint returned an invalid commit ID");
   const tree = await git(stage, ["ls-tree", "-r", "-z", commitId], signal);
   return { root: stage, operationId, commitId, initialized, tree };
@@ -206,6 +249,14 @@ function validateJj(tree: Tree, before: Tree) {
   const allowed = new RegExp(`^(?:\\.gitignore|working_copy/(?:checkout|tree_state|type)|repo/(?:workspace_store/index|(?:index|op_heads|op_store|store|submodule_store)/type|store/git_target|index/(?:op_links|segments)/${hex}|op_heads/heads/${hex}|op_store/(?:operations|views)/${hex}|store/extra/(?:heads/)?${hex}))$`);
   for (const [path, entry] of tree) {
     if (before.get(path)?.hash === entry.hash && before.get(path)?.mode === entry.mode) continue;
+    // Copied repositories receive private config IDs. Never publish pointers to
+    // temporary configuration or replace the original repository's settings.
+    if (["repo/config-id", "workspace-config-id"].includes(path)) {
+      if (!/^[a-f0-9]{20}$/.test(entry.data.toString()) || (entry.mode & 0o111)) throw new Error("Checkpoint produced an invalid jj configuration ID");
+      const original = before.get(path);
+      if (original) tree.set(path, original); else tree.delete(path);
+      continue;
+    }
     // Init may write a convenience trunk alias. It is unnecessary for recovery;
     // publishing executable/configuration input is outside this capability.
     if (path === "repo/config.toml" && !before.has(path)) { tree.delete(path); continue; }

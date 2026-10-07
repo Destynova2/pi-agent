@@ -162,6 +162,13 @@ and external state are not backed up. See [scope, limits and the required native
 gate](docs/ORCHESTRATION.md#local-jj-recovery-points) before activation. Installing
 these files does not itself initialize a repository or create a checkpoint.
 
+Jj's secure repository/workspace configuration is copied into private temporary
+storage during checkpoint commands. User configuration, identity, ignore rules and
+snapshot/signing policy remain active; temporary configuration IDs are never
+published. This supports initialization from Git repositories with a remote default
+branch without granting writes to `~/.config/jj`. A refusal for an unfinished,
+shared or sparse Git repository names the exact `.git/` marker that caused it.
+
 ## Linux exact-file grants
 
 On Linux, exact file write grants require the bundled [Codex file-root repair](patches/codex-linux-file-roots.md).
