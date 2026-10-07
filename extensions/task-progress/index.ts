@@ -32,6 +32,32 @@ function restore(ctx: ExtensionContext): Checkpoint | undefined {
 }
 
 export default function register(pi: ExtensionAPI) {
+  const subagents = new Set<string>();
+  const refresh = (ctx: ExtensionContext) => {
+    if (ctx.mode !== "tui") return;
+    const state = restore(ctx);
+    const lines: string[] = [];
+    if (state) {
+      const done = state.items.filter(item => item.status === "done").length;
+      const blocked = state.items.filter(item => item.status === "blocked").length;
+      lines.push(`Tasks: ${done}/${state.items.length} done${blocked ? ` · ${blocked} blocked` : ""} · /task-status`);
+    }
+    if (subagents.size) lines.push(`Delegations running: ${subagents.size}`);
+    ctx.ui.setWidget("task-progress", lines.length ? lines : undefined);
+  };
+  pi.on("session_start", (_event, ctx) => { subagents.clear(); refresh(ctx); });
+  pi.on("session_tree", (_event, ctx) => refresh(ctx));
+  pi.on("session_compact", (_event, ctx) => refresh(ctx));
+  pi.on("tool_execution_start", (event, ctx) => {
+    if (event.toolName === "subagent") { subagents.add(event.toolCallId); refresh(ctx); }
+  });
+  pi.on("tool_execution_end", (event, ctx) => {
+    if (subagents.delete(event.toolCallId)) refresh(ctx);
+  });
+  pi.on("session_shutdown", (_event, ctx) => {
+    subagents.clear();
+    if (ctx.mode === "tui") ctx.ui.setWidget("task-progress", undefined);
+  });
   pi.registerTool({
     name: "task_checkpoint", label: "Task requirements and evidence", executionMode: "sequential",
     description: "Persist the full multi-part request as a bounded checklist in this Pi session. update merges by stable ID; omitted requirements remain open. start replaces a completed checklist; supersedes must cite an explicit user scope change when unfinished work remains. This stores reported progress, never grants permission or proves completion. No shell or external writes.",
@@ -67,6 +93,7 @@ export default function register(pi: ExtensionAPI) {
       validateItems(state.items);
       signal?.throwIfAborted();
       pi.appendEntry(entryType, state);
+      refresh(ctx);
       return { content: [{ type: "text", text: JSON.stringify(state) }], details: undefined };
     },
   });

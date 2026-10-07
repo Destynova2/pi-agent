@@ -163,7 +163,7 @@ test("network requests record baseline, new and reused grants, explicit denies, 
   const old = process.env.PI_CODEX_NETWORK_GRANTS;
   writeFileSync(join(f.agent, "network-policy.json"), JSON.stringify({ allow: ["base.example.com"], deny: ["deny.example.com"] }));
   f.ctx.ui.confirm = async () => answer;
-  registerNetworkAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: value => { tool = value; } }, f.agent, () => {});
+  registerNetworkAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: value => { tool = value; } }, f.agent, () => {}, async () => { throw new Error("fixture exit 2"); });
   handlers.get("session_start")({}, f.ctx);
   t.after(() => { handlers.get("session_shutdown")(); if (old === undefined) delete process.env.PI_CODEX_NETWORK_GRANTS; else process.env.PI_CODEX_NETWORK_GRANTS = old; });
   const request = host => tool.execute("call-network", { hosts: [host], reason: "private reason" }, undefined, undefined, f.ctx);
@@ -185,10 +185,8 @@ test("network requests record baseline, new and reused grants, explicit denies, 
 
 test("command approval is recorded before execution and execution failure does not erase consent", async t => {
   const f = fixture(t), handlers = new Map(); let tool;
-  mkdirSync(join(f.agent, "scripts"));
-  writeFileSync(join(f.agent, "scripts/codex-shell.mjs"), '#!/usr/bin/env node\nprocess.exit(2);\n', { mode: 0o755 });
   f.ctx.ui.confirm = async () => true;
-  registerCommandAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: value => { tool = value; }, getActiveTools: () => ["request_command_access"] }, f.agent, () => {});
+  registerCommandAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: value => { tool = value; }, getActiveTools: () => ["request_command_access"] }, f.agent, () => {}, async () => { throw new Error("fixture exit 2"); });
   handlers.get("session_start")({}, f.ctx);
   t.after(() => handlers.get("session_shutdown")());
   const event = { toolName: "bash", toolCallId: "failed-call", input: { command: "secret command" } };

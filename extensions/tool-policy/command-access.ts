@@ -1,3 +1,4 @@
+import { runtimeRoot } from "../../lib/runtime-paths.mjs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -10,7 +11,7 @@ import { metalBackend } from "../../scripts/metal-backend.mjs";
 
 interface FailedCommand { command: string; cwd: string; expires: number }
 
-export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void) {
+export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
   let root: string | undefined;
   let tasks = new SessionTasks();
   let tail: Promise<unknown> = Promise.resolve();
@@ -60,7 +61,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
       "KVM is not a filesystem write grant. For an authorized Packer/Ansible image build needing /dev/kvm, use request_build_access after inspecting the project sources; do not request /dev or /dev/kvm in write_paths.",
       "Only request the write paths or Metal capability necessary for the reported failure. Inspect partial effects before proposing a retry. Never use another executor to bypass a sandbox denial.",
       "Ordinary Bash has no Metal access, even after installation or restart. A nil Metal device there does not test the optional backend. After an eligible failure, use this tool with gpu=metal and the captured failed_call_id; report the approved rerun result.",
-      "Keep the GPU command in the foreground with timeoutAction=kill. Preserve its real failure status: use set -o pipefail for pipelines, do not append echo or otherwise swallow an error, and make a Metal probe exit nonzero when no device is available. A successful shell result cannot request access. Never manufacture an unrelated failure to obtain a grant.",
+      "Keep the GPU command in native foreground bash with an explicit timeout. Preserve its real failure status: use set -o pipefail for pipelines, do not append echo or otherwise swallow an error, and make a Metal probe exit nonzero when no device is available. A successful shell result cannot request access. Never manufacture an unrelated failure to obtain a grant.",
     ],
     parameters: Type.Object({
       failed_call_id: Type.String({ minLength: 1, maxLength: 256 }),
@@ -123,8 +124,9 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
             audit.finish("granted", "human", "once");
             journal("started");
             try {
-              await runProcess(join(agentDir, "scripts/codex-shell.mjs"), [...(backend ? ["--metal", backend.sha256] : []), ...(roots.length ? ["--write-roots", JSON.stringify(roots)] : []), "-c", request.command], {
+              await execute(join(runtimeRoot, "scripts/codex-shell.mjs"), [...(backend ? ["--metal", backend.sha256] : []), ...(roots.length ? ["--write-roots", JSON.stringify(roots)] : []), "-c", request.command], {
                 cwd: request.cwd, signal: owned, timeoutMs: 60_000, maxBytes: 1024 * 1024,
+                env: { PI_CODING_AGENT_DIR: agentDir },
                 onStdout: chunk => output.push(chunk), onStderr: chunk => output.push(chunk),
               });
             } catch (error) {

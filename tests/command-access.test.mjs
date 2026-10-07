@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerCommandAccess } from "../extensions/tool-policy/command-access.ts";
 import { commandWritableRoots } from "../scripts/codex-shell.mjs";
+import { runtimeRoot } from "../lib/runtime-paths.mjs";
 import { CONFINED_TOOLS } from "../lib/confined-tools.ts";
 import { metalFixture } from "./metal-fixture.mjs";
 
@@ -15,10 +16,14 @@ function fixture(confirm = async () => true) {
   const previousHome = process.env.HOME;
   process.env.HOME = join(root, "home"); // Isolate the protected-cache policy from the outer sandbox's TMPDIR.
   // Unit transport only; OS confinement is exercised by command-access.integration.test.mjs.
-  writeFileSync(join(agent, "scripts/codex-shell.mjs"), '#!/usr/bin/env node\nconsole.log(JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd()}));\n', { mode: 0o755 });
   const handlers = new Map(); const journal = []; let tool; let prompts = 0; let active = true;
   const ctx = { cwd, hasUI: true, ui: { confirm: (...args) => { prompts++; return confirm(...args); } } };
-  registerCommandAccess({ on: (name, fn) => handlers.set(name, fn), appendEntry: (type, data) => journal.push({ type, ...data }), registerTool: value => { tool = value; }, getActiveTools: () => active ? ["request_command_access"] : [] }, agent, () => {});
+  registerCommandAccess({ on: (name, fn) => handlers.set(name, fn), appendEntry: (type, data) => journal.push({ type, ...data }), registerTool: value => { tool = value; }, getActiveTools: () => active ? ["request_command_access"] : [] }, agent, () => {}, async (program, args, options) => {
+    assert.equal(program, join(runtimeRoot, "scripts/codex-shell.mjs"));
+    assert.equal(options.env.PI_CODING_AGENT_DIR, agent);
+    options.onStdout(Buffer.from(JSON.stringify({ argv: args, cwd: options.cwd })));
+    return "";
+  });
   handlers.get("session_start")({}, ctx);
   const fail = (id = "failed", command = "echo original", extra = {}, isError = true) => {
     const event = { toolName: "bash", toolCallId: id, input: { command, ...extra } };

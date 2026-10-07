@@ -10,6 +10,7 @@ export async function makeTmpDir(prefix) {
 /** Builds a minimal source repo with the directories/files managed by the installer. */
 export async function buildFixtureSource(overrides = {}) {
   const root = await makeTmpDir("pi-agent-source-");
+  await writeFile(join(root, "package.json"), JSON.stringify({ name: "pi-agent-config", version: "0.1.0", pi: { extensions: ["./extensions/demo/index.ts"] } }));
   await mkdir(join(root, "agents"), { recursive: true });
   await writeFile(join(root, "agents", "worker.md"), "# worker\n");
   await mkdir(join(root, "extensions", "demo"), { recursive: true });
@@ -34,16 +35,23 @@ export async function buildFixtureSource(overrides = {}) {
  * that puts it first. Logs every `install <source>` to FAKE_PI_LOG.
  * `failSource`, if given, makes that specific source fail with exit code 1.
  */
-export async function makeFakePi({ failSource } = {}) {
+export async function makeFakePi({ failSource, rewriteSettings = false } = {}) {
   const binDir = await makeTmpDir("pi-agent-fakebin-");
   const script = `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (args[0] === "install") {
   const source = args[1];
   const logPath = process.env.FAKE_PI_LOG;
   if (logPath) appendFileSync(logPath, \`install \${source} \${process.env.PI_CODING_AGENT_DIR}\\n\`);
   if (process.env.FAKE_PI_FAIL_SOURCE && source === process.env.FAKE_PI_FAIL_SOURCE) process.exit(1);
+  if (${JSON.stringify(rewriteSettings)}) {
+    const settingsPath = process.env.PI_CODING_AGENT_DIR + "/settings.json";
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    settings.packages = [source];
+    settings.extensions = [];
+    writeFileSync(settingsPath, JSON.stringify(settings));
+  }
   process.exit(0);
 }
 if (args[0] === "--version") { console.log("pi 0.0.0-fake"); process.exit(0); }

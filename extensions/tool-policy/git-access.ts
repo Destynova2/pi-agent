@@ -1,3 +1,4 @@
+import { runtimeRoot } from "../../lib/runtime-paths.mjs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -14,8 +15,8 @@ import { gitRepositoryRoot, gitWritePaths, validateGitRequest, type GitSnapshot 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
-  const approvals = new McpApprovals(agentDir), launcher = join(agentDir, "scripts/codex-shell.mjs");
-  const command = `${quote(process.execPath)} ${quote(join(agentDir, "scripts/git-operation.mjs"))}`;
+  const approvals = new McpApprovals(agentDir), launcher = join(runtimeRoot, "scripts/codex-shell.mjs");
+  const command = `${quote(process.execPath)} ${quote(join(runtimeRoot, "scripts/git-operation.mjs"))}`;
   let tasks = new SessionTasks(), tail: Promise<unknown> = Promise.resolve();
   const reset = () => { approvals.reset(); const previous = tasks; tasks = new SessionTasks(); return previous.close(); };
   pi.on("session_start", reset);

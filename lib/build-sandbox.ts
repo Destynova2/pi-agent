@@ -1,3 +1,4 @@
+import { runtimeRoot } from "./runtime-paths.mjs";
 import { createHash } from "node:crypto";
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -75,7 +76,7 @@ export function prepareBuild(cwd: string, agentDir: string) {
   const path = [join(homedir(), ".local/bin"), "/home/linuxbrew/.linuxbrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].join(":");
   const executable = serverIdentity("ansible-playbook", [], cwd, { PATH: path });
   const backend = serverIdentity("/usr/bin/bwrap", [], cwd, { PATH: path });
-  const worker = realpathSync(join(agentDir, "scripts/build-worker.mjs"));
+  const worker = realpathSync(join(runtimeRoot, "scripts/build-worker.mjs"));
   for (const protectedPath of [realpathSync(agentDir), worker, realpathSync(process.execPath), executable.command, backend.command]) {
     if (inside(cwd, protectedPath)) throw new Error("Build runtime must live outside the project");
   }

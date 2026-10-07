@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import register from "../index.ts";
+import { runProcess } from "../../../lib/process.ts";
+import { runtimeRoot } from "../../../lib/runtime-paths.mjs";
 
 type Handler = Parameters<ExtensionAPI["registerCommand"]>[1]["handler"];
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -168,7 +170,6 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
     // on HOME or a real install path (see extensions/orchestrate/index.ts).
     const home = await mkdtemp(join(tmpdir(), "pi-orchestrate-lifecycle-"));
     const oldGatesBin = process.env.PI_GATES_BIN;
-    const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
     let handler: Handler | undefined;
     const events = new Map<string, () => Promise<void>>();
     const notifications: string[] = [];
@@ -177,19 +178,22 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
     const gatesBin = join(home, "pi-prek-fixture");
     let job: Promise<void> | undefined;
     let complete = false;
+    let launcherArgs: string[] | undefined;
     try {
       const child = `process.on('SIGTERM',()=>{}); require('fs').writeFileSync(${JSON.stringify(ready)},'ready'); setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'bad'),2000);`;
       const parent = `const child=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'}); child.on('error',error=>{console.error(error);process.exit(1)}); child.on('exit',code=>{console.error('fixture child exited '+code);process.exit(code??1)}); setInterval(()=>{},1000);`;
       await writeFile(gatesBin, `#!${process.execPath}\n${parent}\n`, { mode: 0o700 });
       process.env.PI_GATES_BIN = gatesBin;
-      process.env.PI_CODING_AGENT_DIR = join(home, "agent");
-      await mkdir(join(process.env.PI_CODING_AGENT_DIR, "scripts"), { recursive: true });
-      // Unit transport: the production command must enter the installed sandbox launcher.
-      await writeFile(join(process.env.PI_CODING_AGENT_DIR, "scripts/codex-shell.mjs"), `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(home, "launcher-args"))},JSON.stringify(process.argv.slice(2)));process.execve('/bin/bash',['bash',...process.argv.slice(2)],process.env);\n`, { mode: 0o700 });
       register({
         registerCommand: (_name: string, definition: { handler: Handler }) => { handler = definition.handler; },
         on: (event: string, callback: () => Promise<void>) => { events.set(event, callback); },
-      } as unknown as ExtensionAPI);
+      } as unknown as ExtensionAPI, (program, args, options) => {
+        // Unit transport checks the installed package boundary, then supervises
+        // only the fixed fixture below. Native confinement has integration coverage.
+        assert.equal(program, join(runtimeRoot, "scripts/codex-shell.mjs"));
+        launcherArgs = args;
+        return runProcess("/bin/bash", args, options);
+      });
       assert.ok(handler);
       const ctx = { cwd: home, ui: {
         setStatus: () => undefined,
@@ -201,7 +205,7 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
         try { await access(ready); break; } catch { await delay(20); }
       }
       assert.equal(await readFile(ready, "utf8").catch(() => "missing"), "ready", notifications.join("\n"));
-      assert.deepEqual(JSON.parse(await readFile(join(home, "launcher-args"), "utf8")), ["-c", `'${gatesBin}' 'full'`]);
+      assert.deepEqual(launcherArgs, ["-c", `'${gatesBin}' 'full'`]);
       await handler("gates full", ctx);
       assert.ok(notifications.some((text) => text.includes("already in progress")));
       await handler("status", ctx);
@@ -224,7 +228,6 @@ for (const method of ["cancel", "session_shutdown", "session_before_switch", "se
       await events.get("session_shutdown")?.();
       await job;
       if (oldGatesBin === undefined) delete process.env.PI_GATES_BIN; else process.env.PI_GATES_BIN = oldGatesBin;
-      if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
       await rm(home, { recursive: true, force: true });
     }
   });

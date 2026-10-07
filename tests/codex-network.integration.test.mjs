@@ -20,7 +20,7 @@ test("real managed proxy permits only allowed hosts, blocks direct sockets, and 
     const launcher = join(agent, "scripts/codex-shell.mjs");
     chmodSync(launcher, 0o755);
     writeFileSync(join(agent, "network-policy.json"), JSON.stringify({ allow: ["registry.npmjs.org"] }));
-    const env = { ...process.env, HOME: home, PI_CODEX_SANDBOX_BIN: codex };
+    const env = { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agent, PI_CODEX_SANDBOX_BIN: codex };
     delete env.PI_CODEX_NETWORK_GRANTS;
     const run = command => {
       const result = spawnSync(launcher, ["-c", command], { cwd, env, encoding: "utf8", timeout: 20000 });

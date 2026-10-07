@@ -1,3 +1,4 @@
+import { runtimeRoot } from "../lib/runtime-paths.mjs";
 import assert from "node:assert/strict";
 import { closeSync, copyFileSync, mkdtempSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -56,6 +57,27 @@ test("explicit disposable metadata roots remain offline when passed through the 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a relocated package reads network denials from the agent directory", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-package-policy-")));
+  const agent = join(root, "agent"), runtime = join(agent, "packages/pi-agent-config"), cwd = join(root, "project"), home = join(root, "home");
+  try {
+    mkdirSync(join(runtime, "scripts"), { recursive: true }); mkdirSync(cwd); mkdirSync(home);
+    for (const name of ["codex-shell.mjs", "codex-network.mjs", "metal-backend.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(runtime, "scripts", name));
+    writeFileSync(join(agent, "network-policy.json"), '{"allow":[],"deny":["example.com"]}');
+    const backend = join(root, "backend"); writeFileSync(backend, "must never execute");
+    const log = join(root, "denial.log"), fd = openSync(log, "w", 0o600);
+    let result;
+    try {
+      result = spawnSync(process.execPath, [join(runtime, "scripts/codex-shell.mjs"), "--web-url", "https://example.com/page"], {
+        cwd, env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agent, PI_CODEX_SANDBOX_BIN: backend }, stdio: ["ignore", fd, fd], timeout: 10000,
+      });
+    } finally { closeSync(fd); }
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.match(readFileSync(log, "utf8"), /WEB_NETWORK_DENIED/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("sandbox guard rejects project shell overrides and stale sessions, including before reload", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-sandbox-guard-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
@@ -65,8 +87,7 @@ test("sandbox guard rejects project shell overrides and stale sessions, includin
     const cwd = join(root, "project");
     mkdirSync(join(agent, "scripts"), { recursive: true });
     mkdirSync(join(cwd, ".pi"), { recursive: true });
-    const launcher = join(agent, "scripts/codex-shell.mjs");
-    writeFileSync(launcher, "");
+    const launcher = join(runtimeRoot, "scripts/codex-shell.mjs");
     writeFileSync(join(agent, "settings.json"), "{}");
     const handlers = new Map();
     register({ on(name, handler) { handlers.set(name, handler); }, registerCommand() {} });

@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import register, { runSandboxTool, STRICT_TOOLS } from "../extensions/tool-policy/index.ts";
+import { runtimeRoot } from "../lib/runtime-paths.mjs";
 
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-strict-")));
@@ -22,6 +23,8 @@ test("routine strict calls never ask, ignore legacy exceptions, and fail closed 
   const f = fixture(), previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = f.agent;
   try {
+    // The imported extension belongs to this source package; user settings live separately.
+    writeFileSync(join(f.agent, "settings.json"), JSON.stringify({ shellPath: join(runtimeRoot, "scripts/codex-shell.mjs") }));
     const handlers = new Map(), tools = new Map();
     register({ on: (name, handler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerTool: tool => tools.set(tool.name, tool), registerCommand() {}, getActiveTools: () => [...STRICT_TOOLS] });
     const ctx = { cwd: f.cwd, isProjectTrusted: () => false, hasUI: true, ui: { confirm() { assert.fail("must never ask"); } } };
@@ -53,9 +56,10 @@ test("routine strict calls never ask, ignore legacy exceptions, and fail closed 
 
 test("native file tools run inside Codex: writes, edits, symlinks, metadata and backend failure", { timeout: 60000 }, async () => {
   const f = fixture();
-  const previous = { HOME: process.env.HOME, PI_CODEX_SANDBOX_BIN: process.env.PI_CODEX_SANDBOX_BIN };
+  const previous = { HOME: process.env.HOME, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_CODEX_SANDBOX_BIN: process.env.PI_CODEX_SANDBOX_BIN };
   process.env.PI_CODEX_SANDBOX_BIN = realpathSync(process.env.PI_CODEX_SANDBOX_BIN ?? join(homedir(), ".local/bin/codex"));
   process.env.HOME = join(f.root, "home");
+  process.env.PI_CODING_AGENT_DIR = f.agent;
   mkdirSync(process.env.HOME);
   const call = (name, input, signal) => runSandboxTool(f.launcher, f.worker, f.sdk, f.cwd, { name, input, id: "test" }, signal);
   try {

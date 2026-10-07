@@ -1,4 +1,5 @@
-import { getAgentDir, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { runtimeRoot } from "../../lib/runtime-paths.mjs";
+import { SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -6,7 +7,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 // shellPath is also consumed by pi-background-bash. Refuse project overrides rather than
 // silently switching that package's cached shell back to an unrestricted executable.
 export default function (pi: ExtensionAPI) {
-  const launcher = join(getAgentDir(), "scripts/codex-shell.mjs");
+  const launcher = join(runtimeRoot, "scripts/codex-shell.mjs");
   let enabled = false;
   let loadedShell: string | undefined;
   const shellPath = (ctx: ExtensionContext) => {
@@ -19,7 +20,7 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on("session_start", (_event, ctx) => { loadedShell = shellPath(ctx); });
   pi.on("tool_call", (event, ctx) => {
-    if (event.toolName !== "bash" && event.toolName !== "subagent") return;
+    if (event.toolName !== "bash" && event.toolName !== "bash_background" && event.toolName !== "subagent") return;
     try {
       const current = shellPath(ctx);
       if (!enabled) return;

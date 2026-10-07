@@ -78,14 +78,14 @@ test("real confined notes and Graphify preserve features without granting Bash t
 
 test("confined notes preserve an existing central WAL database", { timeout: 30000 }, async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-notes-migration-")));
-  const home = join(root, "home"), cwd = join(root, "project");
-  mkdirSync(join(home, "workspace"), { recursive: true }); mkdirSync(cwd);
-  const previous = { HOME: process.env.HOME, PI_CODEX_SANDBOX_BIN: process.env.PI_CODEX_SANDBOX_BIN };
+  const home = join(root, "home"), cwd = join(root, "project"), agent = join(root, "agent");
+  mkdirSync(join(home, "workspace"), { recursive: true }); mkdirSync(cwd); mkdirSync(agent);
+  const previous = { HOME: process.env.HOME, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_CODEX_SANDBOX_BIN: process.env.PI_CODEX_SANDBOX_BIN };
   const backend = realpathSync(process.env.PI_CODEX_SANDBOX_BIN ?? join(homedir(), ".local/bin/codex"));
   const db = new DatabaseSync(join(home, "workspace/notes.db"));
   db.exec("PRAGMA journal_mode=WAL; CREATE TABLE notes (id INTEGER PRIMARY KEY, project TEXT, agent TEXT, kind TEXT, body TEXT, created_at TEXT, rev TEXT); INSERT INTO notes VALUES (1, 'old', 'fixture', 'decision', 'preserved history', '2026-01-01', NULL)");
   db.close();
-  Object.assign(process.env, { HOME: home, PI_CODEX_SANDBOX_BIN: backend });
+  Object.assign(process.env, { HOME: home, PI_CODING_AGENT_DIR: agent, PI_CODEX_SANDBOX_BIN: backend });
   try {
     await runConfined(cwd, "notes", { cwd, agent: "fixture", op: "add", kind: "decision", body: "new history" });
     const result = await runConfined(cwd, "notes", { cwd, agent: "fixture", op: "list", scope: "all" });

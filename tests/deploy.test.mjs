@@ -73,15 +73,22 @@ if [[ -n "$FAIL_COMMAND" && "$command" == *"$FAIL_COMMAND"* ]]; then exit 37; fi
     const target = join(root, "live");
     const run = (fail, input = "DEPLOY\n") => {
       writeFileSync(log, "");
-      const result = spawnSync("bash", [script], {
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: root,
-          PI_PACKAGE_JSON: join(root, "sdk.json"), PI_CODING_AGENT_DIR: target,
-          COMMAND_LOG: log, FAIL_COMMAND: fail },
-        input, encoding: "utf8",
-      });
-      return { ...result, commands: readFileSync(log, "utf8") };
+      const inputPath = join(root, "input"), outputPath = join(root, "output"), errorPath = join(root, "error");
+      writeFileSync(inputPath, input);
+      const descriptors = [openSync(inputPath, "r"), openSync(outputPath, "w"), openSync(errorPath, "w")];
+      let result;
+      try {
+        result = spawnSync("bash", [script], {
+          env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: root,
+            PI_PACKAGE_JSON: join(root, "sdk.json"), PI_CODING_AGENT_DIR: target,
+            COMMAND_LOG: log, FAIL_COMMAND: fail },
+          stdio: descriptors,
+        });
+      } finally { descriptors.forEach(closeSync); }
+      assert.ifError(result.error);
+      return { ...result, stdout: readFileSync(outputPath, "utf8"), stderr: readFileSync(errorPath, "utf8"), commands: readFileSync(log, "utf8") };
     };
-    for (const fail of ["npm run check", "npm install", "node scripts/install.mjs", "node scripts/doctor.mjs", "npm run verify:integration"]) {
+    for (const fail of ["npm run check", "node scripts/install.mjs", "node scripts/doctor.mjs", "npm run verify:integration"]) {
       const result = run(fail);
       assert.equal(result.status, 37, result.stderr);
       assert.ok(!result.commands.includes(`--target ${target}`), result.commands);
@@ -91,6 +98,7 @@ if [[ -n "$FAIL_COMMAND" && "$command" == *"$FAIL_COMMAND"* ]]; then exit 37; fi
     assert.ok(!cancelled.commands.includes(`--target ${target}`));
     const success = run("");
     assert.equal(success.status, 0, success.stderr);
+    assert.equal(success.commands.includes("npm install"), false, "deployment must not download a separate patch-test SDK");
     assert.ok(success.commands.indexOf("npm run verify:integration") < success.commands.indexOf(`--target ${target}`));
     assert.ok(success.commands.includes(`node scripts/doctor.mjs --target ${target} --installed`));
     const failedInstall = run(`node scripts/install.mjs --target ${target}`);

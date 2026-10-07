@@ -1,3 +1,4 @@
+import { runtimeRoot } from "../../lib/runtime-paths.mjs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -12,8 +13,8 @@ import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
-  const approvals = new McpApprovals(agentDir), launcher = join(agentDir, "scripts/codex-shell.mjs");
-  const command = [process.execPath, join(agentDir, "scripts/jj-checkpoint.mjs")].map(quote).join(" ");
+  const approvals = new McpApprovals(agentDir), launcher = join(runtimeRoot, "scripts/codex-shell.mjs");
+  const command = [process.execPath, join(runtimeRoot, "scripts/jj-checkpoint.mjs")].map(quote).join(" ");
   let tasks = new SessionTasks(), tail: Promise<unknown> = Promise.resolve();
   const reset = () => { approvals.reset(); const previous = tasks; tasks = new SessionTasks(); return previous.close(); };
   for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) pi.on(event, reset);

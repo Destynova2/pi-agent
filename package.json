@@ -3,7 +3,44 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Versioned pi config: portable installer, doctor, tests. Node stdlib only.",
+  "description": "Pi extensions with confined tools, session progress and portable installation.",
+  "keywords": ["pi-package"],
+  "files": ["extensions", "lib", "scripts", "agents", "gates", "settings.json", "keybindings.json"],
+  "pi": {
+    "extensions": [
+      "./extensions/anthropic-docs-compat/index.ts",
+      "./extensions/codex-sandbox/index.ts",
+      "./extensions/tool-policy/index.ts",
+      "./extensions/background-bash/index.ts",
+      "./extensions/notes.ts",
+      "./extensions/task-progress/index.ts",
+      "./extensions/terminal-paste/index.ts",
+      "./extensions/orchestrate/index.ts",
+      "./extensions/subagent/index.ts",
+      "./extensions/git-inspect/index.ts",
+      "./extensions/graphify/index.ts",
+      "./extensions/ci-watch/index.ts",
+      "./extensions/web/index.ts",
+      "./extensions/mcp/index.ts",
+      "./extensions/confined-lsp/index.ts",
+      "./extensions/dunst/index.ts"
+    ],
+    "skills": [],
+    "prompts": [],
+    "themes": []
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
+  },
   "engines": {
     "node": ">=22.19"
   },
