@@ -1,9 +1,50 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCheck } from "../scripts/check.mjs";
 import { makeTmpDir } from "./fixtures/build.mjs";
+
+test("check reuses only successful identical inputs, invalidating additions, edits and SDK changes", async t => {
+  const parent = await makeTmpDir("pi-check-evidence-"), dir = join(parent, "source"), evidence = join(parent, "check.json");
+  await mkdir(dir);
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const sdk = join(parent, "sdk.json");
+  await writeFile(sdk, "{}\n");
+  await mkdir(join(parent, "dist/bundle"), { recursive: true });
+  const cli = join(parent, "dist/bundle/cli.js");
+  await writeFile(cli, "// SDK CLI\n");
+  const oldSdk = process.env.PI_PACKAGE_JSON;
+  process.env.PI_PACKAGE_JSON = sdk;
+  try {
+    await writeFile(join(dir, "entry.mjs"), "export const ok = 1;\n");
+    const check = () => runCheck({ dir, skipGitDiff: true, evidence, reuseEvidence: evidence });
+    assert.equal(check().reused, false);
+    assert.equal(check().reused, true);
+    await writeFile(join(dir, "view.ts"), "export const view = 2;\n");
+    assert.equal(check().reused, false);
+    assert.equal(check().reused, true);
+    await writeFile(sdk, '{"version":"changed"}\n');
+    assert.equal(check().reused, false);
+    await writeFile(cli, "// changed SDK CLI\n");
+    assert.equal(check().reused, false);
+    await writeFile(join(dir, "added.mjs"), "export const broken = (;\n");
+    assert.equal(check().ok, false);
+    assert.equal(check().reused, false, "failures never become reusable");
+    await writeFile(join(dir, "added.mjs"), "export const fixed = 3;\n");
+    assert.equal(check().ok, true);
+    assert.equal(check().reused, true);
+    await writeFile(evidence, "{");
+    assert.equal(check().reused, false);
+    assert.equal(JSON.parse(await readFile(evidence, "utf8")).ok, true);
+    const gitFailure = runCheck({ dir, reuseEvidence: evidence });
+    assert.equal(gitFailure.reused, true);
+    assert.equal(gitFailure.ok, false, "Git validation still runs after syntax evidence reuse");
+  } finally {
+    if (oldSdk === undefined) delete process.env.PI_PACKAGE_JSON;
+    else process.env.PI_PACKAGE_JSON = oldSdk;
+  }
+});
 
 test("check: valid and clean .mjs file => ok", async () => {
   const dir = await makeTmpDir("pi-agent-check-");

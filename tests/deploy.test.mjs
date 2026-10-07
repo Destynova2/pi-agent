@@ -53,7 +53,7 @@ test("deployment rejects invalid SDK paths before staging or running gates", () 
     }
     const valid = run(manifest);
     assert.equal(valid.status, 37, valid.stderr);
-    assert.equal(readFileSync(log, "utf8"), "run check\n", "a valid path with spaces reaches the first gate");
+    assert.match(readFileSync(log, "utf8"), /^run check -- --evidence .*\/check.json\n$/, "a valid path with spaces reaches the first gate");
     assert.equal(existsSync(target), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

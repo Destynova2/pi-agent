@@ -50,7 +50,7 @@
     "test": "node scripts/test.mjs",
     "test:integration": "node scripts/test.mjs --integration",
     "check": "node scripts/check.mjs",
-    "verify": "npm run check && npm test",
-    "verify:integration": "npm run check && npm run test:integration"
+    "verify": "node scripts/verify.mjs",
+    "verify:integration": "node scripts/verify.mjs --integration"
   }
 }
