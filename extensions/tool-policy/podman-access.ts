@@ -1,10 +1,9 @@
-import { lstatSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { realpathSync } from "node:fs";
+import { localPodman } from "../../lib/podman-connection.ts";
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { approvalDisplayText, fingerprint, McpApprovals, serverIdentity } from "../../lib/mcp-approvals.ts";
+import { approvalDisplayText, fingerprint, McpApprovals } from "../../lib/mcp-approvals.ts";
 import { runProcess } from "../../lib/process.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
 
@@ -28,20 +27,7 @@ const parameters = Type.Object({
   env_from_container: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$", description: "For create only: copy this container's environment privately over stdin, then verify equality. Full container ID required. Do not supply env flags or secret values." })),
 }, { additionalProperties: false });
 type Request = Static<typeof parameters>;
-const path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
 export const PODMAN_PROJECT_CHOICE = "Toujours autoriser le moteur Podman local pour ce projet";
-
-function sshIdentity(file: string) {
-  const stat = lstatSync(file);
-  if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.uid !== process.getuid?.()) throw new Error("Unsafe Podman SSH identity file");
-  // Reading the key may change atime; that does not change the authorized identity.
-  return fingerprint({ dev: stat.dev, ino: stat.ino, mode: stat.mode, uid: stat.uid, nlink: stat.nlink, size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs });
-}
-
-function outside(cwd: string, file: string) {
-  const rel = relative(cwd, realpathSync(file));
-  if (!rel || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../"))) throw new Error("Podman runtime/configuration must be outside the writable workspace");
-}
 
 function validateRequest(input: Request): Request {
   const serialized = JSON.stringify(input);
@@ -111,57 +97,29 @@ export function registerPodmanAccess(pi: ExtensionAPI, agentDir: string, verify:
     async execute(id, input, signal, update, ctx) {
       const request = validateRequest(input);
       return tasks.run(async owned => {
-        const cwd = realpathSync(ctx.cwd), home = realpathSync(homedir());
+        const cwd = realpathSync(ctx.cwd);
         const validate = () => {
           owned.throwIfAborted(); verify(ctx);
           if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("request_podman_access")) throw new Error("Podman requires the interactive parent in the same workspace");
-          outside(cwd, agentDir); outside(cwd, home);
-          // Existing user configuration is protected from project writes, including symlink targets.
-          for (const file of [join(home, ".config"), join(home, ".config/containers"), join(home, ".config/containers/podman-connections.json")]) {
-            try { lstatSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-            outside(cwd, file);
-          }
         };
         validate();
-        const executable = serverIdentity(process.env.PI_PODMAN_BIN ?? "podman", [], cwd, { PATH: path });
-        outside(cwd, executable.command);
-        // Do not forward model/provider credentials, workspace env or connection overrides.
-        const env: NodeJS.ProcessEnv = Object.fromEntries(Object.keys(process.env).map(key => [key, undefined]));
-        Object.assign(env, { HOME: home, PATH: path, LANG: "C.UTF-8", XDG_CONFIG_HOME: join(home, ".config"),
-          CONTAINERS_CONF: "/dev/null", CONTAINERS_CONF_OVERRIDE: "/dev/null", CONTAINERS_STORAGE_CONF: "/dev/null" });
-        let data: unknown;
-        try { data = JSON.parse(await execute(executable.command, ["system", "connection", "list", "--format", "json"], { cwd: home, env, signal: owned, timeoutMs: 10000, maxBytes: 65536 })); }
-        catch { throw new Error("Cannot read the configured Podman connections; no engine operation performed"); }
-        if (!Array.isArray(data)) throw new Error("Invalid Podman connections");
-        const defaults = data.filter(item => item && typeof item === "object" && item.Default === true);
-        if (defaults.length !== 1) throw new Error("Configure exactly one default Podman connection first");
-        const selected = defaults[0] as Record<string, unknown>;
-        if (typeof selected.URI !== "string" || selected.URI.length > 2048) throw new Error("Invalid Podman endpoint");
-        const url = new URL(selected.URI);
-        if (url.password || url.search || url.hash || !url.pathname ||
-            !(url.protocol === "unix:" && !url.host && !url.username || url.protocol === "ssh:" && ["127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("Podman bridge requires a local Unix socket or loopback SSH endpoint");
-        const prefix = ["--url", selected.URI, "--ssh", "golang"];
-        let key: string | undefined, keyIdentity: string | undefined;
-        if (url.protocol === "ssh:") {
-          if (typeof selected.Identity !== "string" || !isAbsolute(selected.Identity)) throw new Error("Podman SSH requires an explicit protected identity file");
-          key = realpathSync(selected.Identity); outside(cwd, key);
-          keyIdentity = sshIdentity(key); prefix.push("--identity", key);
-        }
+        const connection = await localPodman(cwd, agentDir, owned, execute);
+        const { executable, env, prefix } = connection;
         const args = [...request.args];
         if (request.env_from_container) args.splice(args[0] === "container" ? 2 : 1, 0, "--unsetenv-all", "--env-file", "/dev/stdin", "--http-proxy=false");
         const argv = [...prefix, ...args], expires = Date.now() + 300000;
-        const identity = fingerprint(executable), timeoutMs = (request.timeout_seconds ?? 300) * 1000;
+        const timeoutMs = (request.timeout_seconds ?? 300) * 1000;
         const title = "Autoriser une commande Podman ?";
         const transfer = request.env_from_container ? ` Lire Config.Env du conteneur ${request.env_from_container}, transmettre uniquement par stdin à create, puis lire Config.Env du conteneur créé pour vérifier l'égalité. Valeurs et sorties masquées; aucun démarrage, bascule ou nettoyage automatique.` : " Sorties affichées, secrets possibles.";
         const detail = `HORS SANDBOX, une fois, ${timeoutMs / 1000} s. Connexion locale fixée pour cet appel. Effets possibles sur moteur, montages hôte et registres; contexte de build envoyé au moteur.${transfer} Aucun droit Bash/sous-agent.\n${JSON.stringify({ executable: executable.command, cwd, argv, reason: request.reason })}`;
         const revalidate = () => {
           validate();
           if (Date.now() > expires) throw new Error("Podman approval expired");
-          if (fingerprint(serverIdentity(executable.command, [], cwd, { PATH: path })) !== identity || key && sshIdentity(key) !== keyIdentity) throw new Error("Podman executable or SSH identity changed during approval");
+          connection.verify();
         };
         const ticket = await approvals.authorize(ctx, {
           resource: "podman-access", auditOperation: request.args.slice(0, groups[request.args[0]] ? 2 : 1).join(" "), toolCallId: id,
-          identity: fingerprint([identity, prefix, keyIdentity]), operation: fingerprint([cwd, argv, timeoutMs, request.env_from_container]), remember: false, interactiveOnly: true,
+          identity: connection.identity, operation: fingerprint([cwd, argv, timeoutMs, request.env_from_container]), remember: false, interactiveOnly: true,
           projectAccess: {
             operation: "podman-engine-v1", label: PODMAN_PROJECT_CHOICE,
             detail: "Option permanente : toutes les opérations du pont sur ce moteur local, avec d'autres arguments, sans confirmation ni revue automatique. Inclut suppressions de conteneurs/volumes, publications et montages hôte ; ressources non limitées au projet. Liée au projet, à la connexion et au client affichés ci-dessus. Révocation : /podman-access permissions.",

@@ -112,6 +112,8 @@ node scripts/install.mjs --no-packages        # copies files, does not invoke `p
 
 A failure of an individual package (`pi install`) is reported but does not block the copy of other resources; the output then makes clear not to treat the installation as a full success.
 
+For Playwright on macOS, see the optional [container browser capability](docs/BROWSER-MCP.md). It avoids native Chrome Crashpad denials through a separately approved, disposable Podman container. Installing the regular package alone neither builds the image nor enables this profile.
+
 ### Linux KVM image builds
 
 The installed `request_build_access` tool supports the fixed project entry point `ansible-playbook -i localhost, ansible/build.yml`. It uses a separate Bubblewrap sandbox, exposes only `/dev/kvm` in addition to standard devices, and grants the full native host network after one explicit approval. Writes are limited to `.cache/`, `output/` and private temporary storage; build sources remain read-only. It supports a supervised foreground run of 120 minutes by default, up to 240 minutes. Ordinary Bash permissions remain unchanged.

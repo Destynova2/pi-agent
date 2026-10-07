@@ -54,6 +54,18 @@ test("native unsupported transports, exposure controls, malformed fields and amb
   assert.throws(() => readServers(agent, cwd), /unique/);
 });
 
+test("browser profiles survive native normalization and reject unsafe launch configuration", t => {
+  const { agent, cwd, save } = fixture(t);
+  const browser = { image: `sha256:${"a".repeat(64)}`, localhostPorts: [8092] };
+  const server = { command: "npx", args: ["-y", "@playwright/mcp@0.0.83", "--isolated"], browser };
+  save({ mcpServers: { playwright: server } });
+  assert.deepEqual(readServers(agent, cwd).playwright, { ...server, network: true });
+  for (const override of [{ browser: null }, { browser: { ...browser, mounts: ["/"] } }, { network: false }, { command: "sh" }, { env: { TOKEN: "private" } }]) {
+    save({ mcpServers: { playwright: { ...server, ...override } } });
+    assert.throws(() => readServers(agent, cwd), /Browser/);
+  }
+});
+
 test("adding, changing, disabling and removing servers takes effect on the next call without stopping unchanged connections", async t => {
   const { cwd, save } = fixture(t);
   const legacy = { command: process.execPath, args: [] };

@@ -22,7 +22,7 @@ export const CONFINED_RUNTIME_FILES = [
   "lib/jj-checkpoint.ts", "extensions/tool-policy/jj-checkpoint.ts",
   "lib/git-transaction.ts", "extensions/tool-policy/git-access.ts", "extensions/tool-policy/git-access-core.ts",
   "lib/confined.ts", "lib/confined-tools.ts", "lib/resolve-pi.mjs", "lib/rpc-process.ts", "lib/process.ts",
-  "lib/read-request.mjs",
+  "lib/read-request.mjs", "lib/browser-mcp.ts", "lib/podman-connection.ts",
   "extensions/tool-policy/index.ts", "extensions/confined-lsp/index.ts",
   "extensions/tool-policy/podman-access.ts", "extensions/tool-policy/command-access.ts", "extensions/tool-policy/network.ts",
   "lib/approval-review.ts", "lib/mcp-approvals.ts", "lib/permission-audit.ts",
