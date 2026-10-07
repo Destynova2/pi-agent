@@ -35,7 +35,7 @@ the original system prompt. Remove this extension directory to revert.
 ## Tests
 
 ```sh
-node --test ~/.pi/agent/extensions/anthropic-docs-compat/tests/compat.test.ts
+node --test ~/.pi/agent/packages/pi-agent-config/extensions/anthropic-docs-compat/tests/compat.test.ts
 ```
 
 Eight tests cover paths, arbitrary prompt wording, preserving user instructions,
@@ -45,7 +45,7 @@ Optional live smoke test (uses the configured subscription/credentials):
 
 ```sh
 pi --provider anthropic --model claude-fable-5-1 --print --no-session \
-  --no-tools --no-extensions --extension ~/.pi/agent/extensions/anthropic-docs-compat/index.ts \
+  --no-tools --no-extensions --extension ~/.pi/agent/packages/pi-agent-config/extensions/anthropic-docs-compat/index.ts \
   --no-skills --no-prompt-templates --no-context-files --thinking off 'Reply only: OK'
 ```
 

@@ -68,7 +68,7 @@ has no GPU permission. `MTLCreateSystemDefaultDevice() == nil` or
 `MTLCopyAllDevices() == []` in ordinary Bash is therefore expected. It does not
 show that the installed optional backend is missing a driver permission.
 
-Keep the intended GPU command in the foreground (`timeoutAction: "kill"`).
+Keep the intended GPU command in native foreground `bash` with an explicit `timeout`.
 Preserve its exit status: use `set -o pipefail` when filtering output, and do not
 append a successful `echo`. A Swift probe must exit nonzero when no device exists:
 
