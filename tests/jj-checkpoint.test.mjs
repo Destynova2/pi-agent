@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpointReason, checkpointRoot, inspectCheckpoint, createCheckpointTransaction, runCheckpoint, publishCheckpoint, closeCheckpointTransaction } from "../lib/jj-checkpoint.ts";
@@ -31,6 +31,10 @@ function fixture(t, gitRepository = true) {
   return { root, cwd, binary, git, jj, prepare, checkpoint };
 }
 
+function metadataFiles(root) {
+  return readdirSync(root, { recursive: true }).sort().filter(path => lstatSync(join(root, path)).isFile()).map(path => [path, readFileSync(join(root, path)).toString("hex")]);
+}
+
 test("checkpoint input cannot request restore, paths, arbitrary commands or control characters", () => {
   assert.equal(checkpointReason({ reason: "before edits" }), "before edits");
   for (const input of [{ reason: "" }, { reason: "bad\nreason" }, { reason: "test", command: "restore" }, { reason: "test", root: "/" }]) assert.throws(() => checkpointReason(input));
@@ -58,6 +62,119 @@ test("initialization and later checkpoints recover dirty and untracked files whi
   f.jj("restore", "--from", first.commitId);
   assert.equal(readFileSync(join(f.cwd, "file"), "utf8"), "before task\n"); assert.equal(readFileSync(join(f.cwd, "new"), "utf8"), "new before task\n");
   assert.equal(readFileSync(join(f.cwd, "ignored"), "utf8"), "private\n");
+});
+
+test("main checkpoints preserve eight linked worktrees and borrow existing history without copying it", { timeout: 30000 }, async t => {
+  const f = fixture(t); if (!f) return;
+  writeFileSync(join(f.cwd, "file"), "committed\n"); f.git("add", "file"); f.git("commit", "-m", "fixture");
+  f.git("gc", "--prune=now");
+  writeFileSync(join(f.cwd, ".git/info/exclude"), ".internal-worktrees/\n");
+  const worktrees = Array.from({ length: 8 }, (_, index) => join(index === 7 ? join(f.cwd, ".internal-worktrees") : f.root, `linked-${index}`));
+  for (const [index, path] of worktrees.entries()) {
+    f.git("worktree", "add", ...(index ? ["--detach"] : ["-b", "topic"]), path, "HEAD");
+    writeFileSync(join(path, "file"), `linked ${index}\n`);
+  }
+  writeFileSync(join(f.cwd, ".git/worktrees/linked-0/index.lock"), "other worktree owns this lock\n");
+  // Git ignores this sparse fixture; copying the whole object pool would exceed both limits.
+  const oversized = join(f.cwd, ".git/objects/info/fixture-no-copy");
+  writeFileSync(oversized, ""); truncateSync(oversized, 129 * 1024 * 1024);
+  writeFileSync(join(f.cwd, "file"), "staged\n"); f.git("add", "file"); writeFileSync(join(f.cwd, "file"), "main before\n");
+  writeFileSync(join(f.cwd, "new"), "new main\n");
+  const index = readFileSync(join(f.cwd, ".git/index")), head = f.git("rev-parse", "HEAD"), config = readFileSync(join(f.cwd, ".git/config"));
+  const branches = f.git("for-each-ref", "refs/heads"), listing = f.git("worktree", "list", "--porcelain");
+  const { tx, result } = await f.prepare();
+  assert.equal(existsSync(join(tx.stage, ".git/worktrees")), false);
+  assert.equal(existsSync(join(tx.stage, ".internal-worktrees")), false);
+  assert.deepEqual(readdirSync(join(tx.stage, ".git/objects/pack")), []);
+  assert.equal(readFileSync(join(tx.stage, ".git/objects/info/alternates"), "utf8"), join(f.cwd, ".git/objects") + "\n");
+  assert.ok([...tx.gitBefore.keys()].every(path => !/^(objects|worktrees)\//.test(path)));
+  // An independent worktree can update its private index while the main snapshot runs.
+  writeFileSync(join(worktrees[1], "file"), "concurrent linked edit\n");
+  f.git("-C", worktrees[1], "add", "file");
+  const registrations = metadataFiles(join(f.cwd, ".git/worktrees"));
+  const linkedFiles = worktrees.map(path => metadataFiles(path));
+  const first = publishCheckpoint(tx, result);
+  writeFileSync(join(f.cwd, "file"), "main after\n");
+  const second = await f.checkpoint();
+  assert.notEqual(first.operationId, second.operationId);
+  assert.equal(f.git("show", `${first.gitRef}:file`), "main before");
+  assert.equal(f.git("show", `${second.gitRef}:file`), "main after");
+  assert.equal(f.git("show", `${second.gitRef}:new`), "new main");
+  assert.deepEqual(f.git("ls-tree", "-r", "--name-only", second.gitRef).split("\n"), ["file", "new"]);
+  assert.deepEqual(readFileSync(join(f.cwd, ".git/index")), index);
+  assert.deepEqual(readFileSync(join(f.cwd, ".git/config")), config);
+  assert.equal(f.git("rev-parse", "HEAD"), head); assert.equal(f.git("for-each-ref", "refs/heads"), branches);
+  assert.equal(f.git("worktree", "list", "--porcelain"), listing);
+  assert.deepEqual(metadataFiles(join(f.cwd, ".git/worktrees")), registrations);
+  assert.deepEqual(worktrees.map(path => metadataFiles(path)), linkedFiles);
+  assert.equal(existsSync(join(f.cwd, ".git/objects/info/alternates")), false);
+  assert.equal(lstatSync(oversized).size, 129 * 1024 * 1024);
+});
+
+test("worker worktree registrations and alternate redirections cannot be published", { timeout: 15000 }, async t => {
+  const f = fixture(t); if (!f) return; writeFileSync(join(f.cwd, "file"), "before\n");
+  const { tx, result } = await f.prepare(), alternate = join(tx.stage, ".git/objects/info/alternates");
+  writeFileSync(alternate, "/tmp/another-object-pool\n");
+  assert.throws(() => publishCheckpoint(tx, result), /changed its read-only object pool/);
+  writeFileSync(alternate, tx.alternates);
+  mkdirSync(join(tx.stage, ".git/worktrees/forged"), { recursive: true });
+  writeFileSync(join(tx.stage, ".git/worktrees/forged/gitdir"), "/tmp/forged/.git\n");
+  assert.throws(() => publishCheckpoint(tx, result), /unapproved Git metadata/);
+  rmSync(join(tx.stage, ".git/worktrees"), { recursive: true });
+  const pool = join(f.cwd, ".git/objects"), moved = join(f.root, "original-objects");
+  renameSync(pool, moved); mkdirSync(pool);
+  assert.throws(() => publishCheckpoint(tx, result), /source changed/);
+  rmSync(pool, { recursive: true }); symlinkSync(moved, pool);
+  assert.throws(() => publishCheckpoint(tx, result), /redirected or unsafe object pool/);
+  assert.equal(existsSync(join(f.cwd, ".jj")), false);
+});
+
+test("working-file symbolic links are captured literally without following their targets", { timeout: 15000 }, async t => {
+  const f = fixture(t); if (!f) return;
+  writeFileSync(join(f.cwd, "file"), "main\n");
+  const external = join(f.root, "external"); mkdirSync(external); writeFileSync(join(external, "private"), "outside contents\n");
+  const links = { local: "file", dangling: "missing", outside: external, metadata: ".git/config" };
+  for (const [path, target] of Object.entries(links)) symlinkSync(target, join(f.cwd, path));
+  f.git("add", "file", ...Object.keys(links)); f.git("commit", "-m", "links");
+  const { tx, result } = await f.prepare();
+  // A link replaced by a regular file containing the same bytes must still fail.
+  rmSync(join(tx.stage, "local")); writeFileSync(join(tx.stage, "local"), "file", { mode: 0o777 });
+  assert.throws(() => publishCheckpoint(tx, result), /worker changed working files/);
+  rmSync(join(tx.stage, "local")); symlinkSync("file", join(tx.stage, "local"));
+  rmSync(join(f.cwd, "dangling")); symlinkSync("changed", join(f.cwd, "dangling"));
+  assert.throws(() => publishCheckpoint(tx, result), /source changed/);
+  rmSync(join(f.cwd, "dangling")); symlinkSync("missing", join(f.cwd, "dangling"));
+  assert.throws(() => createCheckpointTransaction({ ...tx.info, files: ["outside/private"] }), /outside its root|redirected/);
+  const checkpoint = publishCheckpoint(tx, result);
+  for (const [path, target] of Object.entries(links)) {
+    assert.equal(f.git("show", `${checkpoint.gitRef}:${path}`), target);
+    assert.match(f.git("ls-tree", checkpoint.gitRef, path), /^120000 blob /);
+    assert.equal(lstatSync(join(f.cwd, path)).isSymbolicLink(), true);
+  }
+  assert.equal(readFileSync(join(external, "private"), "utf8"), "outside contents\n");
+  assert.deepEqual(readdirSync(external), ["private"]);
+});
+
+test("publication reuses identical concurrent objects but refuses conflicting objects and shared branch changes", { timeout: 20000 }, async t => {
+  const f = fixture(t); if (!f) return; writeFileSync(join(f.cwd, "file"), "before\n");
+  f.git("add", "file"); f.git("commit", "-m", "fixture");
+  writeFileSync(join(f.cwd, "file"), "dirty\n");
+  const { tx, result } = await f.prepare();
+  const object = readdirSync(join(tx.stage, ".git/objects"), { recursive: true }).find(path => /^[a-f0-9]{2}\/[a-f0-9]{38}$/.test(path));
+  assert.ok(object);
+  const target = join(f.cwd, ".git/objects", object), source = readFileSync(join(tx.stage, ".git/objects", object));
+  mkdirSync(join(target, ".."), { recursive: true }); writeFileSync(target, "conflict\n");
+  assert.throws(() => publishCheckpoint(tx, result), /conflicting existing Git object/);
+  assert.equal(existsSync(join(f.cwd, ".jj")), false);
+  writeFileSync(target, source);
+  f.git("update-ref", "refs/heads/concurrent", "HEAD");
+  assert.throws(() => publishCheckpoint(tx, result), /source changed/);
+  f.git("update-ref", "-d", "refs/heads/concurrent");
+  // The branch update also creates a reflog, which is shared metadata.
+  rmSync(join(f.cwd, ".git/logs/refs/heads/concurrent"), { force: true });
+  const checkpoint = publishCheckpoint(tx, result);
+  assert.equal(f.git("show", `${checkpoint.gitRef}:file`), "dirty");
+  assert.deepEqual(readFileSync(target), source);
 });
 
 for (const emptyGit of [false, true]) test(`a plain directory gets a recoverable jj checkpoint without a Git commit (empty .git: ${emptyGit})`, { timeout: 15000 }, async t => {
@@ -103,7 +220,7 @@ test("copied checkpoints retain secure repository and workspace configuration wi
 
 test("checkpoint refusal identifies the exact Git state marker", async t => {
   const f = fixture(t); if (!f) return;
-  for (const marker of ["MERGE_HEAD", "worktrees", "info/sparse-checkout"]) {
+  for (const marker of ["MERGE_HEAD", "worktrees", "info/sparse-checkout", "objects/info/alternates"]) {
     const path = join(f.cwd, ".git", marker);
     mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, "fixture");
     await assert.rejects(inspectCheckpoint(f.cwd, f.binary), error => error.message.includes(`.git/${marker}`));
@@ -172,13 +289,13 @@ test("publication rejects changed sources, worker config changes, forged objects
   }
 });
 
-test("linked worktrees, bare repositories, submodules, symlinks and existing locks fail without source writes", async t => {
+test("linked worktree roots, bare repositories, submodules, metadata symlinks and existing locks fail without source writes", async t => {
   const f = fixture(t); if (!f) return; writeFileSync(join(f.cwd, "file"), "before\n");
   const subdir = join(f.cwd, "subdir"); mkdirSync(subdir); assert.equal(checkpointRoot(subdir), f.cwd);
   writeFileSync(join(f.cwd, ".gitmodules"), ""); await assert.rejects(inspectCheckpoint(f.cwd, f.binary), /submodules/); rmSync(join(f.cwd, ".gitmodules"));
   const info = await inspectCheckpoint(f.cwd, f.binary); writeFileSync(join(f.cwd, ".git/index.lock"), "other owner");
   assert.throws(() => createCheckpointTransaction(info), /existing metadata lock/); assert.equal(readFileSync(join(f.cwd, ".git/index.lock"), "utf8"), "other owner"); rmSync(join(f.cwd, ".git/index.lock"));
-  symlinkSync(join(f.cwd, "file"), join(f.cwd, "link")); assert.throws(() => createCheckpointTransaction({ ...info, files: ["link"] }), /linked/);
+  symlinkSync(join(f.cwd, "file"), join(f.cwd, ".git/info/link")); assert.throws(() => createCheckpointTransaction(info), /linked/);
   const linked = join(f.root, "linked"); mkdirSync(linked); writeFileSync(join(linked, ".git"), "gitdir: ../project/.git/worktrees/linked\n"); assert.throws(() => checkpointRoot(linked), /worktrees/);
   const bare = join(f.root, "bare"); mkdirSync(bare); mkdirSync(join(bare, "objects")); writeFileSync(join(bare, "HEAD"), "ref: refs/heads/main\n"); assert.throws(() => checkpointRoot(bare), /bare/);
 });

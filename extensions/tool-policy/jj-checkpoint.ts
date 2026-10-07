@@ -33,7 +33,7 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
   });
   pi.registerTool({
     name: "jj_checkpoint", label: "Save a local recovery point", executionMode: "sequential", exposure: "model-only",
-    description: "Before authorized file edits, initialize jj/Git only if missing, then save the current working files and return full operation/commit IDs. Existing Git index, branches, configuration and working files are preserved. Ordinary colocated repositories only. Local checkpoint consent is separate from Git commit/push consent and may be remembered per project. No restore, commit publication, network operation or arbitrary command. Ignored files and external state are not backed up; unsupported files/layouts fail explicitly.",
+    description: "Before authorized file edits, initialize jj/Git only if missing, then save the current working files and return full operation/commit IDs. Existing Git index, branches, configuration and working files are preserved. Ordinary main colocated repositories may have linked worktrees: those registrations, files and indexes remain untouched and are not backed up. Existing Git objects are read-only inputs to the isolated checkpoint. Local checkpoint consent is separate from Git commit/push consent and may be remembered per project. No restore, commit publication, network operation or arbitrary command. Ignored files and external state are not backed up; unsupported files/layouts fail explicitly.",
     promptGuidelines: ["Use once before each new authorized modification task, and before a separately requested risky phase. Reuse the checkpoint during continuation; do not reinitialize an existing jj workspace. Record both returned IDs and gitRef with the task. The private Git ref retains local file contents without creating a branch or publishing them. Do not run for read-only audits or from children. Missing jj needs installation approval; this tool never installs it. Report a blocked checkpoint without claiming recoverability. A checkpoint is not a full-system backup. Restore requires an explicit separate user request."],
     parameters: Type.Object({ reason: Type.String() }, { additionalProperties: false }),
     async execute(_id, input, signal, _update, ctx) {
@@ -90,7 +90,7 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
             // .jj is ordinary storage within the disposable cwd. Do not mount
             // its absent root: jj must create it itself on first initialization.
             const roots = commandWritableRoots([join(tx.stage, ".git")], tx.stage, agentDir, [getPackageDir()]);
-            const protectedMetadata = tx.gitBefore.size ? [join(tx.stage, ".git/config"), join(tx.stage, ".git/hooks")] : [];
+            const protectedMetadata = tx.gitBefore.size ? [join(tx.stage, ".git/config"), join(tx.stage, ".git/hooks"), ...(tx.pool ? [tx.pool.path, join(tx.stage, ".git/objects/info")] : [])] : [];
             const result: CheckpointResult = await query("snapshot", tx.stage, roots, protectedMetadata);
             const latest = await inspect();
             if (fingerprint(latest) !== fingerprint(info)) throw new Error("Checkpoint project changed while snapshotting");

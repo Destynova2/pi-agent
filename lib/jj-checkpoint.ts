@@ -1,7 +1,7 @@
 // Checkpoints run against disposable metadata and files. Only validated metadata
 // is published by the parent; Git/Jujutsu never execute on the host as a fallback.
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -11,7 +11,7 @@ const hash = (data: string | Buffer) => createHash("sha256").update(data).digest
 const inside = (root: string, path: string) => { const rel = relative(root, path); return !rel || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../")); };
 const controls = /[\u0000-\u001f\u007f-\u009f\u200e-\u200f\u202a-\u202e\u2066-\u2069]/u;
 const absent = (path: string) => { try { lstatSync(path); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; } };
-type Entry = { data: Buffer; mode: number; hash: string };
+type Entry = { data: Buffer; mode: number; hash: string; symlink?: boolean };
 type Tree = Map<string, Entry>;
 export interface CheckpointInspection { root: string; identity: string; initialized: boolean; files: string[] }
 export interface CheckpointResult { root: string; operationId: string; commitId: string; initialized: boolean; tree: string }
@@ -29,7 +29,7 @@ export function checkpointRoot(cwd: string): string {
     for (const marker of [".git", ".jj"]) {
       const path = join(root, marker);
       if (absent(path)) continue;
-      if (!lstatSync(path).isDirectory() || realpathSync(path) !== path) throw new Error("Checkpoint requires ordinary colocated metadata; links, worktrees and submodules are refused");
+      if (!lstatSync(path).isDirectory() || realpathSync(path) !== path) throw new Error("Checkpoint requires ordinary colocated metadata; from linked worktrees, run it in the main repository. Links and submodules are refused");
       // Like Git discovery, an empty ancestor directory is not a repository
       // (sandbox profiles can create these placeholders in temporary roots).
       if (marker === ".git" && root !== start && readdirSync(path).length === 0) continue;
@@ -75,7 +75,18 @@ function readTree(root: string, omit = new Set<string>()): Tree {
   };
   walk(root); return tree;
 }
-const same = (a: Tree, b: Tree) => a.size === b.size && [...a].every(([path, value]) => b.get(path)?.hash === value.hash && b.get(path)?.mode === value.mode);
+const same = (a: Tree, b: Tree) => a.size === b.size && [...a].every(([path, value]) => b.get(path)?.hash === value.hash && b.get(path)?.mode === value.mode && b.get(path)?.symlink === value.symlink);
+
+// Existing objects are immutable inputs, never copied or mounted writable. Keep
+// the source pool local and bind its identity across preparation/publication.
+function objectPool(root: string) {
+  const path = join(root, ".git/objects");
+  if (absent(path)) return undefined;
+  const stat = lstatSync(path);
+  if (!stat.isDirectory() || realpathSync(path) !== path || controls.test(path)) throw new Error("Checkpoint refuses a redirected or unsafe object pool");
+  if (!absent(join(path, "info/alternates"))) throw new Error("Checkpoint refuses source .git/objects/info/alternates");
+  return { path, identity: hash(JSON.stringify([path, stat.dev, stat.ino])) };
+}
 
 function workFiles(root: string, paths: string[]): Tree {
   if (!Array.isArray(paths) || paths.length > 20000 || new Set(paths).size !== paths.length) throw new Error("Invalid checkpoint file list");
@@ -88,7 +99,17 @@ function workFiles(root: string, paths: string[]): Tree {
       if (!absent(join(parent, ".git")) || !absent(join(parent, ".jj"))) throw new Error("Checkpoint refuses nested repositories");
     }
     if (absent(target)) continue; // Tracked deletion: absence is part of the snapshot.
-    const entry = regular(root, target); bytes += entry.data.length;
+    const stat = lstatSync(target);
+    let entry: Entry;
+    if (stat.isSymbolicLink()) {
+      // Git stores the literal link target, not its contents. Never dereference
+      // even dangling/outside links, or allow a linked parent directory.
+      if (realpathSync(dirname(target)) !== dirname(target) || stat.nlink !== 1) throw new Error("Checkpoint refuses redirected or hardlinked symbolic links");
+      const data = readlinkSync(target, { encoding: "buffer" }), after = lstatSync(target);
+      if (!after.isSymbolicLink() || after.dev !== stat.dev || after.ino !== stat.ino || after.ctimeMs !== stat.ctimeMs || after.size !== data.length || after.nlink !== 1) throw new Error("Checkpoint symbolic link changed while reading");
+      entry = { data, mode: 0o777, hash: hash(data), symlink: true };
+    } else entry = regular(root, target);
+    bytes += entry.data.length;
     if (bytes > 128 * 1024 * 1024) throw new Error("Checkpoint working files exceed 128 MiB");
     tree.set(path, entry);
   }
@@ -186,9 +207,12 @@ export async function inspectCheckpoint(cwd: string, binary: string, signal?: Ab
   const root = checkpointRoot(cwd), initialized = !absent(join(root, ".jj"));
   if (!absent(join(root, ".gitmodules"))) throw new Error("Checkpoint refuses repositories with submodules");
   if (initialized && regular(join(root, ".jj"), join(root, ".jj/repo/store/git_target")).data.toString() !== "../../../.git") throw new Error("Checkpoint requires a local colocated Git store");
-  for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer", "worktrees", "objects/info/alternates", "info/sparse-checkout"]) {
-    if (!absent(join(root, ".git", name))) throw new Error(`Checkpoint refuses repository state .git/${name}; finish the operation or use an ordinary unshared, non-sparse repository`);
+  for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer", "objects/info/alternates", "info/sparse-checkout"]) {
+    if (!absent(join(root, ".git", name))) throw new Error(`Checkpoint refuses repository state .git/${name}; finish the operation or use an ordinary repository without sparse checkout or an alternate object pool`);
   }
+  const worktrees = join(root, ".git/worktrees");
+  if (!absent(worktrees) && (!lstatSync(worktrees).isDirectory() || realpathSync(worktrees) !== worktrees)) throw new Error("Checkpoint refuses a redirected or invalid .git/worktrees registry");
+  objectPool(root);
   let scratch: string | undefined;
   try {
     let prefix: string[] = [];
@@ -208,7 +232,10 @@ export async function inspectCheckpoint(cwd: string, binary: string, signal?: Ab
 
 export function createCheckpointTransaction(info: CheckpointInspection) {
   if (checkpointRoot(info.root) !== info.root || checkpointIdentity(info.root) !== info.identity) throw new Error("Checkpoint repository changed before preparation");
-  const gitBefore = readTree(join(info.root, ".git")), jjBefore = readTree(join(info.root, ".jj")), files = workFiles(info.root, info.files);
+  // A main-worktree checkpoint neither consumes nor publishes other worktrees'
+  // registrations, HEADs, indexes or locks. Its disposable copy has no backlinks.
+  const gitBefore = readTree(join(info.root, ".git"), new Set(["objects", "worktrees"])), jjBefore = readTree(join(info.root, ".jj")), files = workFiles(info.root, info.files);
+  const pool = objectPool(info.root), alternates = pool ? Buffer.from(pool.path + "\n") : undefined;
   const temporary = realpathSync(mkdtempSync(join(tmpdir(), "pi-jj-checkpoint-"))), stage = join(temporary, "repo");
   if (inside(info.root, temporary)) { rmSync(temporary, { recursive: true }); throw new Error("Checkpoint temporary storage must be outside the project"); }
   try {
@@ -216,14 +243,20 @@ export function createCheckpointTransaction(info: CheckpointInspection) {
     if (gitBefore.size) {
       for (const name of ["objects/info", "objects/pack", "refs/heads", "refs/tags"]) mkdirSync(join(stage, ".git", name), { recursive: true });
       for (const [path, entry] of gitBefore) writeEntry(join(stage, ".git"), path, entry);
+      if (alternates) writeEntry(join(stage, ".git"), "objects/info/alternates", { data: alternates, mode: 0o600, hash: hash(alternates) });
     }
     if (info.initialized) { mkdirSync(join(stage, ".jj")); for (const [path, entry] of jjBefore) writeEntry(join(stage, ".jj"), path, entry); }
-    for (const [path, entry] of files) writeEntry(stage, path, entry);
+    for (const [path, entry] of files) {
+      if (entry.symlink) {
+        mkdirSync(dirname(join(stage, path)), { recursive: true, mode: 0o700 });
+        symlinkSync(entry.data, join(stage, path));
+      } else writeEntry(stage, path, entry);
+    }
     // Missing protected paths can appear as empty files in the Linux sandbox.
     // Materialize empty directories in the disposable copy before mounting it;
     // they add no Git tree entries and do not replace real selected resources.
     for (const name of [".pi", ".agents", ".codex"]) if (absent(join(stage, name))) mkdirSync(join(stage, name), { mode: 0o700 });
-    return { temporary, stage, info, gitBefore, jjBefore, files };
+    return { temporary, stage, info, gitBefore, jjBefore, files, pool, alternates };
   } catch (error) { rmSync(temporary, { recursive: true, force: true }); throw error; }
 }
 export type CheckpointTransaction = ReturnType<typeof createCheckpointTransaction>;
@@ -272,7 +305,7 @@ export function publishCheckpoint(tx: CheckpointTransaction, result: CheckpointR
   if (typeof result.tree !== "string" || Buffer.byteLength(result.tree) > 4 * 1024 * 1024) throw new Error("Invalid checkpoint tree");
   const captured = new Map<string, { mode: string; oid: string }>();
   for (const line of result.tree.split("\0").filter(Boolean)) {
-    const match = /^(100644|100755) blob ([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$/.exec(line);
+    const match = /^(100644|100755|120000) blob ([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$/.exec(line);
     if (!match || captured.has(match[3])) throw new Error("Checkpoint tree contains unsupported entries");
     captured.set(match[3], { mode: match[1], oid: match[2] });
   }
@@ -280,15 +313,17 @@ export function publishCheckpoint(tx: CheckpointTransaction, result: CheckpointR
   const unexpected = [...captured.keys()].filter(path => !tx.files.has(path));
   const different = [...tx.files].filter(([path, entry]) => {
     const oid = createHash(result.commitId.length === 40 ? "sha1" : "sha256").update(`blob ${entry.data.length}\0`).update(entry.data).digest("hex");
-    return captured.has(path) && (captured.get(path)?.oid !== oid || captured.get(path)?.mode !== (entry.mode & 0o111 ? "100755" : "100644"));
+    return captured.has(path) && (captured.get(path)?.oid !== oid || captured.get(path)?.mode !== (entry.symlink ? "120000" : entry.mode & 0o111 ? "100755" : "100644"));
   }).map(([path]) => path);
   if (omitted.length || unexpected.length || different.length) throw new Error("Checkpoint did not capture every selected file exactly; inspect jj ignore, auto-track, size or conversion settings: " + JSON.stringify({ omitted: omitted.slice(0, 20), unexpected: unexpected.slice(0, 20), different: different.slice(0, 20) }));
   const afterGit = readTree(join(tx.stage, ".git")), afterJj = readTree(join(tx.stage, ".jj"));
+  if (tx.alternates && !afterGit.get("objects/info/alternates")?.data.equals(tx.alternates)) throw new Error("Checkpoint worker changed its read-only object pool");
   validateJj(afterJj, tx.jjBefore);
   if (!afterJj.has("repo/op_heads/heads/" + result.operationId) || !afterJj.has("repo/op_store/operations/" + result.operationId)) throw new Error("Checkpoint operation is not present in its store");
   if (!tx.gitBefore.size && (!afterGit.has("HEAD") || !afterGit.has("config"))) throw new Error("Checkpoint is missing initial Git metadata");
   const additions: Tree = new Map();
   for (const [path, entry] of afterGit) {
+    if (path === "objects/info/alternates" && tx.alternates) continue; // Temporary input, never published.
     const before = tx.gitBefore.get(path);
     if (before?.hash === entry.hash && before.mode === entry.mode) continue;
     if (path === "index") continue; // jj does not preserve staging; the real index does.
@@ -318,7 +353,7 @@ export function publishCheckpoint(tx: CheckpointTransaction, result: CheckpointR
   if (!same(tx.files, workFiles(tx.stage, [...tx.files.keys()]))) throw new Error("Checkpoint worker changed working files");
   const root = tx.info.root;
   const verifySource = (omitGit = new Set<string>(), omitJj = new Set<string>()) => {
-    if (checkpointIdentity(root) !== tx.info.identity || !same(tx.gitBefore, readTree(join(root, ".git"), omitGit)) || !same(tx.jjBefore, readTree(join(root, ".jj"), omitJj)) || !same(tx.files, workFiles(root, tx.info.files))) throw new Error("Checkpoint source changed; nothing published");
+    if (checkpointIdentity(root) !== tx.info.identity || objectPool(root)?.identity !== tx.pool?.identity || !same(tx.gitBefore, readTree(join(root, ".git"), new Set(["objects", "worktrees", ...omitGit]))) || !same(tx.jjBefore, readTree(join(root, ".jj"), omitJj)) || !same(tx.files, workFiles(root, tx.info.files))) throw new Error("Checkpoint source changed; nothing published");
   };
   verifySource();
   const locks: { path: string; fd: number; ino: number; dev: number }[] = [];
@@ -331,6 +366,12 @@ export function publishCheckpoint(tx: CheckpointTransaction, result: CheckpointR
       }
     }
     verifySource(new Set(locks.map(lock => relative(join(root, ".git"), lock.path))));
+    // A concurrent writer may already have stored one of the new immutable
+    // objects. Reuse only byte-identical regular objects; never replace them.
+    for (const [path, entry] of additions) if (path.startsWith("objects/") && !absent(join(root, ".git", path))) {
+      if (regular(join(root, ".git"), join(root, ".git", path)).hash !== entry.hash) throw new Error("Checkpoint found a conflicting existing Git object");
+      additions.delete(path);
+    }
     if (!tx.gitBefore.size && absent(join(root, ".git"))) { mkdirSync(join(root, ".git"), { mode: 0o700 }); published = true; }
     for (const [path, entry] of [...additions].sort(([a], [b]) => a.localeCompare(b))) { writeEntry(join(root, ".git"), path, entry); published = true; }
     // Objects precede operation data; the operation head and checkout move last.
@@ -342,7 +383,7 @@ export function publishCheckpoint(tx: CheckpointTransaction, result: CheckpointR
       writeEntry(join(root, ".jj"), path, entry, !!previous); published = true;
     }
     for (const path of tx.jjBefore.keys()) if (!afterJj.has(path)) rmSync(join(root, ".jj", path));
-    return { root, operationId: result.operationId, commitId: result.commitId, gitRef, initialized: result.initialized, files: captured.size, notice: "Local working-file checkpoint. Git index and branches preserved. Ignored/untracked exclusions and external services are not backed up. Restore requires a separate explicit request." };
+    return { root, operationId: result.operationId, commitId: result.commitId, gitRef, initialized: result.initialized, files: captured.size, notice: "Local main-worktree checkpoint. Git index and branches preserved. Linked worktrees remain unchanged and are not backed up. Ignored/untracked exclusions and external services are not backed up. Restore requires a separate explicit request." };
   } catch (error) {
     throw new Error(`${(error as Error).message}; ${published ? "partial checkpoint metadata may exist" : "no checkpoint published"}. Inspect state; no automatic retry.`);
   } finally {

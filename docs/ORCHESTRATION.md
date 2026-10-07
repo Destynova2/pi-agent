@@ -228,11 +228,15 @@ session changes and refusal cannot dispatch the worker.
 Git and jj run offline inside Codex against a bounded disposable copy. The parent
 publishes validated new Git objects, jj retention references and jj data only.
 Existing Git configuration, hooks, branches, index and working files are preserved.
+Existing objects are read-only inputs through a temporary Git alternate pool;
+they are not recopied or subject to the copy limit. The alternate pointer is never
+published. New objects must pass the same content-hash validation before publication.
 Each result also has a private `refs/pi/checkpoints/<operationId>` Git reference
 that retains its file contents independently of jj's operation retention, without
 creating a branch. These local pins are not automatically deleted or pushed.
-The resulting commit tree is checked against the selected files' exact contents
-and executable bits: a file silently omitted by jj's size or auto-track settings
+The resulting commit tree is checked against the selected files' exact contents,
+types and executable bits. Working-file symbolic links retain their literal target
+without following it, including external and dangling targets. A file silently omitted by jj's size or auto-track settings
 fails the checkpoint. The returned full `operationId` and `commitId` belong in the
 task checkpoint together with `gitRef`, not just a shortened revision in a note.
 
@@ -244,10 +248,17 @@ change repository history and bookmarks. Either restoration requires a separate
 explicit user request and inspection of the current changes first. The tool cannot
 restore, push or run arbitrary commands.
 
-Linked worktrees, bare/shared/noncolocated repositories, submodules, unfinished Git
-operations, sparse checkouts, symlinks, hardlinks and special files are refused.
-Each metadata tree and the selected working files have a 128 MiB total limit,
-20,000 entries and 64 MiB per file. Unsupported metadata layouts fail explicitly.
+The main repository may have linked worktrees. Their registrations, files, HEADs,
+indexes and locks are excluded from the disposable copy and left unchanged. This
+checkpoint backs up only the main worktree; it does not back up the linked ones.
+Running the tool from a linked worktree itself remains unsupported: run it from
+the main repository for a main-worktree checkpoint. Bare/noncolocated repositories,
+source alternate pools, submodules, unfinished main-worktree Git operations,
+sparse checkouts, metadata symlinks, linked parent directories, hardlinks and
+special files are refused.
+Copied metadata (including new Git objects) and selected working files each have
+a 128 MiB total limit, 20,000 entries and 64 MiB per file. Unsupported metadata
+layouts fail explicitly.
 Avoid concurrent Git/jj writers: source revalidation and exclusive Git lockfiles
 do not provide an atomic transaction across independent jj processes. Publication
 errors can leave partial metadata; inspect it without an automatic retry.
@@ -260,7 +271,8 @@ node --test --import ./tests/resolve-pi.mjs tests/jj-checkpoint.test.mjs tests/j
 ```
 
 The fixtures perform real snapshot/recovery in disposable repositories. The native
-gate separately proves sandbox availability, initialization, repeated snapshots
+gate separately proves sandbox availability, initialization, repeated snapshots,
+preservation of eight linked worktrees, read-only access to existing Git objects
 and continued denial of ordinary Bash Git writes. An unavailable host sandbox is
 a blocker, not a passing gate. See the [jj snapshot and operation reference](https://docs.jj-vcs.dev/latest/cli-reference/).
 

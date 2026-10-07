@@ -36,6 +36,9 @@ function fixture(t) {
     const roots = JSON.parse(args[args.indexOf("--write-roots") + 1]);
     assert.deepEqual(roots, [join(options.cwd, ".git")]);
     assert.ok(!roots.some(path => path.startsWith(cwd + "/")));
+    const readRoots = JSON.parse(args[args.indexOf("--read-roots") + 1]);
+    assert.ok(readRoots.includes(join(cwd, ".git/objects")), "original object pool is explicitly read-only");
+    assert.ok(readRoots.includes(join(options.cwd, ".git/objects/info")), "alternate pointer is read-only");
     const result = await runCheckpoint(options.cwd, data.binary, options.signal);
     if (state.changeSource) writeFileSync(join(cwd, "file"), "concurrent edit\n");
     if (state.workerFailure) throw new Error("fixture worker refused");
