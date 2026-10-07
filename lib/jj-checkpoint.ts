@@ -243,7 +243,9 @@ export function publishCheckpoint(tx: CheckpointTransaction, result: CheckpointR
     if (path === "index") continue; // jj does not preserve staging; the real index does.
     if (!tx.gitBefore.size && ["HEAD", "config", "description"].includes(path)) {
       if (path === "HEAD" && entry.data.toString() !== "ref: refs/heads/main\n") throw new Error("Unexpected initial Git HEAD");
-      if (path === "config" && !/^\[core\]\n\trepositoryformatversion = 0\n\tfilemode = (?:true|false)\n\tbare = false\n\tlogallrefupdates = true\n$/.test(entry.data.toString())) throw new Error("Unexpected initial Git configuration");
+      // Git records filesystem case handling and Unicode normalization on macOS.
+      // Admit only these optional booleans, never arbitrary configuration or helpers.
+      if (path === "config" && !/^\[core\]\n\trepositoryformatversion = 0\n\tfilemode = (?:true|false)\n\tbare = false\n\tlogallrefupdates = true\n(?:\tignorecase = (?:true|false)\n)?(?:\tprecomposeunicode = (?:true|false)\n)?$/.test(entry.data.toString())) throw new Error("Unexpected initial Git configuration");
       additions.set(path, entry); continue;
     }
     const object = /^objects\/([a-f0-9]{2})\/([a-f0-9]{38}|[a-f0-9]{62})$/.exec(path);

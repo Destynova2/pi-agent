@@ -80,6 +80,28 @@ test("nonempty invalid Git metadata is refused and preserved", async t => {
   assert.equal(existsSync(join(f.cwd, ".jj")), false);
 });
 
+test("initial Git metadata accepts filesystem booleans but rejects helpers, redirections and duplicate keys", { timeout: 15000 }, async t => {
+  const f = fixture(t, false); if (!f) return;
+  writeFileSync(join(f.cwd, "file"), "original\n");
+  const { tx, result } = await f.prepare();
+  const path = join(tx.stage, ".git/config");
+  const base = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n";
+  for (const suffix of [
+    "\thooksPath = /tmp/helper\n", "\tworktree = /tmp/redirect\n", "\tfsmonitor = helper\n",
+    "[include]\n\tpath = /tmp/config\n", "\tignorecase = helper\n", "\tprecomposeunicode = helper\n",
+    "\tignorecase = true\n\tignorecase = false\n", "\tprecomposeunicode = true\n\tprecomposeunicode = false\n",
+  ]) {
+    writeFileSync(path, base + suffix);
+    assert.throws(() => publishCheckpoint(tx, result), /Unexpected initial Git configuration/);
+    assert.equal(existsSync(join(f.cwd, ".git/config")), false);
+    assert.equal(existsSync(join(f.cwd, ".jj")), false);
+  }
+  writeFileSync(path, base + "\tignorecase = false\n\tprecomposeunicode = true\n");
+  const published = publishCheckpoint(tx, result);
+  assert.equal(f.git("show", `${published.gitRef}:file`), "original");
+  assert.equal(readFileSync(join(f.cwd, ".git/config"), "utf8"), readFileSync(path, "utf8"));
+});
+
 test("absent protected resources never become files in the checkpoint", { timeout: 15000 }, async t => {
   const f = fixture(t); if (!f) return;
   writeFileSync(join(f.cwd, "file"), "original\n");
