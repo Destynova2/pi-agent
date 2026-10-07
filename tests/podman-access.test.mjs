@@ -3,24 +3,30 @@ import { test } from "node:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerPodmanAccess } from "../extensions/tool-policy/podman-access.ts";
+import { PODMAN_PROJECT_CHOICE, registerPodmanAccess } from "../extensions/tool-policy/podman-access.ts";
 import { registerApprovalReview } from "../lib/approval-review.ts";
 import { CONFINED_TOOLS } from "../lib/confined-tools.ts";
-import { APPROVAL_CHOICES } from "../lib/mcp-approvals.ts";
+import { APPROVAL_CHOICES, McpApprovals } from "../lib/mcp-approvals.ts";
+
+function largeTerminal(t) {
+  const descriptor = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+  Object.defineProperty(process.stdout, "rows", { value: 100, configurable: true });
+  t.after(() => { if (descriptor) Object.defineProperty(process.stdout, "rows", descriptor); else delete process.stdout.rows; });
+}
 
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-podman-test-")));
   const agent = join(root, "agent"), cwd = join(root, "project"), key = join(root, "key");
   mkdirSync(agent); mkdirSync(cwd); writeFileSync(key, "fixture", { mode: 0o600 });
   const saved = process.env.PI_PODMAN_BIN; process.env.PI_PODMAN_BIN = process.execPath;
-  const tools = new Map(), handlers = new Map(), commands = new Map(), calls = [], reviews = [], updates = [];
+  const tools = new Map(), handlers = new Map(), commands = new Map(), calls = [], reviews = [], updates = [], promptPayloads = [];
   const connections = [{ Default: true, URI: "ssh://root@127.0.0.1:6000/run/podman/podman.sock", Identity: key }];
-  let prompts = 0, active = true, result = "built\n", failure, onRun, onCommand, verdict = "allow";
+  let prompts = 0, active = true, result = "built\n", failure, onRun, onCommand, verdict = "allow", choice = APPROVAL_CHOICES[1];
   const model = { provider: "fixture", id: "reviewer" };
   const ctx = { cwd, hasUI: true, model,
     sessionManager: { getBranch: () => [{ type: "message", message: { role: "user", content: "Build the local image" } }], getSessionId: () => "fixture", getSessionFile: () => undefined },
     modelRegistry: { find: () => model, streamSimple(_model, payload) { reviews.push(payload); return { result: async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ decision: verdict, category: verdict === "allow" ? "within_scope" : "out_of_scope" }) }] }) }; } },
-    ui: { select: async (_title, choices) => { prompts++; assert.deepEqual(choices, APPROVAL_CHOICES.slice(0, 2)); return choices[1]; }, notify() {} },
+    ui: { select: async (title, choices) => { prompts++; promptPayloads.push({ title, choices }); assert.deepEqual(choices, choices.length === 3 ? [...APPROVAL_CHOICES.slice(0, 2), PODMAN_PROJECT_CHOICE] : APPROVAL_CHOICES.slice(0, 2)); return choice; }, notify() {} },
   };
   const pi = { on: (name, handler) => handlers.set(name, handler), registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command), getActiveTools: () => active ? [...tools.keys()] : [] };
   registerApprovalReview(pi, agent, () => {});
@@ -34,10 +40,10 @@ function fixture(t) {
     return "";
   });
   t.after(async () => { await handlers.get("session_shutdown")(); if (saved === undefined) delete process.env.PI_PODMAN_BIN; else process.env.PI_PODMAN_BIN = saved; rmSync(root, { recursive: true, force: true }); });
-  return { root, agent, cwd, key, ctx, connections, handlers, commands, calls, reviews, updates,
+  return { root, agent, cwd, key, ctx, connections, handlers, commands, calls, reviews, updates, promptPayloads,
     activate: () => commands.get("approvals").handler("auto-deny Build local images; do not push or delete volumes", ctx),
     run: (input = {}, signal) => tools.get("request_podman_access").execute("fixture", { args: ["version"], reason: "local verification", ...input }, signal, value => updates.push(value), ctx),
-    disable() { active = false; }, get prompts() { return prompts; }, set result(value) { result = value; }, set failure(value) { failure = value; }, set onRun(value) { onRun = value; }, set onCommand(value) { onCommand = value; }, set verdict(value) { verdict = value; },
+    disable() { active = false; }, get prompts() { return prompts; }, set choice(value) { choice = value; }, set result(value) { result = value; }, set failure(value) { failure = value; }, set onRun(value) { onRun = value; }, set onCommand(value) { onCommand = value; }, set verdict(value) { verdict = value; },
   };
 }
 
@@ -58,7 +64,8 @@ test("generic build freezes argv, pins the local connection and clears inherited
   assert.match(result.content[0].text, /built\nstderr/); assert.ok(f.updates.length);
 });
 
-test("manual grants never persist and refusals require reset", async t => {
+test("manual once grants never become permanent and refusals require reset", async t => {
+  largeTerminal(t);
   const f = fixture(t);
   await f.run(); await f.run(); assert.equal(f.prompts, 2);
   f.ctx.ui.select = async () => APPROVAL_CHOICES[0];
@@ -214,4 +221,67 @@ test("container create supports empty environments and one deadline for all priv
   };
   const result = await f.run({ ...createRequest, args: ["container", ...createRequest.args], timeout_seconds: 3 });
   assert.equal(result.details.environmentPreserved, true);
+});
+
+test("second Podman request can grant the whole engine for this project without further prompts or reviews", async t => {
+  largeTerminal(t); const f = fixture(t);
+  await f.run({ args: ["version"] });
+  assert.equal(f.promptPayloads[0].choices.length, 2);
+  f.choice = PODMAN_PROJECT_CHOICE;
+  await f.run({ args: ["build", "."] });
+  assert.equal(f.promptPayloads[1].choices.length, 3);
+  assert.match(f.promptPayloads[1].title, /suppressions de conteneurs\/volumes, publications/);
+  await f.handlers.get("session_start")();
+  await f.activate(); f.verdict = "deny";
+  // Disposable executor only: broad consent includes different mutating operations.
+  await f.run({ args: ["volume", "rm", "fixture-volume"] });
+  await f.run({ args: ["push", "localhost/demo:local", "registry.example/demo:local"] });
+  assert.equal(f.prompts, 2); assert.equal(f.reviews.length, 0);
+  assert.equal(f.calls.filter(call => call.args[0] === "--url").length, 4);
+  await assert.rejects(f.run({ args: ["machine", "ssh"] }), /Unsupported/);
+  f.ctx.hasUI = false; await assert.rejects(f.run(), /interactive parent/);
+});
+
+test("project engine access does not follow another project, endpoint or replaced identity", async t => {
+  largeTerminal(t); const f = fixture(t);
+  await f.run(); f.choice = PODMAN_PROJECT_CHOICE; await f.run();
+  f.choice = APPROVAL_CHOICES[1];
+  const other = join(f.root, "other"); mkdirSync(other); f.ctx.cwd = other;
+  await f.run(); assert.equal(f.promptPayloads.at(-1).choices.length, 2);
+  f.ctx.cwd = f.cwd; f.connections[0].URI = "ssh://root@127.0.0.1:6001/run/podman/podman.sock";
+  await f.run(); assert.equal(f.promptPayloads.at(-1).choices.length, 2);
+  f.connections[0].URI = "ssh://root@127.0.0.1:6000/run/podman/podman.sock";
+  writeFileSync(f.key, "changed identity");
+  await f.run(); assert.equal(f.promptPayloads.at(-1).choices.length, 2);
+  assert.equal(f.prompts, 5);
+});
+
+test("reset keeps explicit project access; permissions revokes it and resets the repeat offer", async t => {
+  largeTerminal(t); const f = fixture(t);
+  await f.run(); f.choice = PODMAN_PROJECT_CHOICE; await f.run();
+  await f.commands.get("podman-access").handler("reset", f.ctx);
+  await f.run({ args: ["ps"] }); assert.equal(f.prompts, 2);
+  await f.commands.get("podman-access").handler("permissions", f.ctx);
+  f.choice = APPROVAL_CHOICES[1]; await f.run();
+  assert.equal(f.prompts, 3); assert.equal(f.promptPayloads.at(-1).choices.length, 2);
+  f.ctx.hasUI = false;
+  await assert.rejects(f.commands.get("podman-access").handler("permissions", f.ctx), /interactive parent/);
+});
+
+test("automatic successes never create repeated-access offers or project engine grants", async t => {
+  largeTerminal(t); const f = fixture(t); await f.activate();
+  await f.run(); await f.run({ args: ["ps"] });
+  assert.equal(f.prompts, 0); assert.equal(f.reviews.length, 2);
+  assert.equal(readdirSync(f.agent).includes("mcp-approvals"), false);
+  await f.commands.get("approvals").handler("manual", f.ctx);
+  await f.run(); assert.equal(f.promptPayloads[0].choices.length, 2);
+});
+
+test("revoking a saved engine grant between secret read and creation prevents dispatch", async t => {
+  largeTerminal(t); const f = fixture(t);
+  await f.run(); f.choice = PODMAN_PROJECT_CHOICE; await f.run();
+  f.onCommand = () => { new McpApprovals(f.agent).revoke(f.cwd, "podman-access"); return '["TOKEN=private"]'; };
+  await assert.rejects(f.run(createRequest), /create failed or was canceled/);
+  assert.equal(f.calls.length, 6, "only discovery and source inspection after two granted calls");
+  assert.equal(f.prompts, 2);
 });

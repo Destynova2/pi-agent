@@ -34,9 +34,11 @@ interface Approval {
   title: string;
   detail: string;
   remember: boolean;
+  /** Offer this broader human-only project grant after a prior human once grant. */
+  projectAccess?: { operation: string; label: string; detail: string };
   interactiveOnly?: boolean;
   revalidate: () => void;
-  beforePrompt?: () => void;
+  beforePrompt?: (prompt: string, choices: string[]) => void;
 }
 
 function readPrivate(path: string): string | undefined {
@@ -103,12 +105,19 @@ export class McpApprovals {
     return data.epoch === epoch;
   }
 
+  private save(cwd: string, resource: string, key: string, epoch: string) {
+    const directory = this.directory(cwd, resource, true)!;
+    const path = join(directory, `${key}.json`);
+    if (readPrivate(path) === undefined && readdirSync(directory).length >= 1024) throw new Error("Too many MCP grants; revoke old permissions first");
+    atomic(path, JSON.stringify({ version: 1, epoch, key }));
+  }
+
   revoke(cwd: string, resource: string) {
     const directory = this.directory(realpathSync(cwd), resource, true)!;
     // Separate epoch prevents a late writer in another process from restoring a revoked grant.
     atomic(join(directory, "epoch"), randomUUID());
     this.reset();
-    for (const name of readdirSync(directory)) if (/^[a-f0-9]{64}\.json$/.test(name)) rmSync(join(directory, name), { force: true });
+    for (const name of readdirSync(directory)) if (/^(?:seen-)?[a-f0-9]{64}\.json$/.test(name)) rmSync(join(directory, name), { force: true });
   }
 
   async authorize(ctx: ExtensionContext, input: Approval, signal?: AbortSignal): Promise<() => void> {
@@ -116,12 +125,16 @@ export class McpApprovals {
       resource: input.resource, operation: input.auditOperation ?? "authorize", toolCallId: input.toolCallId, payload: input,
     });
     try {
-      const request = { ...input }, cwd = realpathSync(ctx.cwd), generation = this.generation;
+      const request = { ...input, projectAccess: input.projectAccess && { ...input.projectAccess } }, cwd = realpathSync(ctx.cwd), generation = this.generation;
+      if (request.projectAccess && (request.remember || !request.interactiveOnly || !request.projectAccess.operation || !request.projectAccess.detail ||
+          !request.projectAccess.label || APPROVAL_CHOICES.includes(request.projectAccess.label) || /[\u0000-\u001f\u007f]/.test(request.projectAccess.label))) throw new Error("Invalid repeated project permission configuration");
       const epoch = this.epoch(cwd, request.resource);
       const key = fingerprint([cwd, request.resource, request.identity, request.operation]);
+      const projectKey = request.projectAccess && fingerprint([cwd, request.resource, request.identity, "project-access-v1", request.projectAccess]);
       const run = async () => {
         let scope: "once" | "session" | "project" = "once";
         let source: "human" | "session" | "project" = "human";
+        let grantKey = key;
         let reviewCheck = () => {};
         const check = () => {
           signal?.throwIfAborted();
@@ -129,13 +142,14 @@ export class McpApprovals {
           if (generation !== this.generation || cwd !== realpathSync(ctx.cwd) || epoch !== this.epoch(cwd, request.resource)) throw new Error("MCP approval became stale or was revoked");
           request.revalidate();
           if (scope === "session" && this.session.get(key) !== epoch) throw new Error("MCP session approval revoked");
-          if (scope === "project" && !this.saved(cwd, request.resource, key, epoch)) throw new Error("MCP project approval revoked");
+          if (scope === "project" && !this.saved(cwd, request.resource, grantKey, epoch)) throw new Error("MCP project approval revoked");
         };
         check();
         if (request.interactiveOnly && !ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error("Dunst requires an interactive parent session, including remembered approvals"); }
         if (this.refused.has(key)) { audit.finish("denied", "refusal_cache"); throw new Error(`Operation refused earlier; use ${request.resource === "host-access" ? "/host-access reset" : "the permissions command"} to reconsider`); }
         if (request.remember && this.session.get(key) === epoch) { scope = "session"; source = "session"; }
         else if (request.remember && this.saved(cwd, request.resource, key, epoch)) { scope = "project"; source = "project"; }
+        else if (projectKey && this.saved(cwd, request.resource, projectKey, epoch)) { scope = "project"; source = "project"; grantKey = projectKey; }
         else {
           const review = await reviewApproval(this.agentDir, ctx, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal);
           reviewCheck = review.check;
@@ -146,27 +160,32 @@ export class McpApprovals {
           }
           if (!ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error("MCP access requires human approval; no matching project grant"); }
           const title = approvalDisplayText(request.title).replaceAll("\n", "\\n").replaceAll("\t", "\\t");
-          const detail = approvalDisplayText(`Projet : ${JSON.stringify(cwd)}\n${request.detail}`);
+          const offerProject = projectKey && this.saved(cwd, request.resource, `seen-${projectKey}`, epoch) ? request.projectAccess : undefined;
+          const detail = approvalDisplayText(`Projet : ${JSON.stringify(cwd)}\n${request.detail}${offerProject ? `\n\n${offerProject.detail}` : ""}`);
           const choices = request.remember ? [...APPROVAL_CHOICES] : APPROVAL_CHOICES.slice(0, 2);
-          request.beforePrompt?.();
+          if (offerProject) choices.push(offerProject.label);
+          const prompt = `${title}\n${detail}`;
+          request.beforePrompt?.(prompt, choices);
           audit.prompted();
-          const choice = await ctx.ui.select(`${title}\n${detail}`, choices, { signal });
+          const choice = await ctx.ui.select(prompt, choices, { signal });
+          const acceptProject = !!offerProject && choice === offerProject.label;
           audit.answered(!choice ? "cancel" : choice === APPROVAL_CHOICES[0] || !choices.includes(choice) ? "deny" : "allow",
-            choice === APPROVAL_CHOICES[3] ? "project" : choice === APPROVAL_CHOICES[2] ? "session" : "once");
+            choice === APPROVAL_CHOICES[3] || acceptProject ? "project" : choice === APPROVAL_CHOICES[2] ? "session" : "once");
           check();
           if (!choice || choice === APPROVAL_CHOICES[0] || !choices.includes(choice)) {
             this.refused.add(key); throw new Error("Operation not approved");
           }
           if (choice === APPROVAL_CHOICES[2]) { this.session.set(key, epoch); scope = "session"; }
-          else if (choice === APPROVAL_CHOICES[3]) {
-            const directory = this.directory(cwd, request.resource, true)!;
-            if (readdirSync(directory).length >= 1024) throw new Error("Too many MCP grants; revoke old permissions first");
-            atomic(join(directory, `${key}.json`), JSON.stringify({ version: 1, epoch, key }));
+          else if (choice === APPROVAL_CHOICES[3] || acceptProject) {
+            grantKey = acceptProject ? projectKey! : key;
+            this.save(cwd, request.resource, grantKey, epoch);
             scope = "project";
           }
         }
         check();
         audit.finish("granted", source, scope);
+        // This marker only enables a future menu choice; it is never an execution grant.
+        if (projectKey && source === "human" && scope === "once") this.save(cwd, request.resource, `seen-${projectKey}`, epoch);
         return check;
       };
       const result = this.tail.then(run, run);

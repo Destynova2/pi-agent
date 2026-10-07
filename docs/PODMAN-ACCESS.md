@@ -62,8 +62,31 @@ The parent interactive session is required. Every engine command passes through
 the permission broker, including read-only requests. `/approvals auto <scope>`
 enables the [separate reviewer](AUTO-APPROVALS.md); `auto-deny` refuses uncertainty
 without a dialog. Manual remains the default for projects without a policy.
-`/podman-access reset` cancels pending calls and clears remembered refusals.
-Automatic decisions never expand the scope or become persistent grants.
+
+The first human approval offers refuse/allow once. After that approval, the next
+human prompt for the same project and engine also offers **Toujours autoriser le
+moteur Podman local pour ce projet**. Commands and arguments may differ. Choosing
+allow once again keeps asking; only explicitly selecting the permanent option
+saves engine access. The first-use marker survives restart but never grants access.
+Automatic decisions create neither this marker nor a permanent grant.
+
+The permanent option covers **every operation supported by this bridge** on that
+local engine, including deletion, publication, host mounts and private environment
+transfer. Engine resources are not isolated by project name. Subsequent requests
+skip both human confirmation and automatic review. The grant is bound to the
+canonical project path, connection, client executable and SSH identity; it survives
+Pi restart, but does not follow another project, endpoint or changed identity.
+The ordinary command restrictions, interactive-parent requirement, request audit,
+timeouts and cancellation remain active. Permission to use the engine does not
+itself request a deployment, deletion or any other task.
+
+`/podman-access permissions` revokes project grants and first-use markers, cancels
+pending calls and invalidates tickets in other Pi processes. It cannot undo engine
+effects already performed. `/podman-access reset` cancels pending calls and clears
+remembered refusals while retaining explicit project grants. A cached refusal
+still blocks the exact refused operation until reset. Records are private and
+stored outside the project under `<agent-dir>/mcp-approvals/`; they retain only
+fingerprints, never command arguments or environment values.
 
 ## Capabilities and limits
 
@@ -75,7 +98,8 @@ options are excluded. Short flags containing `c` are rejected conservatively;
 use long flags, separate flag values, and `--` before a container command such as
 `["exec", "--", "demo", "sh", "-c", "echo hello"]`.
 
-The exact executable, connection, argv, cwd and timeout are reviewed; they are not
+Without a permanent grant, the exact executable, connection, argv, cwd and timeout
+are reviewed; they are not
 a proof of Containerfile, manifest, image or script contents. This is a host
 capability, not filesystem confinement: the engine may access mounted host paths,
 send build contexts, download dependencies or publish images. The reviewer must

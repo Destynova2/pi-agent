@@ -29,6 +29,14 @@ const parameters = Type.Object({
 }, { additionalProperties: false });
 type Request = Static<typeof parameters>;
 const path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
+export const PODMAN_PROJECT_CHOICE = "Toujours autoriser le moteur Podman local pour ce projet";
+
+function sshIdentity(file: string) {
+  const stat = lstatSync(file);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.uid !== process.getuid?.()) throw new Error("Unsafe Podman SSH identity file");
+  // Reading the key may change atime; that does not change the authorized identity.
+  return fingerprint({ dev: stat.dev, ino: stat.ino, mode: stat.mode, uid: stat.uid, nlink: stat.nlink, size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs });
+}
 
 function outside(cwd: string, file: string) {
   const rel = relative(cwd, realpathSync(file));
@@ -73,7 +81,7 @@ function containerEnvironment(raw: string): string[] {
   return [...entries.values()].sort();
 }
 
-/** Generic engine access: exact argv and connection reviewed once, no host shell. */
+/** Generic engine access with exact approval or explicit project consent, no host shell. */
 export function registerPodmanAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
   const approvals = new McpApprovals(agentDir);
   let tasks = new SessionTasks();
@@ -84,15 +92,21 @@ export function registerPodmanAccess(pi: ExtensionAPI, agentDir: string, verify:
   pi.on("session_before_tree", reset);
   pi.on("session_shutdown", reset);
   pi.registerCommand("podman-access", {
-    description: "/podman-access reset: cancel pending Podman calls and clear refusals",
+    description: "/podman-access reset: cancel pending calls; permissions: revoke project engine access",
     handler: async (args, ctx) => {
-      if (args.trim() !== "reset") return ctx.ui.notify("usage: /podman-access reset", "info");
+      if (args.trim() === "permissions") {
+        verify(ctx);
+        if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD) throw new Error("Podman permissions require the interactive parent");
+        approvals.revoke(ctx.cwd, "podman-access"); await reset();
+        ctx.ui.notify("Podman project permissions revoked; pending calls canceled. Existing engine effects may remain.", "info"); return;
+      }
+      if (args.trim() !== "reset") return ctx.ui.notify("usage: /podman-access reset | permissions", "info");
       await reset(); ctx.ui.notify("Pending Podman calls canceled; existing containers/build effects may remain.", "info");
     },
   });
   pi.registerTool({
     name: "request_podman_access", label: "Podman engine", exposure: "model-only", executionMode: "sequential", parameters,
-    description: "Run one approved Podman engine command from this workspace through the host CLI. Generic build/run/exec, containers, images, pods, networks, volumes and kube play/down; no W4re dependency. Supply argv without podman, shell syntax or global flags. Uses the configured default local Unix/loopback SSH connection, pinned for the call. Default 300 seconds, maximum 1800. Bounded stdout/stderr are returned, including errors, and may contain secrets. For create, env_from_container privately copies an existing container's environment over stdin and verifies it; only the created ID and equality result are returned. No arbitrary stdin/TTY, host shell, compose, machine SSH, connection changes or client output files. Every call uses /approvals policy or human once-only approval; never delegated or remembered.",
+    description: "Run one approved Podman engine command from this workspace through the host CLI. Generic build/run/exec, containers, images, pods, networks, volumes and kube play/down; no W4re dependency. Supply argv without podman, shell syntax or global flags. Uses the configured default local Unix/loopback SSH connection, pinned for the call. Default 300 seconds, maximum 1800. Bounded stdout/stderr are returned, including errors, and may contain secrets. For create, env_from_container privately copies an existing container's environment over stdin and verifies it; only the created ID and equality result are returned. No arbitrary stdin/TTY, host shell, compose, machine SSH, connection changes or client output files. Every call uses /approvals policy or human approval unless the user explicitly saved engine-wide project access at a repeated prompt. That grant skips further confirmations and automatic review for this project/connection; revoke with /podman-access permissions. Never delegated.",
     promptGuidelines: ["Use this tool directly for authorized Podman work, including image builds blocked in Bash. It does not grant Podman access to Bash or cargo xtask. Specify each native Podman operation explicitly. Inspect effects before a retry. Commands can change the engine, publish images, send build contexts and affect host-mounted data: explain exact targets, mounts and network destinations. Do not pass secret values or display raw env/secret output. Prefer request_host_access podman_inspect for sanitized diagnostics. Never use containers or mounts to change Pi/Codex permissions, runtime or host credentials. A successful CLI exit does not prove application health."],
     async execute(id, input, signal, update, ctx) {
       const request = validateRequest(input);
@@ -131,9 +145,7 @@ export function registerPodmanAccess(pi: ExtensionAPI, agentDir: string, verify:
         if (url.protocol === "ssh:") {
           if (typeof selected.Identity !== "string" || !isAbsolute(selected.Identity)) throw new Error("Podman SSH requires an explicit protected identity file");
           key = realpathSync(selected.Identity); outside(cwd, key);
-          const stat = lstatSync(key);
-          if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.uid !== process.getuid?.()) throw new Error("Unsafe Podman SSH identity file");
-          keyIdentity = fingerprint(stat); prefix.push("--identity", key);
+          keyIdentity = sshIdentity(key); prefix.push("--identity", key);
         }
         const args = [...request.args];
         if (request.env_from_container) args.splice(args[0] === "container" ? 2 : 1, 0, "--unsetenv-all", "--env-file", "/dev/stdin", "--http-proxy=false");
@@ -145,14 +157,18 @@ export function registerPodmanAccess(pi: ExtensionAPI, agentDir: string, verify:
         const revalidate = () => {
           validate();
           if (Date.now() > expires) throw new Error("Podman approval expired");
-          if (fingerprint(serverIdentity(executable.command, [], cwd, { PATH: path })) !== identity || key && fingerprint(lstatSync(key)) !== keyIdentity) throw new Error("Podman executable or SSH identity changed during approval");
+          if (fingerprint(serverIdentity(executable.command, [], cwd, { PATH: path })) !== identity || key && sshIdentity(key) !== keyIdentity) throw new Error("Podman executable or SSH identity changed during approval");
         };
         const ticket = await approvals.authorize(ctx, {
           resource: "podman-access", auditOperation: request.args.slice(0, groups[request.args[0]] ? 2 : 1).join(" "), toolCallId: id,
           identity: fingerprint([identity, prefix, keyIdentity]), operation: fingerprint([cwd, argv, timeoutMs, request.env_from_container]), remember: false, interactiveOnly: true,
+          projectAccess: {
+            operation: "podman-engine-v1", label: PODMAN_PROJECT_CHOICE,
+            detail: "Option permanente : toutes les opérations du pont sur ce moteur local, avec d'autres arguments, sans confirmation ni revue automatique. Inclut suppressions de conteneurs/volumes, publications et montages hôte ; ressources non limitées au projet. Liée au projet, à la connexion et au client affichés ci-dessus. Révocation : /podman-access permissions.",
+          },
           title, detail, revalidate,
-          beforePrompt() {
-            if (wrapTextWithAnsi(approvalDisplayText(`${title}\nProjet : ${JSON.stringify(cwd)}\n${detail}`), Math.max(20, (process.stdout.columns ?? 80) - 4)).length > Math.max(1, (process.stdout.rows ?? 24) - 8)) throw new Error("Podman approval does not fit the terminal; enlarge it or shorten the request");
+          beforePrompt(prompt, choices) {
+            if (wrapTextWithAnsi(prompt, Math.max(20, (process.stdout.columns ?? 80) - 4)).length > Math.max(1, (process.stdout.rows ?? 24) - 6 - choices.length)) throw new Error("Podman approval does not fit the terminal; enlarge it or shorten the request");
           },
         }, owned);
         ticket();

@@ -52,11 +52,19 @@ policy. Every fresh approval is reviewed again. Explicit human session/project
 grants retain their existing behavior and revocation commands. Cached human
 refusals retain precedence over auto review.
 
+The [Podman bridge](PODMAN-ACCESS.md) offers engine-wide project access at the next
+human prompt after a human once approval. Only an explicit human choice saves
+that grant. It then skips both prompts and automatic review for all supported
+commands on the same local engine and project. Automatic successes never create
+the first-use marker or select this option. Other capabilities keep their current
+approval choices and do not acquire this broader permission.
+
 `/approvals manual` invalidates pending automatic review tickets and disables new
 reviews. A changed scope, session or user message also invalidates a pending
 review. It cannot undo effects already performed. Existing remembered human
 grants are separate; revoke them with `/mcp permissions`, `/git-access permissions`
-or `/jj-checkpoint permissions`. Already-issued network grants last until the Pi
+or `/jj-checkpoint permissions`; use `/podman-access permissions` for the Podman
+engine grant and its first-use marker. Already-issued network grants last until the Pi
 session ends, including grants approved automatically. Restart Pi to discard them.
 These network grants cover uploads and all ports of the approved hosts; the
 reviewer evaluates that full session scope.
