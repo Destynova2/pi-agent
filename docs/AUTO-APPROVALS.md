@@ -1,0 +1,91 @@
+# Automatic approval review
+
+Permission requests use manual confirmation by default. An interactive parent can
+delegate their evaluation to a separate, tool-free model call for one project:
+
+```text
+/approvals auto Build and update the local demo service demo-1; preserve its volumes; no push or remote deployment.
+/approvals status
+/approvals manual
+```
+
+Use `/approvals auto-deny <scope>` to avoid approval dialogs: uncertainty, an
+unavailable reviewer or an invalid answer denies the operation. `auto` falls back
+to the existing human dialog for those cases. An explicit reviewer denial stops
+the request in either mode. Other extension dialogs are outside this setting.
+
+The command itself is the user's opt-in. It stores the scope under
+`<agent-dir>/approval-policies/`, outside the writable project. The policy is
+private, canonical-path-specific and survives restart. Subprojects do not inherit
+it. The current provider/model is pinned when the command runs; changing the main
+model does not silently change the reviewer. Run the command again to change its
+model, scope or uncertainty handling. Requests use the pinned model's configured
+authentication, quota and billing, with a 30-second deadline.
+
+## What gets reviewed
+
+The broker reviews new command/filesystem/Metal and network requests, and fresh
+host/MCP/Git/checkpoint approvals. It sees the exact proposed operation, the
+standing project scope and every user message on the current branch. Tool results,
+assistant claims and compaction summaries are excluded. Oversized context falls
+back instead of silently dropping an older restriction. No tools are exposed to
+the reviewer. Only a complete, strictly validated JSON `allow` can grant access.
+
+For example, a request to restart `demo-1` can be evaluated against the standing
+scope above. A request to push the repository still needs user authorization for
+that publication. The working agent's own justification is not that authorization.
+The model can make mistakes: these tests validate enforcement and lifecycle, not
+the accuracy of a live model's judgment.
+
+Existing executor limits still apply: exact paths, supported operations, protected
+runtime files, parent-only capabilities, network deny rules, executable identity,
+expiry and cancellation. Auto review does not install missing Podman/Metal/W4re
+backends, introduce a host shell, or enable unsupported tools. The existing UI and
+terminal requirements of individual capabilities remain; this is not a new
+headless execution mode. Ordinary actions already allowed by the sandbox do not
+make an extra model call.
+
+## Memory and revocation
+
+Automatic success never creates a remembered MCP/host/Git grant or expands the
+policy. Every fresh approval is reviewed again. Explicit human session/project
+grants retain their existing behavior and revocation commands. Cached human
+refusals retain precedence over auto review.
+
+The [Podman bridge](PODMAN-ACCESS.md) offers engine-wide project access at the next
+human prompt after a human once approval. Only an explicit human choice saves
+that grant. It then skips both prompts and automatic review for all supported
+commands on the same local engine and project. Automatic successes never create
+the first-use marker or select this option. Other capabilities keep their current
+approval choices and do not acquire this broader permission.
+
+`/approvals manual` invalidates pending automatic review tickets and disables new
+reviews. A changed scope, session or user message also invalidates a pending
+review. It cannot undo effects already performed. Existing remembered human
+grants are separate; revoke them with `/mcp permissions`, `/git-access permissions`
+or `/jj-checkpoint permissions`; use `/podman-access permissions` for the Podman
+engine grant and its first-use marker. Already-issued network grants last until the Pi
+session ends, including grants approved automatically. Restart Pi to discard them.
+These network grants cover uploads and all ports of the approved hosts; the
+reviewer evaluates that full session scope.
+
+## Audit and verification
+
+The existing `permission_requests` table records automatic approvals with
+`source = 'policy'`. The additive `permission_reviews` table distinguishes model
+review from static policy: request ID, timestamp, verdict, fixed reason category,
+model and policy fingerprint. It stores no prompt, raw command, scope text or
+free-form model explanation. An unavailable journal prevents execution. Neither
+table is consulted as permission or training data.
+
+```bash
+node --import ./tests/resolve-pi.mjs --test --test-timeout=15000 \
+  tests/approval-review.test.mjs tests/mcp-approvals.test.mjs \
+  tests/permission-audit.test.mjs tests/command-access.test.mjs \
+  tests/network-policy.test.mjs tests/host-access.test.mjs
+```
+
+Tests use a fake model and disposable executors. They make no provider calls and
+do not operate real containers. Install with the normal backup-producing installer
+and restart Pi before using the new command. Installation leaves manual mode in
+place until the user opts in for a project.

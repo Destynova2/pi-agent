@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, realpa
 import { isAbsolute, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ReviewRecord } from "./approval-review.ts";
 
 type Scope = "once" | "session" | "project" | "policy";
 type Source = "human" | "session" | "project" | "policy" | "refusal_cache" | "unavailable";
@@ -128,6 +129,29 @@ export class PermissionAudit {
   answered(decision: Decision, scope: Scope = "once") {
     this.update("answered_at = ?, decision = ?, scope = ?, source = 'human'", [new Date().toISOString(), decision, scope]);
     this.decision = decision;
+  }
+
+  reviewed(record: ReviewRecord) {
+    const db = openDatabase(this.agentDir, this.cwd);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      db.exec(`CREATE TABLE IF NOT EXISTS permission_reviews (
+        request_id TEXT PRIMARY KEY REFERENCES permission_requests(id),
+        reviewed_at TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK (decision IN ('allow', 'ask', 'deny')),
+        category TEXT NOT NULL,
+        model TEXT NOT NULL,
+        policy_sha256 TEXT NOT NULL
+      )`);
+      db.prepare("INSERT INTO permission_reviews VALUES (?, ?, ?, ?, ?, ?)").run(
+        this.id, new Date().toISOString(), record.decision, record.category, record.model, record.policy);
+      const result = db.prepare(`UPDATE permission_requests SET answered_at = ?, decision = ?, source = 'policy'
+        WHERE id = ? AND status = 'pending'`).run(new Date().toISOString(), record.decision === "ask" ? null : record.decision, this.id);
+      if (result.changes !== 1) throw new Error("Permission audit request missing or already completed");
+      db.exec("COMMIT");
+      if (record.decision !== "ask") this.decision = record.decision;
+    } catch (error) { if (db.isTransaction) db.exec("ROLLBACK"); throw error; }
+    finally { db.close(); }
   }
 
   finish(status: Status, source?: Source, scope?: Scope) {

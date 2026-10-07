@@ -33,7 +33,7 @@ test("isolated installation loads confined adapters without host LSP hooks or a 
     await loader.reload();
     const loaded = loader.getExtensions();
     assert.deepEqual(loaded.errors, []);
-    for (const name of ["ci_watch", "dunst", "lsp", "mcp", "web_fetch", "web_search", "task_checkpoint"]) {
+    for (const name of ["ci_watch", "dunst", "lsp", "mcp", "web_fetch", "web_search", "task_checkpoint", "request_podman_access"]) {
       assert.equal(loaded.extensions.filter(extension => extension.tools.has(name)).length, 1, `${name}: exactly one executor, no upstream host hooks`);
     }
     const lsp = loaded.extensions.find(extension => extension.tools.has("lsp"));

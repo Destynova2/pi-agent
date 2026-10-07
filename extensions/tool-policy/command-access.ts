@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runProcess } from "../../lib/process.ts";
 import { PermissionAudit } from "../../lib/permission-audit.ts";
+import { reviewApproval } from "../../lib/approval-review.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
 import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
 import { metalBackend } from "../../scripts/metal-backend.mjs";
@@ -49,14 +50,14 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
     if (failed.size >= 16) failed.delete(failed.keys().next().value!);
     failed.set(event.toolCallId, { ...request, expires: Date.now() + 300_000 });
     return {
-      content: [...event.content, { type: "text" as const, text: `If this failure needs additional filesystem writes or Metal access, use request_command_access with failed_call_id=${JSON.stringify(event.toolCallId)}, only the necessary write_paths and/or gpu="metal", and a reason. Metal requires an operator-installed qualified backend. Human confirmation reruns this entire command once; earlier side effects may repeat. No automatic retry.` }],
+      content: [...event.content, { type: "text" as const, text: `If this failure needs additional filesystem writes or Metal access, use request_command_access with failed_call_id=${JSON.stringify(event.toolCallId)}, only the necessary write_paths and/or gpu="metal", and a reason. Metal requires an operator-installed qualified backend. Approval reruns this entire command once; earlier side effects may repeat. No automatic retry.` }],
       structuredContent: event.structuredContent,
     };
   });
 
   pi.registerTool({
     name: "request_command_access", label: "Request one-command access",
-    description: "After a failed foreground Bash call, ask the human to rerun that exact command once with additional filesystem write paths and/or Metal GPU access. Metal requires a separately reviewed, installed and natively qualified backend; it never grants file or network access. The stored command and cwd cannot be replaced. Runtime/configuration paths (including Pi locks) and workspace ancestors cannot be granted. Codex confinement and existing network policy remain active. Directories grant their subtree. No background, headless, delegated, permanent or unsandboxed execution. Requests expire after five minutes and are consumed once, including refusal. Execution is limited to 60 seconds and the command tree is canceled on session changes.",
+    description: "After a failed foreground Bash call, request approval to rerun that exact command once with additional filesystem write paths and/or Metal GPU access. Metal requires a separately reviewed, installed and natively qualified backend; it never grants file or network access. The stored command and cwd cannot be replaced. Runtime/configuration paths (including Pi locks) and workspace ancestors cannot be granted. Codex confinement and existing network policy remain active. Directories grant their subtree. No background, headless, delegated, permanent or unsandboxed execution. Requests expire after five minutes and are consumed once, including refusal. Execution is limited to 60 seconds and the command tree is canceled on session changes.",
     promptGuidelines: [
       "KVM is not a filesystem write grant. For an authorized Packer/Ansible image build needing /dev/kvm, use request_build_access after inspecting the project sources; do not request /dev or /dev/kvm in write_paths.",
       "Only request the write paths or Metal capability necessary for the reported failure. Inspect partial effects before proposing a retry. Never use another executor to bypass a sandbox denial.",
@@ -90,7 +91,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
               if (root !== request.cwd || realpathSync(ctx.cwd) !== request.cwd || Date.now() > request.expires) throw new Error("Command approval is stale, expired or belongs to another workspace");
               if (!ctx.hasUI || !pi.getActiveTools().includes("request_command_access")) {
                 audit.finish("denied", "unavailable");
-                throw new Error("Command access requires interactive human confirmation in the parent session");
+                throw new Error("Command access requires interactive parent confirmation or automatic review");
               }
               return paths.length ? commandWritableRoots(paths, request.cwd, agentDir, [getPackageDir()]) : [];
             };
@@ -98,6 +99,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
             const backend = gpu ? metalBackend(agentDir) : undefined;
             const display = JSON.stringify({ command: request.command, cwd: request.cwd, additional_write_paths: roots, gpu, backend_sha256: backend?.sha256, reason }, null, 2)
               .replace(/[\u007f-\u009f\u200e-\u200f\u202a-\u202e\u2066-\u2069]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+            const review = await reviewApproval(agentDir, ctx, { resource: "command-access", operation: gpu ? "retry-metal" : "retry", detail: display }, audit, owned);
             let abort = () => {};
             const canceled = new Promise<false>(resolve => {
               abort = () => resolve(false);
@@ -106,13 +108,17 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
             });
             let approved: boolean;
             try {
-              audit.prompted();
-              approved = await Promise.race([
-                ctx.ui.confirm("Retry once with additional command access?", `The ENTIRE failed command will run again; earlier effects may repeat. Directories include their contents, but Codex may still forbid deleting or renaming the granted directory itself. ${gpu ? "Metal grants the command tree access to the GPU driver and shader compiler. " : ""}Workspace/temp permissions and network policy stay unchanged. No permanent grant, no execution outside Codex. Deadline: 60 seconds.\n${display}`, { signal: owned, timeout: Math.max(1, request.expires - Date.now()) }),
-                canceled,
-              ]);
+              if (review.decision === "allow") approved = true;
+              else {
+                audit.prompted();
+                approved = await Promise.race([
+                  ctx.ui.confirm("Retry once with additional command access?", `The ENTIRE failed command will run again; earlier effects may repeat. Directories include their contents, but Codex may still forbid deleting or renaming the granted directory itself. ${gpu ? "Metal grants the command tree access to the GPU driver and shader compiler. " : ""}Workspace/temp permissions and network policy stay unchanged. No permanent grant, no execution outside Codex. Deadline: 60 seconds.\n${display}`, { signal: owned, timeout: Math.max(1, request.expires - Date.now()) }),
+                  canceled,
+                ]);
+                audit.answered(owned.aborted ? "cancel" : approved ? "allow" : "deny");
+              }
             } finally { owned.removeEventListener("abort", abort); }
-            audit.answered(owned.aborted ? "cancel" : approved ? "allow" : "deny");
+            review.check();
             validate();
             if (!approved) throw new Error("Command access refused; nothing executed");
             if (backend && metalBackend(agentDir).sha256 !== backend.sha256) throw new Error("Metal backend changed during approval; nothing executed");
@@ -121,7 +127,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
               if (backend) pi.appendEntry("metal_command", { status, at: new Date().toISOString(), failedCallId: id, command: request.command, cwd: request.cwd, writePaths: roots, backendSha256: backend.sha256, timeoutMs: 60_000, output: Buffer.concat(output).toString("utf8").slice(-6000), error });
             };
             // A missing result journal must prevent execution, not silently drop the audit trail.
-            audit.finish("granted", "human", "once");
+            audit.finish("granted", review.decision === "allow" ? "policy" : "human", "once");
             journal("started");
             try {
               await execute(join(runtimeRoot, "scripts/codex-shell.mjs"), [...(backend ? ["--metal", backend.sha256] : []), ...(roots.length ? ["--write-roots", JSON.stringify(roots)] : []), "-c", request.command], {

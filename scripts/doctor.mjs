@@ -24,6 +24,8 @@ export const CONFINED_RUNTIME_FILES = [
   "lib/confined.ts", "lib/confined-tools.ts", "lib/resolve-pi.mjs", "lib/rpc-process.ts", "lib/process.ts",
   "lib/read-request.mjs",
   "extensions/tool-policy/index.ts", "extensions/confined-lsp/index.ts",
+  "extensions/tool-policy/podman-access.ts", "extensions/tool-policy/command-access.ts", "extensions/tool-policy/network.ts",
+  "lib/approval-review.ts", "lib/mcp-approvals.ts", "lib/permission-audit.ts",
   "extensions/confined-lsp/pi-lsp-module-hook.mjs", "extensions/confined-lsp/worker-session.mjs",
   "extensions/confined-lsp/jail.ts", "extensions/confined-lsp/readonly-settings.mjs",
   "extensions/confined-lsp/piped-spawn.mjs",

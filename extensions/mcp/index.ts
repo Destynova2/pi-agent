@@ -9,6 +9,10 @@ import { McpConnection } from "./client.ts";
 
 interface Server { command: string; args: string[]; env?: Record<string, string>; network?: boolean }
 
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 export function readServers(agentDir: string, cwd: string): Record<string, Server> {
   const rel = relative(realpathSync(cwd), realpathSync(agentDir));
   if (!rel || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel))) throw new Error("MCP configuration must be outside the writable workspace");
@@ -18,26 +22,45 @@ export function readServers(agentDir: string, cwd: string): Record<string, Serve
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > 65536) throw new Error("Invalid MCP configuration file");
-    const data = JSON.parse(readFileSync(fd, "utf8"));
-    if (data && Object.hasOwn(data, "mcpServers")) throw new Error("This confined MCP adapter uses servers, not native mcpServers. pi mcp commands configure native MCP, not this adapter. See docs/ORCHESTRATION.md.");
-    if (!data || typeof data.servers !== "object" || !data.servers || Array.isArray(data.servers)) throw new Error("Expected MCP servers object");
-    for (const server of Object.values(data.servers) as Server[]) {
-      if (!server || typeof server !== "object" || typeof server.command !== "string" || !server.command ||
-        !Array.isArray(server.args) || !server.args.every(arg => typeof arg === "string") ||
-        Object.keys(server).some(key => !["command", "args", "env", "network"].includes(key)) ||
-        (server.network !== undefined && typeof server.network !== "boolean") ||
-        (server.env !== undefined && (!server.env || typeof server.env !== "object" || Array.isArray(server.env) || Object.entries(server.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string")))) {
-        throw new Error("MCP supports configured local stdio servers only (command, args, env, network)");
+    const data: unknown = JSON.parse(readFileSync(fd, "utf8"));
+    if (!record(data) || (!Object.hasOwn(data, "servers") && !Object.hasOwn(data, "mcpServers"))) throw new Error("Expected MCP servers or mcpServers object");
+    const definitions = new Map<string, Server>(), names = new Set<string>();
+    for (const format of ["servers", "mcpServers"]) {
+      if (!Object.hasOwn(data, format)) continue;
+      const entries = data[format], native = format === "mcpServers";
+      if (!record(entries)) throw new Error(`Expected MCP ${format} object`);
+      for (const [name, server] of Object.entries(entries)) {
+        if (!name || names.has(name)) throw new Error("MCP server names must be nonempty and unique across servers and mcpServers");
+        names.add(name);
+        const allowed = native ? ["command", "args", "env", "network", "type", "enabled", "description", "exposure"] : ["command", "args", "env", "network"];
+        if (!record(server) || typeof server.command !== "string" || !server.command ||
+          (!native && !Array.isArray(server.args)) ||
+          (server.args !== undefined && (!Array.isArray(server.args) || !server.args.every(arg => typeof arg === "string"))) ||
+          Object.keys(server).some(key => !allowed.includes(key)) ||
+          (server.network !== undefined && typeof server.network !== "boolean") ||
+          (server.type !== undefined && server.type !== "stdio") ||
+          (server.enabled !== undefined && typeof server.enabled !== "boolean") ||
+          (server.description !== undefined && typeof server.description !== "string") ||
+          (server.exposure !== undefined && server.exposure !== "codemode") ||
+          (server.env !== undefined && (!record(server.env) || Object.entries(server.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string")))) {
+          throw new Error("MCP supports configured local stdio servers only (command, args, env, network; native type, enabled, description and codemode exposure). Remote URLs, cwd, timeout, toolExposure and other exposure modes are unsupported.");
+        }
+        if (server.enabled === false) continue;
+        definitions.set(name, {
+          command: server.command, args: (server.args ?? []) as string[],
+          ...(server.env === undefined ? {} : { env: server.env as Record<string, string> }),
+          ...(native ? { network: server.network ?? true } : server.network === undefined ? {} : { network: server.network }),
+        });
       }
     }
-    return data.servers;
+    return Object.fromEntries(definitions);
   } finally { closeSync(fd); }
 }
 
 export default function (pi: ExtensionAPI) {
   const agentDir = getAgentDir();
   const launcher = fileURLToPath(new URL("../../scripts/codex-shell.mjs", import.meta.url));
-  const connections = new Map<string, { config: string; connection: McpConnection }>();
+  const connections = new Map<string, { cwd: string; name: string; definition: string; config: string; connection: McpConnection }>();
   const approvals = new McpApprovals(agentDir);
   let generation = 0;
   let lifetime = new AbortController();
@@ -57,7 +80,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", stop);
   pi.registerTool({
     name: "mcp", label: "MCP (confined)",
-    description: "Use trusted, configured local MCP stdio servers inside Codex. Omit server to list configurations; use tool:'help' to discover tools. Declared read-only tools offer once/session/project consent; other calls require fresh exact approval. /mcp permissions revokes grants. Remote servers and host automation are unsupported; Dunst is separate.",
+    description: "Use trusted, configured local MCP stdio servers inside Codex. Global pi mcp add/remove changes are read on each call. Omit server to list configurations; use tool:'help' to discover tools. Declared read-only tools offer once/session/project consent; other calls require fresh exact approval. /mcp permissions revokes grants. Remote servers and host automation are unsupported; Dunst is separate.",
     promptGuidelines: ["Read-only annotations are unverified server claims, not a sandbox. Never use a remembered grant to send a message or submit a form without the user's explicit go for that exact action."],
     parameters: Type.Object({ server: Type.Optional(Type.String()), tool: Type.Optional(Type.String()), args: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),
     executionMode: "sequential",
@@ -69,6 +92,14 @@ export default function (pi: ExtensionAPI) {
       if (Buffer.byteLength(serialized) > 65536) throw new Error("MCP request exceeds 64 KiB");
       const request = JSON.parse(serialized) as { server?: string; tool: string; args: Record<string, unknown> };
       const servers = readServers(agentDir, cwd);
+      // Reconcile definitions without interrupting unchanged server connections.
+      for (const [key, entry] of connections) {
+        if (entry.cwd === cwd && (!Object.hasOwn(servers, entry.name) || entry.definition !== fingerprint(servers[entry.name]))) {
+          connections.delete(key);
+          await entry.connection.rpc.shutdown();
+        }
+      }
+      owned.throwIfAborted();
       if (!request.server) return { content: [{ type: "text", text: JSON.stringify(Object.keys(servers)) }], details: undefined };
       const name = request.server;
       const configuration = () => {
@@ -93,8 +124,10 @@ export default function (pi: ExtensionAPI) {
       verify();
       if (!entry) {
         const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-        const command = ["/usr/bin/env", ...Object.entries(server.env ?? {}).map(([key, value]) => `${key}=${value}`), executable.command, ...server.args].map(quote).join(" ");
-        entry = { config, connection: new McpConnection(new RpcProcess({ command: launcher, args: [...(server.network ? [] : ["--offline"]), "-c", command], cwd })) };
+        const environment = ["/usr/bin/env", ...Object.entries(server.env ?? {}).map(([key, value]) => `${key}=${value}`)].map(quote).join(" ");
+        // Expand only the launcher's private TMPDIR, inside the jail. Configuration stays literal.
+        const command = `${environment} 'npm_config_ignore_scripts=true' "npm_config_cache=$TMPDIR/pi-mcp-npm" ${[executable.command, ...server.args].map(quote).join(" ")}`;
+        entry = { cwd, name, definition: fingerprint(server), config, connection: new McpConnection(new RpcProcess({ command: launcher, args: [...(server.network ? [] : ["--offline"]), "-c", command], cwd })) };
         connections.set(key, entry);
       }
       const connection = entry.connection;
