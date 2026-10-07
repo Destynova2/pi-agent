@@ -19,15 +19,19 @@ test("verification records commands, tests, failure status, signals and source i
   assert.equal(success.exitCode, 0);
   assert.equal(success.report.selectedTests.length, 1);
   assert.deepEqual(success.report.phases.map(p => p.status), ["passed", "passed"]);
+  await writeFile(tests, "console.log('tested', process.argv.slice(2)); console.error('test: Pi SDK not found. No tests executed.');\n");
   const full = await runVerification({ root, env, integration: true, reuseCheck: join(parent, "old-check.json") });
+  assert.equal(full.exitCode, 0);
+  assert.equal(full.report.phases[1].prerequisiteFailure, undefined, "successful fixture output is not a missing prerequisite");
   assert.equal(full.report.selectedTests.length, 2);
   assert.ok(full.report.phases[0].command.includes("--reuse-evidence"));
   assert.match(await readFile(full.report.phases[1].log, "utf8"), /tested.*--integration/);
   assert.notEqual(success.reportPath, full.reportPath);
-  for (const [source, status, signal] of [
-    ["console.error('assertion failed'); process.exitCode = 37;\n", 37, null],
-    ["process.kill(process.pid, 'SIGTERM');\n", 1, "SIGTERM"],
-    ["console.error('test: Pi SDK not found. No tests executed.'); process.exitCode = 1;\n", 1, null],
+  for (const [source, status, signal, missingSdk] of [
+    ["console.error('assertion failed'); process.exitCode = 37;\n", 37, null, false],
+    ["process.kill(process.pid, 'SIGTERM');\n", 1, "SIGTERM", false],
+    ["console.error('test: Pi SDK not found. No tests executed.'); process.exitCode = 1;\n", 1, null, true],
+    ["console.log('test: 1 file(s)'); console.error('test: Pi SDK not found. No tests executed.'); process.exitCode = 37;\n", 37, null, false],
   ]) {
     await writeFile(tests, source);
     const failed = await runVerification({ root, env });
@@ -36,7 +40,7 @@ test("verification records commands, tests, failure status, signals and source i
     assert.equal(stored.status, "failed");
     assert.equal(stored.phases[1].signal, signal);
     assert.equal(stored.phases[1].status, "failed");
-    assert.equal(Boolean(stored.phases[1].prerequisiteFailure), source.includes("SDK not found"));
+    assert.equal(Boolean(stored.phases[1].prerequisiteFailure), missingSdk);
   }
   await writeFile(tests, "import { writeFileSync } from 'node:fs'; writeFileSync('changed.ts', '// changed\\n');\n");
   const changed = await runVerification({ root, env });

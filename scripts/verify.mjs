@@ -56,7 +56,10 @@ export async function runVerification({ root = fileURLToPath(new URL("..", impor
       if (interrupted) phase.interrupted = interrupted;
       const output = readFileSync(phase.log, "utf8");
       process.stdout.write(output);
-      if (output.includes("test: Pi SDK not found.")) phase.prerequisiteFailure = "Pi SDK not found; no tests executed";
+      const runnerMessage = output.split(/\r?\n/).find(line => line.startsWith("test: "));
+      if (name === "test" && phase.status === "failed" && runnerMessage?.startsWith("test: Pi SDK not found.")) {
+        phase.prerequisiteFailure = "Pi SDK not found; no tests executed";
+      }
       save();
       if (phase.status !== "passed") {
         exitCode = phase.exitCode || (interrupted === "SIGINT" ? 130 : interrupted === "SIGTERM" ? 143 : 1);
