@@ -19,10 +19,12 @@ This repo is a **source** to install, not a live runtime. See [INSTALLATION.md](
 | Adapt delegation automatically | Ask normally: work starts direct and splits when useful; `/orchestrate <request>` remains optional |
 | Delegate or resume a subtask | `subagent` with `agent: scout\|worker\|reviewer`; reuse the returned `resume` ID for a follow-up |
 | Inspect tool confinement | `/confined-tools`: available executors and approval boundaries |
+| Review permissions automatically | `/approvals auto <scope>` for this project; `/approvals auto-deny <scope>` refuses uncertainty without prompting; [automatic review](docs/AUTO-APPROVALS.md) |
 | Preserve all parts of a request | `task_checkpoint` records requirements and verification evidence in the session; `/task-status` shows them after reload, compaction or restart |
 | Retry a denied write | `request_command_access`: [one confirmed command with exact additional paths](docs/ORCHESTRATION.md#one-command-filesystem-access) |
 | Request local service access | `request_host_access`: [one confirmed host operation](docs/ORCHESTRATION.md#one-host-operation), without opening Bash |
 | Diagnose Podman | `podman_list`, `podman_inspect`, `podman_logs` (bounded, last hour), `podman_machine_list` through `request_host_access` |
+| Build and manage containers | `request_podman_access`: [generic Podman bridge](docs/PODMAN-ACCESS.md), using the default local connection and automatic or manual approval |
 | List cached models without starting Pi | `model_catalog`: metadata only, no credential resolution or quota probe |
 | Review recorded failures | `note_list` with `kind: blocker` or `done`; [sanitized incident memory](docs/ORCHESTRATION.md#incident-records) |
 | Read a URL you supplied | `web_fetch` or `/web <url>`: exact public GET without another confirmation; no permission for Bash or uploads |

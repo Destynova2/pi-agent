@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { accessSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
 import { PermissionAudit } from "./permission-audit.ts";
+import { reviewApproval } from "./approval-review.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const APPROVAL_CHOICES = ["Refuser", "Autoriser cette fois", "Autoriser pour cette session", "Toujours autoriser pour ce projet"];
@@ -35,6 +36,7 @@ interface Approval {
   remember: boolean;
   interactiveOnly?: boolean;
   revalidate: () => void;
+  beforePrompt?: () => void;
 }
 
 function readPrivate(path: string): string | undefined {
@@ -120,8 +122,10 @@ export class McpApprovals {
       const run = async () => {
         let scope: "once" | "session" | "project" = "once";
         let source: "human" | "session" | "project" = "human";
+        let reviewCheck = () => {};
         const check = () => {
           signal?.throwIfAborted();
+          reviewCheck();
           if (generation !== this.generation || cwd !== realpathSync(ctx.cwd) || epoch !== this.epoch(cwd, request.resource)) throw new Error("MCP approval became stale or was revoked");
           request.revalidate();
           if (scope === "session" && this.session.get(key) !== epoch) throw new Error("MCP session approval revoked");
@@ -133,10 +137,18 @@ export class McpApprovals {
         if (request.remember && this.session.get(key) === epoch) { scope = "session"; source = "session"; }
         else if (request.remember && this.saved(cwd, request.resource, key, epoch)) { scope = "project"; source = "project"; }
         else {
+          const review = await reviewApproval(this.agentDir, ctx, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal);
+          reviewCheck = review.check;
+          check();
+          if (review.decision === "allow") {
+            audit.finish("granted", "policy", "once");
+            return check;
+          }
           if (!ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error("MCP access requires human approval; no matching project grant"); }
           const title = approvalDisplayText(request.title).replaceAll("\n", "\\n").replaceAll("\t", "\\t");
           const detail = approvalDisplayText(`Projet : ${JSON.stringify(cwd)}\n${request.detail}`);
           const choices = request.remember ? [...APPROVAL_CHOICES] : APPROVAL_CHOICES.slice(0, 2);
+          request.beforePrompt?.();
           audit.prompted();
           const choice = await ctx.ui.select(`${title}\n${detail}`, choices, { signal });
           audit.answered(!choice ? "cancel" : choice === APPROVAL_CHOICES[0] || !choices.includes(choice) ? "deny" : "allow",

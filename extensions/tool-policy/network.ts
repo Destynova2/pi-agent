@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PermissionAudit } from "../../lib/permission-audit.ts";
+import { reviewApproval } from "../../lib/approval-review.ts";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { networkHosts, normalizeHost, readNetworkPolicy } from "../../scripts/codex-network.mjs";
@@ -29,7 +30,7 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
   pi.registerTool({
     name: "request_network_access",
     label: "Request network access",
-    description: "Request additional exact public DNS hosts for subsequent sandbox commands in this workspace/session. Already allowed hosts need no prompt; new hosts require the human. No filesystem escalation, wildcard, private-network or automatic command retry.",
+    description: "Request additional exact public DNS hosts for subsequent sandbox commands in this workspace/session. Already allowed hosts need no prompt; new hosts require approval through the configured manual or automatic reviewer. No filesystem escalation, wildcard, private-network or automatic command retry.",
     promptGuidelines: ["For an exact URL supplied by the user, use web_fetch directly; its fixed public GET reader needs no additional network grant. Do not request session-wide access merely to read that URL or after its HTTP 403. This tool grants broader access, including uploads, and is reserved for tasks that actually require that scope."],
     parameters: Type.Object({
       hosts: Type.Array(Type.String({ minLength: 1, maxLength: 253 }), { minItems: 1, maxItems: 10 }),
@@ -48,10 +49,12 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
           if (requested.some(host => policy.deny.includes(host))) { audit.finish("denied", "policy"); throw new Error("A requested host is explicitly denied by network-policy.json; it cannot be approved"); }
           const allowed = networkHosts(agentDir, root, grantPath);
           const missing = requested.filter(host => !allowed.includes(host));
+          let reviewed = false;
           if (missing.some(host => refused.has(host))) { audit.finish("denied", "refusal_cache"); throw new Error("Network access was refused earlier in this session; no repeated prompt"); }
           if (missing.length) {
             if (!ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error(`Network access requires human approval: ${missing.join(", ")}. No UI available; denied. Configure network-policy.json outside Pi for headless use.`); }
             if (new Set([...allowed, ...missing]).size > 128) throw new Error("Network host limit reached (128)");
+            const review = await reviewApproval(agentDir, ctx, { resource: "network-access", operation: "allow-hosts", detail: JSON.stringify({ hosts: missing, scope: "session-wide proxy access on any port, including uploads", reason }) }, audit, signal);
             let abort = () => {};
             const aborted = new Promise<false>(resolve => {
               abort = () => resolve(false);
@@ -60,13 +63,17 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
             });
             let approved = false;
             try {
-              audit.prompted();
-              approved = await Promise.race([
-                ctx.ui.confirm("Allow additional network destinations?", `Hosts: ${missing.join(", ")}\nWorkspace: ${root}\nScope: new commands in this Pi session; proxy traffic to these hosts on any port, including uploads. Filesystem jail stays unchanged.\nAgent justification: ${reason}`, { signal }),
-                aborted,
-              ]);
+              if (review.decision === "allow") { approved = true; reviewed = true; }
+              else {
+                audit.prompted();
+                approved = await Promise.race([
+                  ctx.ui.confirm("Allow additional network destinations?", `Hosts: ${missing.join(", ")}\nWorkspace: ${root}\nScope: new commands in this Pi session; proxy traffic to these hosts on any port, including uploads. Filesystem jail stays unchanged.\nAgent justification: ${reason}`, { signal }),
+                  aborted,
+                ]);
+                audit.answered(signal?.aborted ? "cancel" : approved ? "allow" : "deny", "session");
+              }
             } finally { signal?.removeEventListener("abort", abort); }
-            audit.answered(signal?.aborted ? "cancel" : approved ? "allow" : "deny", "session");
+            review.check();
             verify(ctx);
             if (generation !== epoch || signal?.aborted) throw new Error("Network request became stale or aborted; no grant saved");
             if (!approved) {
@@ -90,7 +97,7 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
             grantPath = destination;
             process.env.PI_CODEX_NETWORK_GRANTS = destination;
           }
-          audit.finish("granted", missing.length ? "human" : requested.every(host => policy.allow.includes(host)) ? "policy" : "session", missing.length || !requested.every(host => policy.allow.includes(host)) ? "session" : "policy");
+          audit.finish("granted", missing.length ? reviewed ? "policy" : "human" : requested.every(host => policy.allow.includes(host)) ? "policy" : "session", missing.length || !requested.every(host => policy.allow.includes(host)) ? "session" : "policy");
           return { content: [{ type: "text" as const, text: `Network destinations available to new sandbox commands: ${requested.join(", ")}. Existing commands keep their old proxy policy. No command was retried.` }], details: undefined };
         };
         const result = tail.then(run, run);
@@ -103,6 +110,6 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
     let description: string;
     try { description = `Automatically allowed public hosts: ${networkHosts(agentDir, ctx.cwd, grantPath).join(", ") || "none"}.`; }
     catch { description = "Network policy cannot be read; sandbox launches will fail closed."; }
-    event.systemPromptOptions.sections.network_access = `${description} Network commands must use Codex's managed HTTP(S) proxy; direct sockets/private networks are blocked. Reading an exact public URL supplied by the user is already authorized through web_fetch's fixed GET reader; no request_network_access is needed, and no grant reaches Bash or other URLs. For broader access to another exact public host, call request_network_access with hosts and reason. Only the human can approve additional hosts for this workspace/session. No UI means denial of that broader grant. Do not rerun a failed command automatically: earlier steps may already have had effects. Network grants never authorize filesystem escape or otherwise unsupported tools.`;
+    event.systemPromptOptions.sections.network_access = `${description} Network commands must use Codex's managed HTTP(S) proxy; direct sockets/private networks are blocked. Reading an exact public URL supplied by the user is already authorized through web_fetch's fixed GET reader; no request_network_access is needed, and no grant reaches Bash or other URLs. For broader access to another exact public host, call request_network_access with hosts and reason. Additional hosts for this workspace/session require the configured manual or automatic reviewer. No UI means denial of that broader grant. Do not rerun a failed command automatically: earlier steps may already have had effects. Network grants never authorize filesystem escape or otherwise unsupported tools.`;
   });
 }
