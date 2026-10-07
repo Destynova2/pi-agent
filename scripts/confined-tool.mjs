@@ -1,5 +1,5 @@
 // Loaded only through the trusted launcher. No arbitrary modules, commands or database paths.
-import { readFileSync } from "node:fs";
+import { readRequest } from "../lib/read-request.mjs";
 import { executeNotes } from "../extensions/notes/worker.ts";
 import { executeGraphify } from "../extensions/graphify/worker.ts";
 import { gitInspect } from "../extensions/git-inspect/index.ts";
@@ -12,10 +12,7 @@ process.once("SIGINT", () => lifetime.abort());
 
 try {
   if (process.env.PI_CONFINED !== "1") throw new Error("Confined worker requires the Codex sandbox launcher");
-  const data = readFileSync(0);
-  if (data.length > 1024 * 1024) throw new Error("Confined request exceeds 1 MiB");
-  const input = JSON.parse(data.toString("utf8"));
-  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected a request object");
+  const input = await readRequest(process.stdin);
   const service = process.argv[2];
   const result = service === "notes" ? await executeNotes({ ...input, cwd: process.cwd() })
     : service === "graphify" ? await executeGraphify(input, lifetime.signal)

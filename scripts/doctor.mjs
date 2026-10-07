@@ -22,6 +22,7 @@ export const CONFINED_RUNTIME_FILES = [
   "lib/jj-checkpoint.ts", "extensions/tool-policy/jj-checkpoint.ts",
   "lib/git-transaction.ts", "extensions/tool-policy/git-access.ts", "extensions/tool-policy/git-access-core.ts",
   "lib/confined.ts", "lib/confined-tools.ts", "lib/resolve-pi.mjs", "lib/rpc-process.ts", "lib/process.ts",
+  "lib/read-request.mjs",
   "extensions/tool-policy/index.ts", "extensions/confined-lsp/index.ts",
   "extensions/confined-lsp/pi-lsp-module-hook.mjs", "extensions/confined-lsp/worker-session.mjs",
   "extensions/confined-lsp/jail.ts", "extensions/confined-lsp/readonly-settings.mjs",
