@@ -176,6 +176,29 @@ test("native trust override cannot be widened and is inserted before the prompt 
   for (const flag of ["--approve", "-a"]) assert.throws(() => confinedArgs([flag]), /does not permit/);
 });
 
+test("MCP configuration commands preserve literal arguments and the real CLI never starts their servers", async t => {
+  const f = await fixture(t), marker = join(f.root, "server-started"), server = join(f.root, "server.mjs");
+  await writeFile(server, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'unexpected');\n`);
+  const existing = { command: "npx", args: ["-y", "@playwright/mcp@0.0.83", "--isolated"], browser: { image: `sha256:${"a".repeat(64)}`, localhostPorts: [8092] } };
+  await writeFile(join(f.agentDir, "mcp.json"), JSON.stringify({ mcpServers: { existing } }));
+  await writeFile(f.launcher, renderLauncher(installedManifest, f));
+  const commands = [["mcp", "add", "fixture", "--", process.execPath, server, "--approve", "--no-approve"], ["mcp", "remove", "fixture"], ["mcp", "--help"]];
+  for (const args of commands) {
+    assert.deepEqual(confinedArgs(args), args);
+    const output = join(f.root, "mcp.log"), fd = openSync(output, "w"); let result;
+    try { result = spawnSync(f.launcher, args, { cwd: f.root, env: f.env, stdio: ["ignore", fd, fd] }); }
+    finally { closeSync(fd); }
+    assert.ifError(result.error); assert.equal(result.status, 0, await readFile(output, "utf8"));
+    const config = JSON.parse(await readFile(join(f.agentDir, "mcp.json"), "utf8"));
+    assert.deepEqual(config.mcpServers.existing, existing);
+    if (args[1] === "add") assert.deepEqual(config.mcpServers.fixture, { command: process.execPath, args: [server, "--approve", "--no-approve"] });
+    else assert.equal(config.mcpServers.fixture, undefined);
+    await assert.rejects(lstat(marker), { code: "ENOENT" });
+  }
+  // Native list connects servers; it is not a configuration-only exemption.
+  assert.deepEqual(confinedArgs(["mcp", "list"]), ["mcp", "list", "--no-approve"]);
+});
+
 test("concurrent updater, changed launcher and symlink launcher are refused", async t => {
   const f = await fixture(t);
   const lock = `${f.launcher}.update-lock`;

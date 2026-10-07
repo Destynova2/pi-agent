@@ -126,6 +126,8 @@ Use `pi --no-approve` with an upstream launcher. Pi's native option keeps the pr
 
 The managed launcher inserts `--no-approve` before a prompt delimiter and rejects `--approve`/`-a`. It does not rewrite the SDK, edit the trust store, or widen tool permissions. Existing processes need a restart: `/reload` cannot undo code loaded earlier in a trusted session.
 
+`pi mcp add`, `pi mcp remove` and MCP help use the native configuration-only parser, which rejects session trust flags. The launcher forwards those arguments unchanged, including the server command after `--`; they do not launch a server. For discovery or calls, use the confined `mcp` tool inside Pi. Native `pi mcp list` connects servers outside this bridge and is not part of this exception.
+
 ### Updating a private runtime
 
 A shell launcher pointing into `~/.local/share/pi-runtime/` is not a global npm installation. Enable this repo's updater from a host terminal capable of running the native integration gate:

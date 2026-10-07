@@ -87,6 +87,9 @@ async function runtimeDigest(root) {
 }
 
 export function confinedArgs(args) {
+  // These native CLI commands edit configuration or print help, without loading
+  // project extensions or connecting servers. They reject session trust flags.
+  if (args[0] === "mcp" && [undefined, "add", "remove", "help", "--help", "-h"].includes(args[1])) return args;
   const boundary = args.indexOf("--"), options = boundary < 0 ? args : args.slice(0, boundary);
   if (options.some(arg => arg === "--approve" || arg === "-a")) throw new Error("The confined launcher does not permit --approve; project code must remain untrusted");
   if (options.includes("--no-approve") || options.includes("-na")) return args;
@@ -125,6 +128,12 @@ export PATH="$HOME/.local/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$PAT
 export PI_PACKAGE_JSON=${quote(manifest)}
 if [ -z "\${PI_CODING_AGENT_DIR:-}" ]; then PI_CODING_AGENT_DIR=${quote(resolve(agentDir))}; fi
 export PI_CODING_AGENT_DIR
+# Configuration-only MCP commands have their own parser, without session flags.
+if [ "\${1-}" = mcp ]; then
+  case "\${2-}" in
+    ''|add|remove|help|--help|-h) exec ${quote(node)} ${quote(join(dirname(manifest), "dist/bundle/cli.js"))} "$@" ;;
+  esac
+fi
 # Rotate only the original arguments, preserving quoting and the prompt delimiter.
 pi_argc=$#
 pi_delimiter=
