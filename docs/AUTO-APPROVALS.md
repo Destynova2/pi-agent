@@ -74,9 +74,13 @@ reviewer evaluates that full session scope.
 The existing `permission_requests` table records automatic approvals with
 `source = 'policy'`. The additive `permission_reviews` table distinguishes model
 review from static policy: request ID, timestamp, verdict, fixed reason category,
-model and policy fingerprint. It stores no prompt, raw command, scope text or
-free-form model explanation. An unavailable journal prevents execution. Neither
-table is consulted as permission or training data.
+model and policy fingerprint. The separate `audit_events` timeline records the
+redacted reviewer request, structured verdict, precise failure code and masked
+error message. It also links public approval dialogs to the permission and tool
+call. An unavailable permission journal prevents execution. None of these tables
+is consulted as permission or training data. Use `/audit` or the
+[read-only report](AUDIT.md) to inspect failures; historical unavailable reviews
+without diagnostics remain unknown.
 
 ```bash
 node --import ./tests/resolve-pi.mjs --test --test-timeout=15000 \

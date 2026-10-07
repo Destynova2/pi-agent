@@ -27,6 +27,7 @@ export const CONFINED_RUNTIME_FILES = [
   "extensions/tool-policy/index.ts", "extensions/confined-lsp/index.ts",
   "extensions/tool-policy/podman-access.ts", "extensions/tool-policy/command-access.ts", "extensions/tool-policy/network.ts",
   "lib/approval-review.ts", "lib/mcp-approvals.ts", "lib/permission-audit.ts",
+  "extensions/audit/index.ts", "lib/audit-storage.ts", "lib/audit-events.ts", "lib/audit-redaction.ts", "lib/audit-ui.ts", "lib/audit-report.ts", "scripts/audit-report.mjs",
   "extensions/confined-lsp/pi-lsp-module-hook.mjs", "extensions/confined-lsp/worker-session.mjs",
   "extensions/confined-lsp/jail.ts", "extensions/confined-lsp/readonly-settings.mjs",
   "extensions/confined-lsp/piped-spawn.mjs",

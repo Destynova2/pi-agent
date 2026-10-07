@@ -230,3 +230,25 @@ test("host bridge auto review executes once with fixed argv and denial executes 
   f.verdict = { decision: "deny", category: "out_of_scope" };
   await assert.rejects(call(), /out_of_scope/); assert.equal(executions.length, 1);
 });
+
+test("review diagnostics retain precise failure codes and masked request context without changing grants", async t => {
+  const f = fixture(t); await f.activate("auto-deny Build the local demo");
+  const cases = [
+    ["provider_error", () => { throw new Error("HTTP 401 api_key=provider-secret-value"); }],
+    ["incomplete_response", () => ({ stopReason: "error", errorMessage: "Account quota exhausted", content: [] })],
+    ["unexpected_tool_call", () => ({ stopReason: "stop", content: [{ type: "toolCall", name: "bash" }] })],
+    ["invalid_json", () => ({ stopReason: "stop", content: [{ type: "text", text: "not json" }] })],
+    ["invalid_verdict", () => ({ stopReason: "stop", content: [{ type: "text", text: '{"decision":"allow","category":"secrets"}' }] })],
+    ["oversized_response", () => ({ stopReason: "stop", content: [{ type: "text", text: "x".repeat(4001) }] })],
+  ];
+  for (const [_code, run] of cases) { f.run = run; await assert.rejects(f.authorize(), /unavailable/); }
+  f.ctx.modelRegistry.find = () => undefined;
+  await assert.rejects(f.authorize(), /unavailable/);
+  const results = f.query("audit_events").filter(row => row.kind === "review.result").map(row => JSON.parse(row.payload_json));
+  assert.deepEqual(results.map(value => value.diagnostic.code), [...cases.map(([code]) => code), "model_unavailable"]);
+  assert.match(results[0].diagnostic.error.message, /HTTP 401/);
+  assert.equal(results[1].diagnostic.error.message, "Account quota exhausted");
+  assert.doesNotMatch(JSON.stringify(f.query("audit_events")), /provider-secret-value/);
+  assert.ok(f.query("permission_requests").every(row => row.status === "denied")); assert.equal(f.prompts, 0);
+  assert.ok(f.query("audit_events").filter(row => row.kind === "review.request").every(row => row.request_id));
+});

@@ -112,7 +112,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
               else {
                 audit.prompted();
                 approved = await Promise.race([
-                  ctx.ui.confirm("Retry once with additional command access?", `The ENTIRE failed command will run again; earlier effects may repeat. Directories include their contents, but Codex may still forbid deleting or renaming the granted directory itself. ${gpu ? "Metal grants the command tree access to the GPU driver and shader compiler. " : ""}Workspace/temp permissions and network policy stay unchanged. No permanent grant, no execution outside Codex. Deadline: 60 seconds.\n${display}`, { signal: owned, timeout: Math.max(1, request.expires - Date.now()) }),
+                  audit.run(() => ctx.ui.confirm("Retry once with additional command access?", `The ENTIRE failed command will run again; earlier effects may repeat. Directories include their contents, but Codex may still forbid deleting or renaming the granted directory itself. ${gpu ? "Metal grants the command tree access to the GPU driver and shader compiler. " : ""}Workspace/temp permissions and network policy stay unchanged. No permanent grant, no execution outside Codex. Deadline: 60 seconds.\n${display}`, { signal: owned, timeout: Math.max(1, request.expires - Date.now()) })),
                   canceled,
                 ]);
                 audit.answered(owned.aborted ? "cancel" : approved ? "allow" : "deny");
@@ -147,7 +147,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
           tail = result.catch(() => undefined);
           return result;
         }, signal);
-      } catch (error) { audit.fail(signal); throw error; }
+      } catch (error) { audit.fail(signal, error); throw error; }
     },
   });
 }

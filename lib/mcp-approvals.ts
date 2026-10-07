@@ -167,7 +167,7 @@ export class McpApprovals {
           const prompt = `${title}\n${detail}`;
           request.beforePrompt?.(prompt, choices);
           audit.prompted();
-          const choice = await ctx.ui.select(prompt, choices, { signal });
+          const choice = await audit.run(() => ctx.ui.select(prompt, choices, { signal }));
           const acceptProject = !!offerProject && choice === offerProject.label;
           audit.answered(!choice ? "cancel" : choice === APPROVAL_CHOICES[0] || !choices.includes(choice) ? "deny" : "allow",
             choice === APPROVAL_CHOICES[3] || acceptProject ? "project" : choice === APPROVAL_CHOICES[2] ? "session" : "once");
@@ -191,6 +191,6 @@ export class McpApprovals {
       const result = this.tail.then(run, run);
       this.tail = result.catch(() => undefined);
       return await result;
-    } catch (error) { audit.fail(signal); throw error; }
+    } catch (error) { audit.fail(signal, error); throw error; }
   }
 }

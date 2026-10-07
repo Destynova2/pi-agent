@@ -76,7 +76,7 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
             return ctx.ui.select(title, choices, options);
           } } };
           const ticket = await approvals.authorize(scoped, {
-            resource: "jj-checkpoint", identity: fingerprint([info.identity, binary, gitBinary]), operation: "local-checkpoint-v1", remember: info.initialized, interactiveOnly: true,
+            resource: "jj-checkpoint", toolCallId: _id, auditOperation: "snapshot", identity: fingerprint([info.identity, binary, gitBinary]), operation: "local-checkpoint-v1", remember: info.initialized, interactiveOnly: true,
             title: "Autoriser les points de restauration jj ?",
             detail: `${info.root}\n${reason}\n${info.initialized ? "Consentement session/projet : futurs instantanés locaux." : "Initialise jj/Git et prend un premier instantané, cette fois uniquement."}\nFichiers suivis et nouveaux non ignorés. Aucun push ni restauration. Index et fichiers actuels conservés. Fichiers ignorés et état externe exclus.`,
             revalidate,

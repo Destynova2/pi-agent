@@ -67,7 +67,7 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
               else {
                 audit.prompted();
                 approved = await Promise.race([
-                  ctx.ui.confirm("Allow additional network destinations?", `Hosts: ${missing.join(", ")}\nWorkspace: ${root}\nScope: new commands in this Pi session; proxy traffic to these hosts on any port, including uploads. Filesystem jail stays unchanged.\nAgent justification: ${reason}`, { signal }),
+                  audit.run(() => ctx.ui.confirm("Allow additional network destinations?", `Hosts: ${missing.join(", ")}\nWorkspace: ${root}\nScope: new commands in this Pi session; proxy traffic to these hosts on any port, including uploads. Filesystem jail stays unchanged.\nAgent justification: ${reason}`, { signal })),
                   aborted,
                 ]);
                 audit.answered(signal?.aborted ? "cancel" : approved ? "allow" : "deny", "session");
@@ -103,7 +103,7 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
         const result = tail.then(run, run);
         tail = result.catch(() => undefined);
         return await result;
-      } catch (error) { audit.fail(signal); throw error; }
+      } catch (error) { audit.fail(signal, error); throw error; }
     },
   });
   pi.on("before_agent_start", (event, ctx) => {

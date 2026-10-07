@@ -88,10 +88,14 @@ export async function reviewApproval(agentDir: string, ctx: ExtensionContext, re
   check();
   let record: ReviewRecord = { decision: "ask", category: "insufficient_context", model: `${policy.provider}/${policy.model}`, policy: digest };
   const payload = JSON.stringify({ project: cwd, scope: policy.scope, userMessages: JSON.parse(messages), action: request });
+  const started = Date.now();
+  let diagnostic: { code: string; error?: unknown; stopReason?: string } = { code: messages === "[]" ? "no_user_context" : "payload_too_large" };
+  audit.event("review.request", { model: record.model, policy: digest, systemPrompt: POLICY, request: JSON.parse(payload), bytes: Buffer.byteLength(payload) });
   if (messages !== "[]" && Buffer.byteLength(payload) <= 48000) {
     const deadline = AbortSignal.any([AbortSignal.timeout(30000), ...(signal ? [signal] : [])]);
     let abort = () => {};
     try {
+      diagnostic = { code: "model_unavailable" };
       const model = ctx.modelRegistry.find(policy.provider, policy.model);
       if (!model) throw new Error("Reviewer model unavailable");
       const canceled = new Promise<never>((_resolve, reject) => {
@@ -99,24 +103,37 @@ export async function reviewApproval(agentDir: string, ctx: ExtensionContext, re
         deadline.addEventListener("abort", abort, { once: true });
         if (deadline.aborted) abort();
       });
+      diagnostic = { code: "provider_error" };
       const response = await Promise.race([ctx.modelRegistry.streamSimple(model, {
         systemPrompt: POLICY,
         messages: [{ role: "user", content: payload, timestamp: Date.now() }],
       }, { signal: deadline, maxTokens: 512, reasoning: "minimal", cacheRetention: "none" }).result(), canceled]);
-      if (response.stopReason !== "stop" || response.content.some(part => part.type === "toolCall")) throw new Error("Incomplete review");
+      diagnostic = { code: "incomplete_response", stopReason: response.stopReason };
+      if (response.stopReason !== "stop") throw new Error(response.errorMessage || "Incomplete review");
+      diagnostic = { code: "unexpected_tool_call" };
+      if (response.content.some(part => part.type === "toolCall")) throw new Error("Reviewer returned a tool call");
       const text = response.content.filter(part => part.type === "text").map(part => part.text).join("");
+      diagnostic = { code: "oversized_response" };
       if (text.length > 4000) throw new Error("Oversized review");
+      diagnostic = { code: "invalid_json" };
       const value: unknown = JSON.parse(text);
+      diagnostic = { code: "invalid_verdict" };
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid review");
       const verdict = value as Record<string, unknown>;
       if (Object.keys(verdict).sort().join(",") !== "category,decision" || !["allow", "ask", "deny"].includes(String(verdict.decision)) ||
           !["within_scope", "out_of_scope", "destructive", "secrets", "permission_change", "insufficient_context"].includes(String(verdict.category)) ||
           verdict.decision === "allow" && verdict.category !== "within_scope") throw new Error("Invalid review verdict");
       record = { ...record, decision: verdict.decision as ReviewRecord["decision"], category: verdict.category as ReviewRecord["category"] };
-    } catch { record = { ...record, decision: "ask", category: "unavailable" }; }
+      diagnostic = { code: "verdict" };
+    } catch (error) {
+      record = { ...record, decision: "ask", category: "unavailable" };
+      diagnostic = { ...diagnostic, ...(deadline.aborted ? { code: signal?.aborted ? "cancelled" : "timeout" } : {}), error };
+    }
     finally { deadline.removeEventListener("abort", abort); }
   }
-  check();
+  audit.event("review.result", { ...record, diagnostic, durationMs: Date.now() - started });
+  try { check(); }
+  catch (error) { audit.event("review.invalidated", { error }); throw error; }
   audit.reviewed(record);
   if (record.decision === "allow") return { decision: "allow" as const, check };
   if (record.decision === "deny" || policy.fallback === "deny") {

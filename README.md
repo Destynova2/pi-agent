@@ -23,6 +23,7 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Inspect tool confinement | `/confined-tools`: available executors and approval boundaries |
 | Run a long command | `bash_background` starts it; `bash_process` inspects or stops it; completion arrives automatically. Foreground `bash` stays native. |
 | Review permissions automatically | `/approvals auto <scope>` for this project; `/approvals auto-deny <scope>` refuses uncertainty without prompting; [automatic review](docs/AUTO-APPROVALS.md) |
+| Audit dialogs and failures | `/audit` or `/audit session`; `npm run audit -- --json --events 100` for the correlated timeline; [audit coverage](docs/AUDIT.md) |
 | Preserve all parts of a request | `task_checkpoint` records requirements and verification evidence in the session; `/task-status` shows them after reload, compaction or restart; a terminal widget shows counts and active delegations |
 | Retry a denied write | `request_command_access`: [one confirmed command with exact additional paths](docs/ORCHESTRATION.md#one-command-filesystem-access) |
 | Request local service access | `request_host_access`: [one confirmed host operation](docs/ORCHESTRATION.md#one-host-operation), without opening Bash |
@@ -49,15 +50,14 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 
 Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts. The first turn loads the last 20 project notes (at most 12,000 characters), even without note tools. Prompt excerpts are not full history: consult native Pi sessions for complete requirements and previous answers. No separate memory model call is made.
 
-Security approval requests are recorded in `<agent-dir>/permission-audit/requests.sqlite` (normally `~/.pi/agent/permission-audit/requests.sqlite`). This covers command/filesystem/Metal and network access, plus the shared Git, host, MCP and Dunst consent broker. The installer includes the journal automatically; restart Pi after updating. Existing JSON grant files still control remembered permissions. The journal grants no access and contains no retrospective history.
+The private SQLite audit at `<agent-dir>/permission-audit/requests.sqlite` (normally `~/.pi/agent/permission-audit/requests.sqlite`) records permission requests, prompts/messages, public extension dialogs and responses, notifications, and tool results. Known secrets are masked before writing; unidentified secrets can remain, so treat the database as private session content. Restart Pi after installation to enable capture. Old dialogs are not reconstructed.
 
-Each `permission_requests` row includes request/prompt/answer/completion times, session ID and file, tool-call ID, workspace, process ID, resource, operation name, human decision, scope and decision source. Network/command requests also include requested hosts/write paths; `retry-metal` identifies a GPU request. `source` distinguishes human input from session/project consent, configured policy, cached refusal and unavailable UI. Raw commands, MCP/Dunst arguments, prompt text, reasons and errors are fingerprinted or omitted; use the linked session for their context. `decision` records the answer; `status` records the authorization outcome (`pending`, `granted`, `denied`, `cancelled`, `error`). A `granted` permission does not certify that its operation ran or succeeded. A positive answer invalidated by a session/configuration change remains visible with an error/cancellation outcome. An interrupted process can leave a pending row. Confirm dialogs expose `false` for both refusal and dismissal/timeout, so these appear as `deny` unless an abort signal identifies cancellation.
+The report distinguishes permission from execution: an approved Podman request followed by a connection error remains `granted`, with a separate failed tool result. Reviewer diagnostics distinguish missing models, provider errors, timeouts and invalid responses. Custom UI contents and native OS/browser windows cannot be captured through Pi's public API. [Audit coverage, storage and reporting](docs/AUDIT.md) documents these limits and the bounded, redacted transcript.
 
-The host-owned directory is mode `0700`, the database `0600`; concurrent processes use SQLite WAL with a five-second busy timeout. A failed request/answer journal write prevents proceeding to consent or execution. This records requests reaching these security brokers, not arbitrary extension dialogs, textual questions from the model, or validation failures before the broker is called. No automatic retention or deletion is applied. To inspect the latest requests:
+The audit grants no access and never changes permissions or trains a model automatically. Existing consent files retain their authority. To inspect the current project's aggregate report without printing transcripts:
 
 ```bash
-sqlite3 -header -column ~/.pi/agent/permission-audit/requests.sqlite \
-  'SELECT requested_at, resource, operation, decision, scope, source, status, cwd FROM permission_requests ORDER BY rowid DESC LIMIT 30;'
+node ~/.pi/agent/packages/pi-agent-config/scripts/audit-report.mjs
 ```
 
 Installing these adapters does not activate them in an already-running session; restart Pi after deployment. The upstream LSP extension stays filtered out: its replacement runs the same lifecycle inside Codex. MCP support is local stdio only. `web_search` uses the existing Claude login and quota, but authenticated live search still needs validation; no paid model call was used for testing. See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for boundaries. Model transport, trusted host internals, the explicitly confirmed host operation bridge are not jailed. Dunst remains denied by the local strict dispatcher.
@@ -71,6 +71,7 @@ settings.json        packages: pi-simplify, ponytail, pi-lsp, TypeScript, backgr
 keybindings.json     ctrl+r freed for prompt search
 agents/              scout, worker, reviewer (sub-agent prompts)
 extensions/          explicit entry points in package.json → pi.extensions
+  audit/             private SQLite event capture and /audit report
   background-bash/   public background factory; native foreground Bash
   terminal-paste/    TUI paste keepalive with session cleanup
   task-progress/     session checkpoints and progress widget

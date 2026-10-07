@@ -8,6 +8,7 @@
   "files": ["extensions", "lib", "scripts", "agents", "gates", "settings.json", "keybindings.json"],
   "pi": {
     "extensions": [
+      "./extensions/audit/index.ts",
       "./extensions/anthropic-docs-compat/index.ts",
       "./extensions/codex-sandbox/index.ts",
       "./extensions/tool-policy/index.ts",
@@ -47,6 +48,7 @@
   "scripts": {
     "setup": "node scripts/install.mjs",
     "doctor": "node scripts/doctor.mjs",
+    "audit": "node scripts/audit-report.mjs",
     "test": "node scripts/test.mjs",
     "test:integration": "node scripts/test.mjs --integration",
     "check": "node scripts/check.mjs",
