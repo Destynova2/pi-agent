@@ -20,6 +20,14 @@ The default prints aggregate counts for the current canonical project path,
 without transcripts. Counts cover the entire selected history; only the optional
 timeline is bounded. Queries use a read-only SQLite transaction, including WAL.
 
+`--all` also groups requests by project. Reports include sample counts, median and
+95th-percentile durations for reviewer calls, prompt waits and tools. Tool spans
+pair starts and ends by project, session, process and call ID; missing pairs and
+backwards clock jumps stay unobserved. Tools include their permission waits, and
+parallel/nested spans overlap: summed durations are not elapsed working time.
+Prompt waits can include operator absence. These observations identify delays;
+they are not controlled performance benchmarks.
+
 ## What is recorded
 
 | Record | Content |
@@ -41,12 +49,21 @@ success. One tool can involve several permissions, so outcome counts count
 requests rather than unique operations. A successful tool result alone does not
 verify a deployed application or browser rendering.
 
-Reviewer failures distinguish `model_unavailable`, `provider_error`,
+Reviewer failures distinguish `model_unavailable`, `provider_error`, `provider_rate_limit`, `reviewer_cooldown`,
 `incomplete_response`, `unexpected_tool_call`, `oversized_response`, `invalid_json`,
 `invalid_verdict`, `timeout`, `cancelled`, `no_user_context` and `payload_too_large`.
 Changing the scope/session/user instructions invalidates a pending review and
 records a separate event. Historical reviews lack these codes and appear as
 `not_recorded`.
+
+A rate-limited reviewer pauses model calls for 60 seconds by default. An HTTP
+`Retry-After` hint is bounded to 1–300 seconds. During this process-local pause,
+each request still follows the project's `ask` or `deny` fallback and is audited;
+no previous verdict or human answer is reused. SDK retries are disabled for these
+bounded reviews. `/approvals status` shows the pinned reviewer and remaining
+pause. Changing the working model does not change that reviewer; explicitly
+re-enable `/approvals auto <scope>` with the chosen model to replace the policy.
+Cooldown events are counted as diagnostics but excluded from reviewer latency.
 
 ## Coverage and privacy
 
@@ -56,8 +73,12 @@ response. Custom components expose neither their rendered content nor the meanin
 of their result: only their lifecycle is recorded, with `opaque-custom-ui`
 coverage. Other core UI prompt events retain their available lifecycle metadata
 only. Native macOS permission windows, Chrome dialogs, pixels and keystrokes are
-not recorded. A `confirm(false)` can mean refusal, Escape or timeout; only an
-observed abort signal establishes cancellation.
+not recorded. A `confirm(false)` can mean refusal, Escape or timeout. The command
+access broker separately knows its five-minute deadline: an elapsed window is
+recorded as `permission.expired` and a cancelled request, including a late positive
+answer. Earlier negative answers remain refusals or dismissals; generic dialogs
+only establish cancellation when their abort signal is observed. Historical
+misclassified expirations are not rewritten.
 
 Known credential fields/formats, environment/stdin payloads, authorization
 headers, cookies, URL credentials/query values/fragments, token formats and
