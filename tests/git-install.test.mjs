@@ -8,7 +8,7 @@ import { buildFixtureSource, makeTmpDir } from "./fixtures/build.mjs";
 test("Git workers and all hook gates install together, remain executable and are backed up; linked hook parents are refused", async () => {
   const source = await buildFixtureSource(), root = await makeTmpDir("pi-git-install-"), target = join(root, "agent");
   const files = MANAGED_FILES.filter(path => path.startsWith("scripts/git-"));
-  assert.deepEqual(files, ["scripts/git-operation.mjs", "scripts/git-worktree.mjs", "scripts/git-hook-guard.mjs", ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`)]);
+  assert.deepEqual(files, ["scripts/git-operation.mjs", "scripts/git-init.mjs", "scripts/git-worktree.mjs", "scripts/git-hook-guard.mjs", ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`)]);
   try {
     for (const path of files) {
       await mkdir(dirname(join(source, path)), { recursive: true });

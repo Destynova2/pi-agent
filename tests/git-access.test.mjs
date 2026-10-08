@@ -79,6 +79,7 @@ function broker(t, f, state = {}) {
   const ctx = { cwd: f.cwd, hasUI: true, ui: { select: async (_title, choices) => { if (choices.includes("Lire la page suivante")) return "Lire la page suivante"; prompts++; return state.choice ?? choices[3]; }, notify() {} } };
   const snapshot = { root: f.cwd, gitDir: join(f.cwd, ".git"), commonDir: join(f.cwd, ".git"), identity: "repo-id", stamp: "same", head: "a".repeat(40), branch: "main", staged: [], remoteUrl: "https://github.com/fixture/project.git" };
   registerGitAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command), getActiveTools: () => ["git_access"] }, f.agent, () => {}, async (_program, args, options) => {
+    assert.equal(options.cwd, ctx.cwd, "repository selection must not widen the sandbox workspace");
     const data = JSON.parse(options.input);
     if (data.action === "inspect") return JSON.stringify({ result: { ...snapshot, stamp: state.stamp ?? "same" } });
     assert.equal(args[0], "--write-roots"); dispatches++;
@@ -87,6 +88,17 @@ function broker(t, f, state = {}) {
   t.after(() => handlers.get("session_shutdown")());
   return { ctx, snapshot, handlers, commands, get prompts() { return prompts; }, get dispatches() { return dispatches; }, request: input => tools.get("git_access").execute("test", { reason: "fixture", ...input }, undefined, undefined, ctx) };
 }
+
+test("a separate repository keeps the session cwd and its remembered consent can be revoked explicitly", async t => {
+  const f = fixture(t), b = broker(t, f), source = join(f.base, "source");
+  mkdirSync(source); b.ctx.cwd = source;
+  const request = { repository: f.cwd, operation: "branch", branch: "develop" };
+  await b.request(request); assert.equal(b.prompts, 1);
+  await b.request(request); assert.equal(b.prompts, 1);
+  await b.commands.get("git-access").handler(`permissions ${f.cwd}`, b.ctx);
+  b.ctx.ui.select = async () => undefined;
+  await assert.rejects(b.request(request), /not approved/);
+});
 
 test("project consent spans different local operations and restart, but push asks once every time and revocation removes the grant", async t => {
   const f = fixture(t), b = broker(t, f);

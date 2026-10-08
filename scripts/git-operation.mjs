@@ -15,7 +15,8 @@ try {
     if (data.action !== "execute" || !data.expected) throw new Error("Invalid Git transaction action");
     setGitTransaction(data.expected, data.transaction);
   }
-  const result = data.action === "inspect" ? await inspectGit(process.cwd(), request, controller.signal) : await performGit(process.cwd(), request, data.expected, controller.signal);
+  const cwd = request.repository ?? process.cwd();
+  const result = data.action === "inspect" ? await inspectGit(cwd, request, controller.signal) : await performGit(cwd, request, data.expected, controller.signal);
   process.stdout.write(JSON.stringify({ result }));
 } catch (error) {
   // Git helpers, hooks and remote servers may include credentials in diagnostics.

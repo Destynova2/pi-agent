@@ -43,7 +43,7 @@ test("native manifest loads each shipped extension once after migrating legacy c
     assert.deepEqual(loaded.errors, []);
     const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
     assert.equal(loaded.extensions.length, manifest.pi.extensions.length + 1);
-    for (const tool of ["task_checkpoint", "subagent", "read", "bash_background", "bash_process", "lsp", "mcp"]) {
+    for (const tool of ["task_checkpoint", "subagent", "read", "bash_background", "bash_process", "lsp", "mcp", "git_repository_init", "git_access"]) {
       assert.equal(loaded.extensions.filter(extension => extension.tools.has(tool)).length, 1, tool);
     }
     assert.equal(loaded.extensions.some(extension => extension.tools.has("bash")), false, "foreground Bash stays native");

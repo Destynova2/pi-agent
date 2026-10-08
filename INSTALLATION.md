@@ -26,6 +26,8 @@ This repo has **no npm dependencies** (`scripts/` and `tests/` are pure Node std
 
 The parent-only `git_worktree_cleanup` tool inspects linked worktrees, requests approval for explicit paths, then archives their files and Git metadata. Local branches and all HEAD commits remain recoverable; retiring a worktree does not require publishing its branch. `git_access` accepts up to 1000 explicit paths and paginates long approval details. Restart Pi after installation. See [worktree cleanup](docs/GIT-WORKTREES.md) for scope, archives and recovery.
 
+The parent-only `git_repository_init` tool prepares a new repository with an empty root commit, local identity and HTTPS remote after exact consent. Existing repositories are refused. `git_access.repository` selects the new worktree without widening the shell sandbox; push-only `source_branch` selects the reviewed local branch. See the [empty main/develop workflow and native gate](docs/GIT-INITIALIZATION.md).
+
 ## Runtime compatibility
 
 The package targets Pi **1.x, minimum 1.0.4**. The updater requires the native integration gate for each candidate; a compatible major version alone is not proof of compatibility.

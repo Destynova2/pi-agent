@@ -71,7 +71,7 @@ Native `bash` and the separate `bash_background`/`bash_process` tools share the 
 
 Routine calls need no approval. `request_network_access` can add exact public hosts, never filesystem permissions. `request_command_access` can rerun one failed foreground Bash command with human-approved additional write paths, still inside Codex. Unknown tools and executors not yet confined are denied. There is no unrestricted fallback. The legacy `tool-policy.json`, parser and shell classifier are removed; the installer backs up and deletes known legacy files. The dispatcher directory retains its name to replace the old installed entry point without loading two dispatchers.
 
-Children inherit the intersection of role tools, active parent tools and the fixed confined-executor set, without recursive delegation, interactive network grants, `request_command_access`, `request_host_access`, `request_build_access`, `git_access`, `git_worktree_cleanup`, `jj_checkpoint` or `model_catalog`. Canonical child cwd must remain within its parent workspace in every mode, even with no policy file. Private session/report storage and model transport remain trusted host operations. Resumes can only narrow capabilities.
+Children inherit the intersection of role tools, active parent tools and the fixed confined-executor set, without recursive delegation, interactive network grants, `request_command_access`, `request_host_access`, `request_build_access`, `git_access`, `git_repository_init`, `git_worktree_cleanup`, `jj_checkpoint` or `model_catalog`. Canonical child cwd must remain within its parent workspace in every mode, even with no policy file. Private session/report storage and model transport remain trusted host operations. Resumes can only narrow capabilities.
 
 The installer sets `shellPath` and deploys the launchers, workers and SDK resolver. After a validated installation, restart with `pi --no-approve`; the [managed launcher](../INSTALLATION.md#plain-pi-startup-on-supported-runtimes) supplies that native flag automatically without editing Pi. Project resources are refused through `project_trust`; a session started with trusted project resources blocks permitted tools too. `/confined-tools` reports configuration, not proof that the backend can run. A missing adapter, changed cwd/shell or backend failure blocks execution.
 
@@ -180,7 +180,15 @@ Local operations offer **Refuser**, **Autoriser cette fois**, **Autoriser pour c
 | `branch` | `branch` | Create and switch to a new branch from current HEAD; never reset or overwrite an existing branch |
 | `stage` | `paths` | 1–1000 explicit repository-relative regular files or tracked deletions; literal paths, never directories, wildcard expansion or all files |
 | `commit` | `paths`, `message` | Commit the existing index only when its complete path list matches the supplied list; does not stage other files or finish an in-progress merge, rebase or cherry-pick |
-| `push` | `remote`, `branch` | Publish the reviewed commit ID to one configured HTTPS destination and branch; fresh exact consent every time |
+| `push` | `remote`, `branch`, optional `source_branch` | Publish HEAD or the named local branch's reviewed commit ID to one configured HTTPS destination and branch; fresh exact consent every time |
+
+All operations accept optional `repository`, the exact canonical worktree root.
+The worker selects that repository inside the original session's sandbox; neither
+inspection nor approval widens the writable workspace. To create a separate
+repository with an empty main and populated develop, use the parent-only
+`git_repository_init` capability and [initialization workflow](GIT-INITIALIZATION.md).
+Initialization requires its own exact one-time consent; it does not inherit local
+Git grants or run in subagents.
 
 Push cannot use saved local consent. The dialog includes the resolved destination and immutable commit ID. Force, mirror, tags, custom VCS helpers, configured push options, SSH/local transports, embedded URL credentials and upstream-configuration changes are excluded. The existing public-host allowlist still applies; another host needs `request_network_access`. Existing credentials must work inside the jail; there is no authentication or host-execution fallback.
 

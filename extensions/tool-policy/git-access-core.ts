@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { runProcess } from "../../lib/process.ts";
+import { commitHookOptions, gitEnvironment } from "../../lib/git-command.ts";
 
 export interface GitRequest {
   operation: "branch" | "stage" | "commit" | "push";
@@ -10,6 +10,8 @@ export interface GitRequest {
   paths?: string[];
   message?: string;
   remote?: string;
+  repository?: string;
+  source_branch?: string;
   reason: string;
 }
 export interface GitSnapshot {
@@ -22,6 +24,7 @@ export interface GitSnapshot {
   branch: string | null;
   staged: string[];
   remoteUrl?: string;
+  pushHead?: string;
 }
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const inside = (root: string, path: string) => { const rel = relative(root, path); return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../")); };
@@ -51,9 +54,11 @@ export function validateGitRequest(value: unknown): GitRequest {
   const fields: Record<string, string[]> = { branch: ["branch"], stage: ["paths"], commit: ["paths", "message"], push: ["remote", "branch"] };
   if (typeof input.operation !== "string" || !Object.hasOwn(fields, input.operation)) throw new Error("Only branch, stage, commit and push are supported");
   const required = fields[input.operation];
-  if (Object.keys(input).some(key => !["operation", "reason", ...required].includes(key)) || required.some(key => !(key in input))) throw new Error("Invalid fields for Git operation");
+  if (Object.keys(input).some(key => !["operation", "reason", "repository", ...(input.operation === "push" ? ["source_branch"] : []), ...required].includes(key)) || required.some(key => !(key in input))) throw new Error("Invalid fields for Git operation");
+  if (input.repository !== undefined && (typeof input.repository !== "string" || !isAbsolute(input.repository) || resolve(input.repository) !== input.repository || input.repository.length > 1024 || control.test(input.repository))) throw new Error("Expected a canonical absolute repository path");
   if (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 500 || control.test(input.reason)) throw new Error("A short justification without control characters is required");
   if (input.branch !== undefined && (typeof input.branch !== "string" || input.branch.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(input.branch) || input.branch.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock")) || input.branch.includes("..") || input.branch.endsWith("."))) throw new Error("Expected a literal branch name, not flags or a revision expression");
+  if (input.source_branch !== undefined) validateGitRequest({ operation: "branch", branch: input.source_branch, reason: input.reason });
   if (input.remote !== undefined && (typeof input.remote !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(input.remote))) throw new Error("Expected a configured remote name, not a URL or flags");
   if (input.message !== undefined && (typeof input.message !== "string" || !input.message.trim() || input.message.length > 8000 || control.test(input.message.replaceAll("\n", "")))) throw new Error("Invalid commit message");
   if (input.paths !== undefined) {
@@ -92,10 +97,8 @@ function regular(path: string, limit: number): Buffer | null {
 }
 
 function gitEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const key of Object.keys(process.env)) if (/^GIT_(DIR|COMMON_DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG.*|TRACE.*|NAMESPACE|CEILING_DIRECTORIES|EXEC_PATH|LITERAL_PATHSPECS|GLOB_PATHSPECS|NOGLOB_PATHSPECS|ICASE_PATHSPECS)$/.test(key) && !["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"].includes(key)) env[key] = undefined;
   // Do not disable hooks, signing, clean/smudge filters, or repository checks.
-  return { ...env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "/usr/bin/false", GIT_SEQUENCE_EDITOR: "/usr/bin/false", LC_ALL: "C",
+  return { ...gitEnvironment(),
     ...(transaction ? { GIT_DIR: transaction.gitDir, GIT_COMMON_DIR: transaction.commonDir, GIT_WORK_TREE: transaction.snapshot.root } : {}) };
 }
 
@@ -106,6 +109,7 @@ async function git(cwd: string, args: string[], signal?: AbortSignal, input?: st
 /** Runs inside Codex, including configuration-dependent filters or helpers. */
 export async function inspectGit(cwd: string, request: GitRequest, signal?: AbortSignal): Promise<GitSnapshot> {
   const root = realpathSync(await git(cwd, ["rev-parse", "--show-toplevel"], signal));
+  if (request.repository !== undefined && request.repository !== root) throw new Error("Git request repository must be the exact canonical worktree root");
   if (!inside(root, realpathSync(cwd))) throw new Error("Git repository does not contain the current workspace");
   const gitDir = originalPath(realpathSync(await git(root, ["rev-parse", "--absolute-git-dir"], signal)));
   const commonDir = originalPath(realpathSync(await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)));
@@ -141,6 +145,7 @@ export async function inspectGit(cwd: string, request: GitRequest, signal?: Abor
   const config = rawConfig.replace(/(^|\0)file:([^\0]+)(?=\0)/g,
     (_match, separator, path) => separator + "file:" + originalPath(resolve(root, path)));
   let remoteUrl: string | undefined;
+  let pushHead: string | undefined;
   if (request.operation === "push") {
     if (/(?:^|\0)(?:remote\.[^\n]+\.vcs|push\.pushoption)\n/i.test(config)) throw new Error("Push requires standard HTTPS transport without custom VCS helpers or configured push options");
     if (!head) throw new Error("Nothing committed to push");
@@ -148,10 +153,15 @@ export async function inspectGit(cwd: string, request: GitRequest, signal?: Abor
     const url = new URL(remoteUrl);
     if (remoteUrl.includes("\n") || url.protocol !== "https:" || url.username || url.password || url.search || url.hash || (url.port && url.port !== "443")) throw new Error("Push requires exactly one HTTPS destination without embedded credentials; no SSH, local transport or external remote helper");
     remoteUrl = url.href;
+    if (request.source_branch) {
+      await git(root, ["check-ref-format", "--branch", request.source_branch], signal);
+      pushHead = await git(root, ["rev-parse", "--verify", `refs/heads/${request.source_branch}^{commit}`], signal);
+      if (!/^[a-f0-9]{40,64}$/.test(pushHead)) throw new Error("Invalid push source commit");
+    }
   }
   const index = regular(join(gitDir, "index"), 64 * 1024 * 1024);
   const identity = sha(JSON.stringify(["git-access-v1", root, ...[gitDir, commonDir].map(path => { const stat = lstatSync(path); return [path, stat.dev, stat.ino, stat.birthtimeMs]; })]));
-  return { root, gitDir, commonDir, identity, stamp: sha(JSON.stringify([identity, headText, head, index && sha(index), sha(config), files, remoteUrl])), head, branch, staged, remoteUrl };
+  return { root, gitDir, commonDir, identity, stamp: sha(JSON.stringify([identity, headText, head, index && sha(index), sha(config), files, remoteUrl, pushHead])), head, branch, staged, remoteUrl, ...(pushHead ? { pushHead } : {}) };
 }
 
 /** Only mutable Git data. Config, hooks, credentials and other worktrees stay read-only. */
@@ -170,7 +180,7 @@ export function gitOperationArgs(request: GitRequest, snapshot: GitSnapshot): st
     case "stage": return ["--literal-pathspecs", "add", "--", ...request.paths!];
     case "commit": return ["commit", "--file=-"];
     // Use the reviewed object ID, never a moving HEAD, implicit refspec, tags or force.
-    case "push": return ["-c", `remote.${request.remote}.mirror=false`, "push", "--no-force", "--no-mirror", "--no-follow-tags", "--recurse-submodules=no", "--", request.remote!, `${snapshot.head}:refs/heads/${request.branch}`];
+    case "push": return ["-c", `remote.${request.remote}.mirror=false`, "push", "--no-force", "--no-mirror", "--no-follow-tags", "--recurse-submodules=no", "--", request.remote!, `${snapshot.pushHead ?? snapshot.head}:refs/heads/${request.branch}`];
   }
 }
 
@@ -181,18 +191,10 @@ export async function performGit(cwd: string, request: GitRequest, expected: Git
   const tree = request.operation === "commit" ? await git(current.root, ["write-tree"], signal) : undefined;
   const args = gitOperationArgs(request, current), env: NodeJS.ProcessEnv = {};
   if (tree !== undefined) {
-    const hooks = fileURLToPath(new URL("../../scripts/git-hooks/", import.meta.url));
-    for (const name of ["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"]) {
-      if (!regular(join(hooks, name), 4096)) throw new Error("Missing Git hook gate");
-      accessSync(join(hooks, name), constants.X_OK);
-    }
-    env.PI_GIT_ACCESS_NODE = process.execPath;
-    env.PI_GIT_ACCESS_GUARD = fileURLToPath(new URL("../../scripts/git-hook-guard.mjs", import.meta.url));
-    env.PI_GIT_ACCESS_ORIGINAL_HOOKS = originalPath(resolve(current.root, await git(current.root, ["rev-parse", "--git-path", "hooks"], signal)));
-    env.PI_GIT_ACCESS_EXPECTED_TREE = tree;
-    env.PI_GIT_ACCESS_EXPECTED_HEAD = current.head;
-    env.PI_GIT_ACCESS_EXPECTED_REF = `refs/heads/${current.branch}`;
-    args.unshift("-c", `core.hooksPath=${hooks}`);
+    const hooks = originalPath(resolve(current.root, await git(current.root, ["rev-parse", "--git-path", "hooks"], signal)));
+    const guarded = commitHookOptions(tree, current.head, current.branch!, hooks);
+    Object.assign(env, guarded.env);
+    args.unshift(...guarded.args);
   }
   await git(current.root, args, signal, request.message, env);
   const head = await git(current.root, ["rev-parse", "--revs-only", "HEAD"], signal);

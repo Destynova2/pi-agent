@@ -36,6 +36,7 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Allow another public host | `request_network_access`: filesystem confinement stays unchanged |
 | Inspect Git without general shell access | `git_inspect`: status, diff, log or files |
 | Authorize Git writes for a repository | `git_access`: [branch, explicit files and commit with remembered consent; push confirmed separately](docs/ORCHESTRATION.md#git-operation-consent) |
+| Prepare an empty main and populated develop | `git_repository_init`: [new repository, local identity, HTTPS remote and empty root commit](docs/GIT-INITIALIZATION.md) |
 | Revoke repository Git consent | `/git-access permissions` |
 | Note a decision without a model turn | `/btw decision <text>` (kinds: plan, decision, done, blocker, lesson, claim) |
 | Talk to another project agent | `/btw [@agent] <text>`: routed by @name, otherwise by claimed path, otherwise broadcast; delivered on its next turn or between tool calls if it's running |

@@ -18,7 +18,7 @@ test("real Codex Git consent grants only Git data; hooks run confined and ordina
   Object.assign(process.env, { HOME: home, PI_CODING_AGENT_DIR: agent, PI_CODEX_SANDBOX_BIN: codex, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }); delete process.env.PI_CODEX_NETWORK_GRANTS;
   const handlers = new Map(); let tool, prompts = 0;
   try {
-    for (const path of ["scripts/codex-shell.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`), "extensions/tool-policy/git-access-core.ts", "lib/process.ts"]) {
+    for (const path of ["scripts/codex-shell.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`), "extensions/tool-policy/git-access-core.ts", "lib/git-command.ts", "lib/process.ts"]) {
       const target = join(agent, path); mkdirSync(dirname(target), { recursive: true }); copyFileSync(new URL(`../${path}`, import.meta.url), target);
     }
     // Only this synthetic repository has raw fixture diagnostics. Production
