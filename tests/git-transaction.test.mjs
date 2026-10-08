@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { appendFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { deflateSync, inflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,6 +79,134 @@ test("new object destinations cannot redirect publication outside Git", async t 
   assert.throws(() => publishGitTransaction(f.tx), /Linked/);
   assert.equal(f.git("diff", "--cached", "--name-only"), "");
 });
+test("existing objects with identical Git content may use different compression", async t => {
+  const f = await fixture(t); f.worker();
+  const prefix = readdirObjectPrefix(f.tx.commonDir);
+  const name = readdirSync(join(f.tx.commonDir, "objects", prefix))[0];
+  const incoming = readFileSync(join(f.tx.commonDir, "objects", prefix, name));
+  const existing = deflateSync(inflateSync(incoming), { level: 0 });
+  assert.notDeepEqual(existing, incoming);
+  const directory = join(f.snapshot.commonDir, "objects", prefix);
+  mkdirSync(directory, { recursive: true });
+  const target = join(directory, name);
+  writeFileSync(target, existing);
+  assert.deepEqual(publishGitTransaction(f.tx), ["index"]);
+  assert.deepEqual(readFileSync(target), existing, "existing object must not be rewritten");
+  assert.equal(f.git("show", ":file"), "approved");
+  f.git("fsck", "--no-reflogs", "--no-dangling");
+});
+
+test("existing corrupt, different, symlinked and hardlinked objects are refused", async t => {
+  for (const kind of ["corrupt", "different", "symlink", "dangling", "hardlink", "directory", "oversized"]) {
+    const f = await fixture(t); f.worker();
+    const prefix = readdirObjectPrefix(f.tx.commonDir);
+    const name = readdirSync(join(f.tx.commonDir, "objects", prefix))[0];
+    const incoming = readFileSync(join(f.tx.commonDir, "objects", prefix, name));
+    const directory = join(f.snapshot.commonDir, "objects", prefix);
+    mkdirSync(directory, { recursive: true });
+    const target = join(directory, name), external = join(f.root, "external-object");
+    writeFileSync(external, incoming);
+    if (kind === "corrupt") writeFileSync(target, "not zlib");
+    if (kind === "different") writeFileSync(target, deflateSync(Buffer.from("blob 9\0rejected\n")));
+    if (kind === "symlink") symlinkSync(external, target);
+    if (kind === "dangling") symlinkSync(join(f.root, "missing"), target);
+    if (kind === "hardlink") linkSync(external, target);
+    if (kind === "directory") mkdirSync(target);
+    if (kind === "oversized") { writeFileSync(target, ""); truncateSync(target, 64 * 1024 * 1024 + 1); }
+    assert.throws(() => publishGitTransaction(f.tx), /Conflicting Git object/);
+    assert.equal(f.git("diff", "--cached", "--name-only"), "");
+    assert.equal(existsSync(join(f.snapshot.gitDir, "index.lock")), false);
+    assert.deepEqual(readFileSync(external), incoming);
+  }
+});
+
+test("objects appearing during publication are validated on EEXIST", async t => {
+  for (const kind of ["same", "different", "symlink", "hardlink"]) {
+    const f = await fixture(t); f.worker();
+    const prefix = readdirObjectPrefix(f.tx.commonDir);
+    const name = readdirSync(join(f.tx.commonDir, "objects", prefix))[0];
+    const incoming = readFileSync(join(f.tx.commonDir, "objects", prefix, name));
+    const existing = deflateSync(inflateSync(incoming), { level: 0 });
+    const target = join(f.snapshot.commonDir, "objects", prefix, name);
+    const external = join(f.root, "external-object");
+    writeFileSync(external, existing);
+    const original = fs.writeFileSync;
+    let raced = false;
+    const mocked = t.mock.method(fs, "writeFileSync", (path, data, options) => {
+      if (path === target && options?.flag === "wx") {
+        raced = true;
+        if (kind === "same") original(target, existing);
+        if (kind === "different") original(target, deflateSync(Buffer.from("blob 9\0rejected\n")));
+        if (kind === "symlink") symlinkSync(external, target);
+        if (kind === "hardlink") linkSync(external, target);
+      }
+      return original(path, data, options);
+    });
+    syncBuiltinESMExports();
+    try {
+      if (kind === "same") {
+        assert.deepEqual(publishGitTransaction(f.tx), ["index"]);
+        assert.equal(f.git("show", ":file"), "approved");
+        assert.deepEqual(readFileSync(target), existing);
+      } else {
+        assert.throws(() => publishGitTransaction(f.tx), /Conflicting Git object/);
+        assert.equal(f.git("diff", "--cached", "--name-only"), "");
+      }
+      assert.equal(raced, true);
+      assert.deepEqual(readFileSync(external), existing);
+      assert.equal(existsSync(join(f.snapshot.gitDir, "index.lock")), false);
+    } finally {
+      mocked.mock.restore();
+      syncBuiltinESMExports();
+    }
+  }
+});
+
+test("existing objects changed during validation are refused before publishing the index", async t => {
+  for (const kind of ["replace", "grow", "hardlink"]) {
+    const f = await fixture(t); f.worker();
+    const prefix = readdirObjectPrefix(f.tx.commonDir);
+    const name = readdirSync(join(f.tx.commonDir, "objects", prefix))[0];
+    const incoming = readFileSync(join(f.tx.commonDir, "objects", prefix, name));
+    const directory = join(f.snapshot.commonDir, "objects", prefix);
+    mkdirSync(directory, { recursive: true });
+    const target = join(directory, name), existing = deflateSync(inflateSync(incoming), { level: 0 });
+    writeFileSync(target, existing);
+    const identity = fs.statSync(target);
+    const original = fs.readSync;
+    let changed = false;
+    const mocked = t.mock.method(fs, "readSync", (...args) => {
+      const count = original(...args);
+      const stat = fs.fstatSync(args[0]);
+      if (!changed && stat.ino === identity.ino && stat.dev === identity.dev) {
+        changed = true;
+        if (kind === "replace") { rmSync(target); writeFileSync(target, existing); }
+        if (kind === "grow") appendFileSync(target, Buffer.alloc(1024));
+        if (kind === "hardlink") linkSync(target, join(f.root, "linked-object"));
+      }
+      return count;
+    });
+    syncBuiltinESMExports();
+    try {
+      assert.throws(() => publishGitTransaction(f.tx), /Conflicting Git object/, kind);
+      assert.equal(changed, true);
+      assert.equal(f.git("diff", "--cached", "--name-only"), "");
+      assert.equal(existsSync(join(f.snapshot.gitDir, "index.lock")), false);
+    } finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+  }
+});
+
+test("incoming objects must still match their Git OID", async t => {
+  const f = await fixture(t); f.worker();
+  const prefix = readdirObjectPrefix(f.tx.commonDir);
+  const name = readdirSync(join(f.tx.commonDir, "objects", prefix))[0];
+  const target = join(f.tx.commonDir, "objects", prefix, name);
+  rmSync(target); // Git creates read-only objects; replace only this disposable fixture.
+  writeFileSync(target, deflateSync(Buffer.from("blob 9\0rejected\n")));
+  assert.throws(() => publishGitTransaction(f.tx), /content does not match its ID/);
+  assert.equal(f.git("diff", "--cached", "--name-only"), "");
+});
+
 function readdirObjectPrefix(root) {
   return readdirSync(join(root, "objects")).find(name => /^[a-f0-9]{2}$/.test(name));
 }

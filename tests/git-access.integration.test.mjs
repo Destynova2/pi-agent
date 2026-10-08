@@ -31,6 +31,9 @@ test("real Codex Git consent grants only Git data; hooks run confined and ordina
     git("init", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com");
     const config = readFileSync(join(cwd, ".git/config"), "utf8");
     writeFileSync(join(cwd, "file"), "one\n"); writeFileSync(join(root, "outside"), "unchanged");
+    // Checkpoints can leave this blob in the source pool with another encoding.
+    const oid = git("-c", "core.compression=0", "hash-object", "-w", "--", "file").trim();
+    const object = join(cwd, ".git/objects", oid.slice(0, 2), oid.slice(2)), compressed = readFileSync(object);
     const options = { cwd, timeoutMs: 30000, maxBytes: 1024 * 1024 };
     const ordinary = () => runProcess(launcher, ["-c", "/usr/bin/git add -- file"], options);
     await assert.rejects(ordinary(), /denied|not permitted|read-only/i);
@@ -38,6 +41,7 @@ test("real Codex Git consent grants only Git data; hooks run confined and ordina
     registerGitAccess({ on: (name, handler) => handlers.set(name, handler), registerCommand() {}, registerTool: definition => { tool = definition; }, getActiveTools: () => ["git_access"] }, agent, () => {});
     const request = input => tool.execute("test", { reason: "isolated fixture only", ...input }, undefined, undefined, ctx);
     await request({ operation: "stage", paths: ["file"] });
+    assert.deepEqual(readFileSync(object), compressed, "staging must preserve an equivalent existing object");
     writeFileSync(join(cwd, "hook.mjs"), `import assert from 'node:assert/strict'; import fs from 'node:fs';
 for (const path of ${JSON.stringify([join(root, "outside"), join(agent, "settings.json"), join(cwd, ".git/config"), join(cwd, ".git/hooks/blocked")])}) assert.throws(() => fs.writeFileSync(path, 'bad'), /EPERM|EACCES|EROFS/);
 if (process.env.GIT_COMMON_DIR) {

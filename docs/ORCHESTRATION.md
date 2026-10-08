@@ -214,6 +214,12 @@ Linux bind mounts cannot atomically replace an individually mounted Git index or
 
 After successful execution, the parent validates every changed metadata path against the exact operation and branch, checks new object hashes, acquires exclusive native Git lockfiles and rejects concurrent metadata changes. It then writes only approved data and removes its own locks and temporary copy. It never executes Git outside Codex. Unapproved paths, symlinks, hardlinks, existing locks and metadata over 128 MiB or 20,000 files fail explicitly. Object publication currently accepts loose objects; unsupported pack output is refused.
 
+An existing loose object may use different zlib compression for the same Git
+content. Publication checks identical decompressed bytes after validating the
+incoming object ID and preserves the existing file. The same check applies when
+another process creates the object during publication. Corrupt, oversized,
+linked or concurrently modified objects still fail before index/ref publication.
+
 A failure or cancellation does not trigger another Git command. Hook effects in the working tree, a completed remote push or a partial write-back can remain; inspect the reported state before any new operation. This transaction path supports ordinary repositories and linked worktrees. Other platforms retain direct confined Git execution.
 
 ### Local jj recovery points

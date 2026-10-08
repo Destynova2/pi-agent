@@ -2,7 +2,7 @@
 // Git and its hooks run in Codex against disposable metadata; this parent broker
 // publishes only validated Git data using native lockfiles, never a host Git command.
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { inflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
@@ -36,6 +36,30 @@ function readTree(root: string, omit = new Set<string>()): Tree {
   };
   walk(root);
   return result;
+}
+
+function verifyExistingObject(path: string, expected: Buffer) {
+  const conflict = () => new Error("Conflicting Git object; nothing published");
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.size > 64 * 1024 * 1024 || realpathSync(path) !== path) throw conflict();
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd);
+    if (before.ino !== stat.ino || before.dev !== stat.dev || before.ctimeMs !== stat.ctimeMs || !before.isFile() || before.nlink !== 1 || before.size !== stat.size) throw conflict();
+    // Bound reads even if another process grows or replaces the object mid-read.
+    const bytes = Buffer.alloc(before.size + 1);
+    let size = 0, count: number;
+    while (size < bytes.length && (count = readSync(fd, bytes, size, bytes.length - size, null)) > 0) size += count;
+    const after = fstatSync(fd), current = lstatSync(path);
+    if (before.ctimeMs !== after.ctimeMs || after.nlink !== 1 || size !== before.size || current.ino !== after.ino || current.dev !== after.dev || current.ctimeMs !== after.ctimeMs || !current.isFile() || realpathSync(path) !== path) throw conflict();
+    // The incoming content is already checked against its OID. Compression is
+    // not part of that identity; require identical decoded bytes and keep the
+    // existing object untouched, including on a concurrent EEXIST.
+    let actual: Buffer;
+    try { actual = inflateSync(bytes.subarray(0, size), { maxOutputLength: 64 * 1024 * 1024 }); }
+    catch { throw conflict(); }
+    if (!actual.equals(inflateSync(expected, { maxOutputLength: 64 * 1024 * 1024 }))) throw conflict();
+  } finally { closeSync(fd); }
 }
 
 function sameTree(a: Tree, b: Tree) {
@@ -123,21 +147,23 @@ export function publishGitTransaction(tx: GitTransaction) {
     }
     const current = readTree(snapshot.commonDir, new Set(["objects", ...locks.keys()]));
     if (!sameTree(tx.before, current)) throw new Error("Git state changed during the transaction; nothing published");
-    // Validate all object destinations before any write. Existing objects must be
-    // regular and byte-identical; never overwrite them or follow pool symlinks.
+    // Validate all object destinations before any write. Existing objects must
+    // have identical Git content; never overwrite them or follow pool symlinks.
     for (const [path, entry] of objects) {
       const target = join(snapshot.commonDir, "objects", path);
       safeParents(snapshot.commonDir, target);
-      if (existsSync(target)) {
-        const current = lstatSync(target);
-        if (!current.isFile() || current.nlink !== 1 || realpathSync(target) !== target || digest(readFileSync(target)) !== entry.hash) throw new Error("Conflicting Git object; nothing published");
-      }
+      if (lstatSync(target, { throwIfNoEntry: false })) verifyExistingObject(target, entry.bytes);
     }
     for (const [path, entry] of objects) {
       const target = join(snapshot.commonDir, "objects", path);
+      safeParents(snapshot.commonDir, target);
       mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
       try { writeFileSync(target, entry.bytes, { flag: "wx", mode: 0o444 }); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST" || digest(readFileSync(target)) !== entry.hash) throw error; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        safeParents(snapshot.commonDir, target);
+        verifyExistingObject(target, entry.bytes);
+      }
     }
     for (const path of changed) {
       const entry = after.get(path)!, lock = locks.get(path + ".lock")!;
