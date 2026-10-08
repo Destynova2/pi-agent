@@ -226,7 +226,7 @@ test("host bridge auto review executes once with fixed argv and denial executes 
   registerHostAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: tool => tools.set(tool.name, tool), registerCommand() {}, getActiveTools: () => [...tools.keys()] }, f.agent, () => {}, async (program, args) => { executions.push([program, args]); return "123 1 fixture"; });
   t.after(() => handlers.get("session_shutdown")());
   const call = () => tools.get("request_host_access").execute("host", { operation: "process_info", pid: 123, reason: "inspect process" }, undefined, undefined, f.ctx);
-  await call(); assert.deepEqual(executions, [["/bin/ps", ["-p", "123", "-o", "pid=,ppid=,comm="]]]); assert.equal(f.prompts, 0);
+  await call(); assert.deepEqual(executions, [[realpathSync("/bin/ps"), ["-p", "123", "-o", "pid=,ppid=,comm="]]]); assert.equal(f.prompts, 0);
   f.verdict = { decision: "deny", category: "out_of_scope" };
   await assert.rejects(call(), /out_of_scope/); assert.equal(executions.length, 1);
 });

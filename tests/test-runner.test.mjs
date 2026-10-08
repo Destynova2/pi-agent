@@ -55,6 +55,29 @@ test("missing Pi SDK fails once before executing tests, without affecting standa
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("runner keeps native error assertions stable under an inherited French locale", async () => {
+  const root = await makeTmpDir("pi-agent-test-locale-");
+  try {
+    await writeFile(join(root, "locale.test.mjs"), `
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+test("native errors use the expected diagnostic language", () => {
+  const result = spawnSync("rmdir", ["missing-directory"], { cwd: import.meta.dirname, encoding: "utf8", timeout: 5000 });
+  assert.ifError(result.error);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /No such file or directory/);
+});
+`);
+    const runner = fileURLToPath(new URL("../scripts/test.mjs", import.meta.url));
+    const env = { ...process.env, LC_ALL: "fr_FR.UTF-8", LANG: "fr_FR.UTF-8", LANGUAGE: "fr" };
+    delete env.NODE_TEST_CONTEXT;
+    const result = spawnSync(process.execPath, [runner, "--dir", root], { env, encoding: "utf8", timeout: 10000 });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("shouldBootstrap: real repo by default, never a fixture without asking explicitly", () => {
   assert.equal(shouldBootstrap({}), true, "no --dir => real repo => bootstrap");
   assert.equal(shouldBootstrap({ dir: "/tmp/fixture" }), false, "--dir without --bootstrap => no bootstrap");
