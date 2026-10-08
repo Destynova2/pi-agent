@@ -18,7 +18,7 @@ test("MCP accepts only trusted local stdio definitions, not project config, syml
     assert.deepEqual(readServers(agent, cwd), {});
     const path = join(agent, "mcp.json");
     writeFileSync(path, JSON.stringify({ mcpServers: { example: { command: "node", args: [] } } }));
-    assert.throws(() => readServers(agent, cwd), /uses servers, not native mcpServers/);
+    assert.deepEqual(readServers(agent, cwd), { example: { command: "node", args: [], network: true } });
     assert.equal(CONFINED_TOOLS.has("codemode"), false, "Codemode stays denied until its execution is confined");
     writeFileSync(path, JSON.stringify({ servers: { example: { command: "node", args: ["server.mjs"], network: false } } }));
     assert.equal(readServers(agent, cwd).example.command, "node");

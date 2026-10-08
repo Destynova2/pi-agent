@@ -19,7 +19,10 @@
       "prompts": [],
       "themes": []
     },
-    "npm:@richardgill/pi-background-bash@0.0.3",
+    {
+      "source": "npm:@richardgill/pi-background-bash@0.0.3",
+      "extensions": []
+    },
     "git:github.com/emilkowalski/skills@d16ebe60d09a5ba2afcb7054ede9d0a10c9f6128"
   ],
   "lsp": {

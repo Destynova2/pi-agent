@@ -28,6 +28,10 @@ async function setup(activeTools: string[]) {
 
 	const oldHome = process.env.HOME;
 	const oldBackend = process.env.PI_CODEX_SANDBOX_BIN;
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = join(home, ".pi/agent");
+	await mkdir(agentDir, { recursive: true });
+	process.env.PI_CODING_AGENT_DIR = agentDir;
 	process.env.PI_CODEX_SANDBOX_BIN = realpathSync(oldBackend ?? join(homedir(), ".local/bin/codex"));
 	process.env.HOME = home; // os.homedir() reads this on POSIX; keeps ~/workspace mirror out of the picture.
 	const events = new Map<string, Handler>();
@@ -48,6 +52,7 @@ async function setup(activeTools: string[]) {
 			await events.get("session_shutdown")?.({}, { cwd });
 			if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
 			if (oldBackend === undefined) delete process.env.PI_CODEX_SANDBOX_BIN; else process.env.PI_CODEX_SANDBOX_BIN = oldBackend;
+			if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
 			await rm(home, { recursive: true, force: true });
 		},
 		async beforeAgentStart(prompt: string) {

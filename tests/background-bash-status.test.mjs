@@ -1,110 +1,80 @@
 import assert from "node:assert/strict";
-import { test, after } from "node:test";
-import { cpSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { test } from "node:test";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
-import { DefaultResourceLoader, SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { registerCommandAccess } from "../extensions/tool-policy/command-access.ts";
-import { ORIGINAL_SHA256, patchBackgroundBash, transformBackgroundBash } from "../scripts/patch-background-bash.mjs";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { createBashToolDefinition, DefaultResourceLoader, SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 
-// Reconstruct a pristine, hash-verified fixture from the installed package, even
-// when its foreground-status patch is already applied. Never mutate the runtime.
-const original = realpathSync(mkdtempSync(join(tmpdir(), "pi-bash-pristine-")));
-after(() => rmSync(original, { recursive: true, force: true }));
-cpSync(process.env.PI_BACKGROUND_BASH_SOURCE ?? join(getAgentDir(), "npm/node_modules/@richardgill/pi-background-bash"), original, { recursive: true });
-const sourcePath = join(original, "src/tools.ts");
-const source = readFileSync(sourcePath, "utf8");
-const digest = text => createHash("sha256").update(text).digest("hex");
-const pristine = digest(source) === ORIGINAL_SHA256 ? source : transformBackgroundBash(source, true);
-assert.equal(digest(pristine), ORIGINAL_SHA256, "Unknown installed background-bash content");
-writeFileSync(sourcePath, pristine);
-rmSync(`${sourcePath}.before-pi-exit-status`, { force: true });
+const adapter = fileURLToPath(new URL("../extensions/background-bash/core.ts", import.meta.url));
 
-test("pinned patch rejects unknown content/version, backs up and is idempotent", async t => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "bash-status-patch-"))); t.after(() => rmSync(root, { recursive: true, force: true }));
-  cpSync(original, root, { recursive: true });
-  assert.equal(createHash("sha256").update(readFileSync(join(root, "src/tools.ts"))).digest("hex"), ORIGINAL_SHA256);
-  assert.equal((await patchBackgroundBash(root)).patched, true);
-  assert.equal((await patchBackgroundBash(root)).patched, false);
-  assert.equal(createHash("sha256").update(readFileSync(join(root, "src/tools.ts.before-pi-exit-status"))).digest("hex"), ORIGINAL_SHA256);
-  writeFileSync(join(root, "src/tools.ts"), readFileSync(join(root, "src/tools.ts"), "utf8") + "\n// unknown edit\n");
-  await assert.rejects(patchBackgroundBash(root), /Modified/);
-  writeFileSync(join(root, "package.json"), '{"name":"@richardgill/pi-background-bash","version":"0.0.4"}');
-  await assert.rejects(patchBackgroundBash(root), /Only/);
+test("native foreground Bash preserves real exit status without interpreting output text", async t => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-native-bash-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const tool = createBashToolDefinition(cwd);
+  const success = await tool.execute("ok", { command: "printf 'operation not permitted'" });
+  assert.equal(success.isError, undefined);
+  assert.match(success.content[0].text, /operation not permitted/);
+  const failed = await tool.execute("failed", { command: "printf 'fixture output'; exit 7" });
+  assert.equal(failed.isError, true);
+  assert.match(failed.content[0].text, /code 7/);
+  await assert.rejects(tool.execute("timeout", { command: "sleep 30", timeout: 1 }), /timed out|timeout/i);
+  await assert.rejects(tool.execute("cancel", { command: "sleep 30" }, AbortSignal.abort()), /abort/i);
 });
 
-test("linked targets/backups and oversized metadata are refused without mutation", async t => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "bash-status-links-"))); t.after(() => rmSync(root, { recursive: true, force: true }));
-  cpSync(original, root, { recursive: true });
-  const target = join(root, "src/tools.ts"), backup = `${target}.before-pi-exit-status`, saved = readFileSync(target), other = join(root, "original.ts");
-  writeFileSync(other, saved); rmSync(target); symlinkSync(other, target);
-  await assert.rejects(patchBackgroundBash(root), /Linked/);
-  rmSync(target); linkSync(other, target);
-  await assert.rejects(patchBackgroundBash(root), /Linked/);
-  rmSync(target); writeFileSync(target, saved); symlinkSync(other, backup);
-  await assert.rejects(patchBackgroundBash(root), /Linked/);
-  assert.deepEqual(readFileSync(target), saved); rmSync(backup);
-  writeFileSync(join(root, "package.json"), " ".repeat(1024 * 1024 + 1));
-  await assert.rejects(patchBackgroundBash(root), /oversized/);
-});
-
-test("real SDK + package propagate failed foreground exits, preserve successful text, background failure and cancellation", async t => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "bash-status-sdk-"))), pkg = join(root, "package"), agent = join(root, "agent");
-  mkdirSync(agent); cpSync(original, pkg, { recursive: true }); await patchBackgroundBash(pkg);
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+test("public background factory keeps completion, cancellation and cleanup without replacing native bash", { timeout: 20000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), "pi-native-background-")), agent = join(root, "agent"), cwd = join(root, "project");
+  await mkdir(agent); await mkdir(cwd);
+  const require = createRequire(join(getAgentDir(), "npm/package.json"));
+  const exported = process.env.PI_BACKGROUND_BASH_SOURCE
+    ? createRequire(join(process.env.PI_BACKGROUND_BASH_SOURCE, "package.json")).resolve("@richardgill/pi-background-bash")
+    : require.resolve("@richardgill/pi-background-bash");
+  const before = await readFile(exported);
   const entry = join(root, "fixture.ts");
-  writeFileSync(entry, `import { registerTools } from ${JSON.stringify(join(pkg, "src/tools.ts"))};
+  await writeFile(entry, `import { backgroundBash } from ${JSON.stringify(exported)};
+import { registerBackground } from ${JSON.stringify(adapter)};
 export default function(pi) {
-  const manager = {
-    getCommandPrefix: () => undefined,
-    prepare(meta) {
-      const managed = { pgid: 42, logPath: ${JSON.stringify(join(root, "fixture.log"))}, startedAt: Date.now(), command: meta.command };
-      return { spawned: Promise.resolve(managed), operations: { exec: async () => {
-        meta.onData(Buffer.from("fixture output: operation not permitted\\n"));
-        if (meta.command === "cancel") throw new Error("aborted");
-        if (meta.command === "timeout") throw new Error("timeout:1");
-        managed.exitCode = meta.command === "ok" ? 0 : meta.command === "unknown" ? undefined : 7;
-        return { exitCode: managed.exitCode ?? 0 };
-      } } };
-    },
-    finishForeground() {},
-    handoff(managed, notify) { managed.completion.then(outcome => notify(managed, outcome)); },
-  };
-  registerTools({ ...pi, getThinkingLevel: () => "off", sendMessage: message => { globalThis.__bashStatusCompletion = message; } }, manager,
-    { bashToolName: "bash", processToolName: "bash_process", bashToolDescription: "fixture", processToolDescription: "fixture", systemPrompt: false, defaultTimeoutSeconds: 1, maxTimeoutSeconds: 2, defaultTimeoutAction: "kill" });
-}
-`);
-  const previous = process.env.PI_CODING_AGENT_DIR, home = process.env.HOME; process.env.PI_CODING_AGENT_DIR = agent;
-  process.env.HOME = join(root, "home"); mkdirSync(process.env.HOME);
-  t.after(() => { delete globalThis.__bashStatusCompletion; if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; if (home === undefined) delete process.env.HOME; else process.env.HOME = home; });
-  const loader = new DefaultResourceLoader({ cwd: root, agentDir: agent, settingsManager: SettingsManager.inMemory({}), noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, additionalExtensionPaths: [entry] });
-  await loader.reload(); const loaded = loader.getExtensions(); assert.deepEqual(loaded.errors, []);
-  const tool = loaded.extensions[0].tools.get("bash").definition;
-  const ctx = { cwd: root, sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
-  const run = args => tool.execute("fixture-call", args, undefined, undefined, ctx);
-  const success = await run({ command: "ok" }); assert.match(success.content[0].text, /operation not permitted/);
-  for (const timeoutAction of ["kill", "background"]) await assert.rejects(run({ command: "failed", timeoutAction }), /Command exited with code 7/);
-  await assert.rejects(run({ command: "cancel" }), /Command aborted/);
-  await assert.rejects(run({ command: "timeout" }), /timed out/);
-  await assert.rejects(run({ command: "unknown" }), /without an exit code/);
-  const result = await run({ command: "failed", background: true }); assert.equal(result.details.active, true);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(globalThis.__bashStatusCompletion.details.status, "failed"); assert.equal(globalThis.__bashStatusCompletion.details.exitCode, 7);
-  assert.match(globalThis.__bashStatusCompletion.content, /fixture output/);
-
-  // Exercise the real command-access hooks: an actual SDK/package rejection becomes
-  // eligible, but human refusal still prevents any command dispatch or extra rights.
-  const handlers = new Map(); let access, prompts = 0;
-  registerCommandAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: definition => { access = definition; }, getActiveTools: () => ["request_command_access"] }, agent, () => {});
-  const accessCtx = { ...ctx, hasUI: true, ui: { confirm: async () => { prompts++; return false; } } };
-  await handlers.get("session_start")({}, accessCtx);
-  const input = { command: "failed", timeoutAction: "kill" };
-  handlers.get("tool_call")({ toolName: "bash", toolCallId: "observed-failure", input }, accessCtx);
-  let failure; try { await run(input); } catch (error) { failure = error; }
-  assert.match(failure.message, /code 7/);
-  const captured = handlers.get("tool_result")({ toolName: "bash", toolCallId: "observed-failure", input, isError: true, content: [{ type: "text", text: failure.message }] }, accessCtx);
-  assert.match(captured.content.at(-1).text, /failed_call_id="observed-failure"/);
-  await assert.rejects(access.execute("request", { failed_call_id: "observed-failure", write_paths: [join(root, "extra")], reason: "fixture" }, undefined, undefined, accessCtx), /refused/);
-  assert.equal(prompts, 1); await handlers.get("session_shutdown")();
+  registerBackground({ ...pi, getThinkingLevel: () => "off", sendMessage: message => globalThis.__backgroundMessages.push(message) }, backgroundBash, ${JSON.stringify(join(root, "logs"))});
+}`);
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agent;
+  globalThis.__backgroundMessages = [];
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    delete globalThis.__backgroundMessages;
+    await rm(root, { recursive: true, force: true });
+  });
+  const loader = new DefaultResourceLoader({ cwd, agentDir: agent, settingsManager: SettingsManager.inMemory({}),
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, additionalExtensionPaths: [entry] });
+  await loader.reload();
+  const loaded = loader.getExtensions(); assert.deepEqual(loaded.errors, []);
+  const extension = loaded.extensions[0], tool = extension.tools.get("bash_background").definition;
+  assert.equal(extension.tools.has("bash"), false);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["command", "name"]);
+  const processTool = extension.tools.get("bash_process").definition;
+  const ctx = { cwd, hasUI: false, isProjectTrusted: () => false,
+    sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
+  for (const handler of extension.handlers.get("session_start")) await handler({}, ctx);
+  try {
+    for (const [command, status, exitCode] of [["printf 'success'; exit 0", "success", 0], ["printf 'failed output'; exit 7", "failed", 7]]) {
+      const count = globalThis.__backgroundMessages.length;
+      const started = await tool.execute("start", { command }, undefined, undefined, ctx);
+      assert.equal(started.details.active, true);
+      const deadline = Date.now() + 5000;
+      while (globalThis.__backgroundMessages.length === count && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      const message = globalThis.__backgroundMessages[count];
+      assert.ok(message, "background completion must arrive");
+      assert.equal(message.details.exitCode, exitCode);
+      assert.equal(message.details.status, status);
+    }
+    const count = globalThis.__backgroundMessages.length;
+    const active = await tool.execute("long", { command: "sleep 30" }, undefined, undefined, ctx);
+    await processTool.execute("stop", { action: "kill", pgid: active.details.pgid }, undefined, undefined, ctx);
+    assert.equal(globalThis.__backgroundMessages.length, count, "intentional kill does not wake the model");
+    await tool.execute("shutdown", { command: "sleep 30" }, undefined, undefined, ctx);
+  } finally { for (const handler of extension.handlers.get("session_shutdown")) await handler({}, ctx); }
+  const stopped = await processTool.execute("list", { action: "list" }, undefined, undefined, ctx);
+  assert.match(stopped.content[0].text, /No active/);
+  assert.deepEqual(await readFile(exported), before, "public factory source is unchanged");
 });

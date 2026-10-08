@@ -1,8 +1,10 @@
+import { PACKAGE_DIRECTORY } from "../scripts/install.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { closeSync, openSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runDoctor, REQUIRED_COMMANDS, OPTIONAL_COMMANDS, CONFINED_RUNTIME_FILES } from "../scripts/doctor.mjs";
 import { makeFakeToolchain, makeTmpDir } from "./fixtures/build.mjs";
@@ -22,9 +24,9 @@ test("reports missing required tools and fails even without --strict", async () 
 test("everything present (required + optional + bundled tool): ok even in --strict", async () => {
   const target = await makeTmpDir("pi-agent-doctor-target-");
   const binDir = await makeFakeToolchain([...REQUIRED_COMMANDS, ...OPTIONAL_COMMANDS]);
-  await mkdir(join(target, "gates"), { recursive: true });
-  await writeFile(join(target, "gates", "pi-prek"), "#!/bin/sh\nexit 0\n");
-  await chmod(join(target, "gates", "pi-prek"), 0o755);
+  await mkdir(join(target, PACKAGE_DIRECTORY, "gates"), { recursive: true });
+  await writeFile(join(target, PACKAGE_DIRECTORY, "gates", "pi-prek"), "#!/bin/sh\nexit 0\n");
+  await chmod(join(target, PACKAGE_DIRECTORY, "gates", "pi-prek"), 0o755);
   try {
     const result = await runDoctor({ target, strict: true, env: { PATH: binDir } });
     assert.equal(result.missingRequired.length, 0);
@@ -40,9 +42,9 @@ test("missing optional tool: ok by default, fails only in --strict", async () =>
   const target = await makeTmpDir("pi-agent-doctor-target-");
   const present = [...REQUIRED_COMMANDS, ...OPTIONAL_COMMANDS.filter((c) => c !== "jj")];
   const binDir = await makeFakeToolchain(present);
-  await mkdir(join(target, "gates"), { recursive: true });
-  await writeFile(join(target, "gates", "pi-prek"), "#!/bin/sh\nexit 0\n");
-  await chmod(join(target, "gates", "pi-prek"), 0o755);
+  await mkdir(join(target, PACKAGE_DIRECTORY, "gates"), { recursive: true });
+  await writeFile(join(target, PACKAGE_DIRECTORY, "gates", "pi-prek"), "#!/bin/sh\nexit 0\n");
+  await chmod(join(target, PACKAGE_DIRECTORY, "gates", "pi-prek"), 0o755);
   try {
     const lenient = await runDoctor({ target, strict: false, env: { PATH: binDir } });
     assert.equal(lenient.missingRequired.length, 0);
@@ -93,22 +95,33 @@ test("installed mode fails on stale executors, missing servers and unfiltered up
   const env = { PATH: binDir };
   try {
     assert.equal((await runDoctor({ target, installed: true, env })).ok, false);
-    const cli = spawnSync(process.execPath, [fileURLToPath(new URL("../scripts/doctor.mjs", import.meta.url)), "--target", target, "--installed"], { env, encoding: "utf8" });
+    const log = join(target, "doctor.log"), fd = openSync(log, "w", 0o600);
+    let cli;
+    try {
+      cli = spawnSync(process.execPath, [fileURLToPath(new URL("../scripts/doctor.mjs", import.meta.url)), "--target", target, "--installed"], { env, stdio: ["ignore", fd, fd] });
+    } finally { closeSync(fd); }
+    assert.ifError(cli.error);
     assert.equal(cli.status, 1);
-    assert.match(cli.stdout, /extensions\/confined-lsp\/index\.ts: missing/);
+    assert.match(readFileSync(log, "utf8"), /extensions\/confined-lsp\/index\.ts: missing/);
     for (const file of CONFINED_RUNTIME_FILES) {
-      await mkdir(dirname(join(target, file)), { recursive: true });
-      await writeFile(join(target, file), await readFile(new URL(`../${file}`, import.meta.url)));
+      await mkdir(dirname(join(target, PACKAGE_DIRECTORY, file)), { recursive: true });
+      await writeFile(join(target, PACKAGE_DIRECTORY, file), await readFile(new URL(`../${file}`, import.meta.url)));
     }
-    const settings = { shellPath: join(target, "scripts/codex-shell.mjs"), packages: [{ source: "npm:@ian-pascoe/pi-lsp@0.4.4", extensions: [] }] };
+    const settings = { shellPath: join(target, PACKAGE_DIRECTORY, "scripts/codex-shell.mjs"), packages: [join(target, PACKAGE_DIRECTORY), { source: "npm:@ian-pascoe/pi-lsp@0.4.4", extensions: [] }, { source: "npm:@richardgill/pi-background-bash@0.0.3", extensions: [] }] };
+    settings.extensions = ["-builtin:mcp"];
     await writeFile(join(target, "settings.json"), JSON.stringify(settings));
-    for (const [name, version] of [["@ian-pascoe/pi-lsp", "0.4.4"], ["typescript", "7.0.2"]]) {
+    for (const [name, version] of [["@ian-pascoe/pi-lsp", "0.4.4"], ["typescript", "7.0.2"], ["@richardgill/pi-background-bash", "0.0.3"]]) {
       const dir = join(target, "npm/node_modules", name);
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "package.json"), JSON.stringify({ name, version }));
     }
     assert.equal((await runDoctor({ target, installed: true, env })).ok, true);
-    await writeFile(join(target, "extensions/tool-policy/index.ts"), "// outdated policy\n");
+    for (const extensions of [undefined, [], ["+builtin:mcp"], "-builtin:mcp"]) {
+      await writeFile(join(target, "settings.json"), JSON.stringify({ ...settings, extensions }));
+      assert.ok((await runDoctor({ target, installed: true, env })).missingRequired.some(r => r.name === "builtin host MCP filtered"));
+    }
+    await writeFile(join(target, "settings.json"), JSON.stringify(settings));
+    await writeFile(join(target, PACKAGE_DIRECTORY, "extensions/tool-policy/index.ts"), "// outdated policy\n");
     const stale = await runDoctor({ target, installed: true, env });
     assert.ok(stale.missingRequired.some(r => r.name === "extensions/tool-policy/index.ts"));
     settings.packages = ["npm:@ian-pascoe/pi-lsp@0.4.4"];

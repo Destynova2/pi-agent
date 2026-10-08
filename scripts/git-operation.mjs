@@ -7,7 +7,7 @@ process.once("SIGTERM", cancel); process.once("SIGINT", cancel);
 try {
   for await (const chunk of process.stdin) {
     input += chunk;
-    if (Buffer.byteLength(input) > 65536) throw new Error("Git worker input exceeds 64 KiB");
+    if (Buffer.byteLength(input) > 1024 * 1024) throw new Error("Git worker input exceeds 1 MiB");
   }
   const data = JSON.parse(input), request = validateGitRequest(data.request);
   if (!["inspect", "execute"].includes(data.action)) throw new Error("Invalid Git worker action");

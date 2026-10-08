@@ -19,9 +19,9 @@
 // process-wide AbortController on SIGTERM/SIGINT so an in-flight language-server call unwinds
 // before the process exits.
 import { createInterface } from "node:readline";
-import { createConfinedLspWorkerBridge } from "../extensions/confined-lsp/worker-session.mjs";
 
 if (process.env.PI_CONFINED !== "1") throw new Error("LSP worker requires the Codex sandbox launcher");
+const { createConfinedLspWorkerBridge } = await import("../extensions/confined-lsp/worker-session.mjs");
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 
 const shutdownController = new AbortController();

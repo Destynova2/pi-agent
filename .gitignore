@@ -2,6 +2,7 @@
 auth.json
 mcp.json
 mcp-approvals/
+permission-audit/
 models-store.json
 trust.json
 sessions/
@@ -14,3 +15,6 @@ skills/cli-code-skills
 .DS_Store
 # sauvegardes créées à côté d'une cible par scripts/install.mjs (jamais dans ce dépôt)
 *.backup-*/
+# local runtime downloads and Python bytecode
+/downloads/
+__pycache__/

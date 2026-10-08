@@ -67,13 +67,13 @@ Missing, corrupt, oversized (64 MiB) or incomplete session files are rejected wi
 
 `extensions/tool-policy` now confines `read`, `write`, `edit`, `ls`, `find` and `grep` through `scripts/codex-tool.mjs` under the same Codex OS sandbox as Bash. It reuses Pi's native tool implementations, including edit validation and image handling. File calls are serialized per workspace; each has a 60-second deadline and 32 MiB output ceiling.
 
-`bash` and its `bash_process` supervisor retain the existing launcher and background lifecycle. Notes, including automatic prompt capture and inbox polling, and Graphify, including startup indexing and root discovery, now dispatch to fixed jailed workers. Notes alone receives additional grants for project note storage, its Git exclude entry and `~/workspace/notes.db` with SQLite sidecars, never the whole workspace directory. Linked storage is refused. Graphify caches live under the private cwd-specific `TMPDIR`; existing external caches are not deleted. Git inspection is offline; `web_fetch` uses the managed network proxy.
+Native `bash` and the separate `bash_background`/`bash_process` tools share the confined launcher. Notes, including automatic prompt capture and inbox polling, and Graphify, including startup indexing and root discovery, now dispatch to fixed jailed workers. Notes alone receives additional grants for project note storage, its Git exclude entry and `~/workspace/notes.db` with SQLite sidecars, never the whole workspace directory. Linked storage is refused. Graphify caches live under the private cwd-specific `TMPDIR`; existing external caches are not deleted. Git inspection is offline; `web_fetch` uses the managed network proxy.
 
 Routine calls need no approval. `request_network_access` can add exact public hosts, never filesystem permissions. `request_command_access` can rerun one failed foreground Bash command with human-approved additional write paths, still inside Codex. Unknown tools and executors not yet confined are denied. There is no unrestricted fallback. The legacy `tool-policy.json`, parser and shell classifier are removed; the installer backs up and deletes known legacy files. The dispatcher directory retains its name to replace the old installed entry point without loading two dispatchers.
 
-Children inherit the intersection of role tools, active parent tools and the fixed confined-executor set, without recursive delegation, interactive network grants, `request_command_access`, `request_host_access`, `git_access`, `jj_checkpoint` or `model_catalog`. Canonical child cwd must remain within its parent workspace in every mode, even with no policy file. Private session/report storage and model transport remain trusted host operations. Resumes can only narrow capabilities.
+Children inherit the intersection of role tools, active parent tools and the fixed confined-executor set, without recursive delegation, interactive network grants, `request_command_access`, `request_host_access`, `request_build_access`, `git_access`, `git_worktree_cleanup`, `jj_checkpoint` or `model_catalog`. Canonical child cwd must remain within its parent workspace in every mode, even with no policy file. Private session/report storage and model transport remain trusted host operations. Resumes can only narrow capabilities.
 
-The installer sets `shellPath` and deploys the launchers, workers and SDK resolver. After a validated installation and the [pinned trust-order correction](../INSTALLATION.md#plain-pi-startup-on-supported-runtimes), restart Pi normally; the recurring `--no-approve` workaround is no longer needed. Project resources are refused through `project_trust`; a session started with trusted project resources blocks permitted tools too. `/confined-tools` reports configuration, not proof that the backend can run. A missing adapter, changed cwd/shell or backend failure blocks execution.
+The installer sets `shellPath` and deploys the launchers, workers and SDK resolver. After a validated installation, restart with `pi --no-approve`; the [managed launcher](../INSTALLATION.md#plain-pi-startup-on-supported-runtimes) supplies that native flag automatically without editing Pi. Project resources are refused through `project_trust`; a session started with trusted project resources blocks permitted tools too. `/confined-tools` reports configuration, not proof that the backend can run. A missing adapter, changed cwd/shell or backend failure blocks execution.
 
 The original LSP package stays installed at 0.4.4 with its extension filtered out (`extensions: []`). The replacement runs its actual lifecycle controller inside Codex: persistent servers, workspace previews/apply, diagnostics, branch restoration and `/lsp` selections. Only UI selection/notification and the two LSP session-entry types cross back to the host. Diagnostics entries use plain-text presentation. Settings reads use Pi's storage API without acquiring a write lock outside the jail; persistent global settings writes remain denied. Session-scoped enablement works. Source TypeScript is compiled natively when Node supports transform mode; otherwise it uses the installed Pi SDK's Jiti compiler, limited to the pinned package. Project Babel configuration and compiler disk caches are disabled; Node 26's removed TypeScript transform mode is not required. No copied LSP mutation engine or unrestricted fallback is used.
 
@@ -97,9 +97,18 @@ LSP and local MCP connections reuse the process-group supervisor. JSON frames ar
 }
 ```
 
-This is **not Pi's native MCP configuration**: this adapter uses `servers`, while native Pi uses `mcpServers`. Registering `/mcp` intentionally replaces Pi's built-in session MCP manager; here it stops connections, not opens the native manager. Shell commands `pi mcp add/list/login/remove` still use native MCP and do not configure this adapter; native `pi mcp list` can launch servers outside this adapter. Do not use those commands to validate confinement. Configure the example above manually, then discover tools through the confined `mcp` tool. Native remote/OAuth, exposure controls, `${NAME}`/`!command` expansion and project configs are not supported; `env` values here are literal strings. A native `mcpServers` file is rejected with an explicit migration message rather than silently ignored.
+Pi 1.0.4's global `pi mcp add/remove` commands also configure this adapter through the native `mcpServers` object. Both objects can coexist, with unique names across them. Run the CLI from an operator terminal; the confined agent cannot write its trusted global configuration:
 
-Optional `env` contains string-valued server environment variables. `network: true` uses the managed proxy and existing host grants, never unrestricted networking. A remote MCP server cannot be confined by jailing its local client; remote transports are deliberately not advertised as supported.
+```sh
+pi mcp add playwright -- npx -y @playwright/mcp@0.0.83 --isolated
+pi mcp remove playwright
+```
+
+After installing this adapter update, reload or restart Pi once. Later additions, changes, disablement and removals take effect at the next confined `mcp` tool call, without another reload. Changed or removed connections stop then; unchanged connections keep running. This is not a filesystem watcher: an idle connection remains open until the next call, `/mcp`, or session shutdown. List configured names with `mcp({})`, then discover tools with `mcp({server: "playwright", tool: "help"})`. Discovery starts only the requested server inside the jail.
+
+Keep `-builtin:mcp` in settings. Registering `/mcp` replaces Pi's session MCP manager with connection cleanup and permission revocation. Native **`pi mcp list` can start servers outside this adapter**; use the confined tool above for discovery. Native remote/OAuth, project definitions (`--local`), custom `cwd`/`timeout`, `toolExposure` and non-default exposure modes are unsupported. Unsupported fields fail explicitly; default `codemode` registration still routes through this confined `mcp` tool, not the disabled Codemode executor. Native `type: "stdio"`, `enabled: false` and `description` are accepted. Arguments default to `[]`; environment values are literal strings, with no `${NAME}` or `!command` expansion.
+
+Optional `env` contains string-valued server environment variables. `network: true` uses the managed proxy and existing host grants, never unrestricted networking. Native `mcpServers` definitions default to this managed network so `npx` can reach the npm registry; `network: false` disables it. Existing `servers` definitions remain offline by default. npm's cache lives under the launcher's private `TMPDIR`, and its lifecycle scripts are disabled through `npm_config_ignore_scripts=true`. Adding a package still authorizes execution of its server code; pin its version. Browser installation and navigation can require additional capabilities or host grants: successful tool discovery alone does not validate browser automation. A remote MCP server cannot be confined by jailing its local client; remote transports are deliberately not advertised as supported.
 
 Dunst is **not jailed**: Mac applications can write files or contact external services on its behalf. The strict dispatcher therefore denies it in both parent and delegated sessions. Its separate implementation retains confirmation checks, but those checks do not turn host automation into a confined capability. `/dunst` only reports status or stops a connection. Do not advertise Dunst as functional inside this jail or use it to bypass a denial.
 
@@ -169,7 +178,7 @@ Local operations offer **Refuser**, **Autoriser cette fois**, **Autoriser pour c
 | Operation | Fields besides `operation` and `reason` | Scope |
 |---|---|---|
 | `branch` | `branch` | Create and switch to a new branch from current HEAD; never reset or overwrite an existing branch |
-| `stage` | `paths` | 1–100 explicit repository-relative regular files or tracked deletions; literal paths, never directories, wildcard expansion or all files |
+| `stage` | `paths` | 1–1000 explicit repository-relative regular files or tracked deletions; literal paths, never directories, wildcard expansion or all files |
 | `commit` | `paths`, `message` | Commit the existing index only when its complete path list matches the supplied list; does not stage other files or finish an in-progress merge, rebase or cherry-pick |
 | `push` | `remote`, `branch` | Publish the reviewed commit ID to one configured HTTPS destination and branch; fresh exact consent every time |
 
@@ -179,7 +188,9 @@ Git must support `git hook run --to-stdin` (verified with the installed Git); an
 
 Requests are copied before prompting. Repository identity, HEAD, index, effective configuration and selected file contents are checked again after consent and by the execution worker. Named file reads are bounded to 32 MiB each; symlinks, hardlinks and submodule directories are refused. These checks are not an atomic transaction spanning other Git processes: avoid concurrent Git writers. Immutable runtime wrappers chain the original commit hooks, preserving arguments, stdin, message edits, post-index and reference-transaction hooks. Index-changing pre-commit/message hooks reject the commit; a reference-transaction gate also checks the reviewed tree and old HEAD before history changes. Hook effects on files or the index remain for inspection, not automatic rollback. Hooks share the operation's Git data permissions; this is not a claim that arbitrary repository code is harmless. A post-commit hook or another writer can still change state afterward; any observed tree mismatch is reported and must be inspected before a push. A timeout or failure can leave effects, including an already-created commit. Never automatically retry it.
 
-`/git-access permissions` revokes local and project consent and clears refused requests for the repository. It also works when Git configuration is broken. It does not undo completed actions. Revocation in another Pi instance invalidates pending tickets before dispatch. New sessions and replaced repositories cannot silently obtain broader consent. Approval dialogs never truncate the operation to fit: shorten the request or enlarge the terminal when a new dialog is too large; an already-matching grant does not require a dialog.
+`/git-access permissions` revokes local and project consent and clears refused requests for the repository. It also works when Git configuration is broken. It does not undo completed actions. Revocation in another Pi instance invalidates pending tickets before dispatch. New sessions and replaced repositories cannot silently obtain broader consent. Long approval dialogs show the full request across pages before exposing approval choices; Escape refuses. An already-matching grant does not require a dialog. Requests remain bounded to 256 KiB and 1000 explicit paths.
+
+For linked-worktree cleanup, use the separate parent-only `git_worktree_cleanup` capability. It inspects without approval, then requests exact one-time consent to archive selected directories or prune selected missing registrations. Branches, files and HEAD commits remain recoverable; no push-or-discard decision is needed just to retire a worktree. See [worktree cleanup, archives and recovery](GIT-WORKTREES.md).
 
 Before installing this executor, run its native boundary gate from an operator shell where Codex can create a sandbox:
 
@@ -217,11 +228,15 @@ session changes and refusal cannot dispatch the worker.
 Git and jj run offline inside Codex against a bounded disposable copy. The parent
 publishes validated new Git objects, jj retention references and jj data only.
 Existing Git configuration, hooks, branches, index and working files are preserved.
+Existing objects are read-only inputs through a temporary Git alternate pool;
+they are not recopied or subject to the copy limit. The alternate pointer is never
+published. New objects must pass the same content-hash validation before publication.
 Each result also has a private `refs/pi/checkpoints/<operationId>` Git reference
 that retains its file contents independently of jj's operation retention, without
 creating a branch. These local pins are not automatically deleted or pushed.
-The resulting commit tree is checked against the selected files' exact contents
-and executable bits: a file silently omitted by jj's size or auto-track settings
+The resulting commit tree is checked against the selected files' exact contents,
+types and executable bits. Working-file symbolic links retain their literal target
+without following it, including external and dangling targets. A file silently omitted by jj's size or auto-track settings
 fails the checkpoint. The returned full `operationId` and `commitId` belong in the
 task checkpoint together with `gitRef`, not just a shortened revision in a note.
 
@@ -233,10 +248,17 @@ change repository history and bookmarks. Either restoration requires a separate
 explicit user request and inspection of the current changes first. The tool cannot
 restore, push or run arbitrary commands.
 
-Linked worktrees, bare/shared/noncolocated repositories, submodules, unfinished Git
-operations, sparse checkouts, symlinks, hardlinks and special files are refused.
-Each metadata tree and the selected working files have a 128 MiB total limit,
-20,000 entries and 64 MiB per file. Unsupported metadata layouts fail explicitly.
+The main repository may have linked worktrees. Their registrations, files, HEADs,
+indexes and locks are excluded from the disposable copy and left unchanged. This
+checkpoint backs up only the main worktree; it does not back up the linked ones.
+Running the tool from a linked worktree itself remains unsupported: run it from
+the main repository for a main-worktree checkpoint. Bare/noncolocated repositories,
+source alternate pools, submodules, unfinished main-worktree Git operations,
+sparse checkouts, metadata symlinks, linked parent directories, hardlinks and
+special files are refused.
+Copied metadata (including new Git objects) and selected working files each have
+a 128 MiB total limit, 20,000 entries and 64 MiB per file. Unsupported metadata
+layouts fail explicitly.
 Avoid concurrent Git/jj writers: source revalidation and exclusive Git lockfiles
 do not provide an atomic transaction across independent jj processes. Publication
 errors can leave partial metadata; inspect it without an automatic retry.
@@ -249,7 +271,8 @@ node --test --import ./tests/resolve-pi.mjs tests/jj-checkpoint.test.mjs tests/j
 ```
 
 The fixtures perform real snapshot/recovery in disposable repositories. The native
-gate separately proves sandbox availability, initialization, repeated snapshots
+gate separately proves sandbox availability, initialization, repeated snapshots,
+preservation of eight linked worktrees, read-only access to existing Git objects
 and continued denial of ordinary Bash Git writes. An unavailable host sandbox is
 a blocker, not a passing gate. See the [jj snapshot and operation reference](https://docs.jj-vcs.dev/latest/cli-reference/).
 
@@ -275,6 +298,31 @@ Podman management output is withheld because it can contain secrets. A zero exit
 The request is snapshotted, limited to 2,000 bytes and expires after five minutes. Exact arguments use compact JSON. A dialog that cannot show the complete request and both choices is rejected before prompting: shorten the reason/arguments or enlarge the terminal, rather than approving truncated text. Current workspace, capability, cancellation and executable metadata are rechecked before dispatch. Project dotenv files (64 KiB maximum) and Kubernetes manifests (1 MiB maximum) are read as bounded regular, single-link files and content-checked again after consent. This is not a security review of manifest contents or Podman's transitive configuration. Podman uses the current user's configured connection; the grant can affect that remote service. Executable lookup uses fixed system/Homebrew directories, or the trusted operator's `PI_PODMAN_BIN`, never a workspace executable.
 
 Execution uses the existing supervisor without a shell, with a 60-second total deadline and 1 MiB per-process output ceiling. There is no automatic replay. Canceling the CLI cannot undo container changes or a clipboard write already performed. Session transitions cancel pending operations; `/host-access reset` clears pending consent and locally cached refusals. It grants nothing. Linux clipboard transfer is unsupported; the new approval flow is tested on macOS, not validated on Linux.
+
+### KVM image builds
+
+For an authorized Packer/Ansible image build, `request_build_access` runs the fixed command `ansible-playbook -i localhost, ansible/build.yml` in the current Linux project. Inspect `ansible/build.yml`, `packer/`, `config/` and `ansible.cfg` before requesting it. The only parameters are `reason` and an optional `timeout_minutes` (default 120, maximum 240). No preceding failed Bash call is required.
+
+The interactive parent asks **Refuser / Autoriser cette fois** for each build. The approval identifies the project, executable, source digest, deadline and capabilities. Source changes during approval cancel execution. The digest covers `ansible/`, `packer/`, `config/` and `ansible.cfg`, not cached dependencies or the whole installed toolchain. These sources must be bounded regular files without links. Project code and cached dependencies are executable build inputs, not independently attested software.
+
+The build uses `/usr/bin/bwrap` directly with isolated user/process/mount namespaces, dropped capabilities, disabled nested user namespaces, a read-only root and a minimal `/dev` plus **only `/dev/kvm`**. Only the project's `.cache/`, `output/` and private temporary directory are writable. Project sources and root metadata remain read-only. The runtime and launcher must be outside the project. The ordinary Codex launcher and its policy do not change.
+
+This capability explicitly grants the **full native host network**, including local services, TCP/UDP and Unix sockets. This is necessary for the guest's Nexus access and Packer/Ansible SSH connections; it is broader than one allowed public host. Build code can reach host services, whose APIs may themselves have effects outside the writable directories. No credentials or proxy environment are inherited by the launcher; existing host files remain readable under the same outside-read policy as ordinary tools. The prompt describes these permissions before execution.
+
+The host must provide accessible KVM, Bubblewrap supporting `--disable-userns`, `/usr/bin/python3` and the project's installed Ansible/Packer/QEMU dependencies. A host metadata/access check precedes approval. Inside the actual sandbox, isolated Python verifies the KVM API and creates/closes an empty VM before Ansible starts. Missing `/dev/kvm` in ordinary Bash does not establish that it is absent on the host. No automatic `chmod`, group change, module load, unconfined fallback or replay is attempted.
+
+Execution remains in the foreground under the existing process-group supervisor. Progress updates report pending execution; completion is not announced early. Output is capped at 32 MiB and kept in a private log under the host's `$TMPDIR`, outside the build's writable scratch directory. Session navigation, cancellation and `/build-access reset` stop the process tree; reset also clears refusals. Existing artifacts and logs are retained for inspection. Consent is recorded in the permission audit and start/completion/failure in `kvm_build` session entries. A zero exit status still requires validation of the delivered image.
+
+Install the updated configuration through the normal staged installer and restart Pi. No separate Codex rebuild is needed. Native validation requires a Linux host with accessible KVM:
+
+```bash
+node --import ./tests/resolve-pi.mjs --test tests/build-sandbox.integration.test.mjs
+npm run verify:integration
+```
+
+Use the installed SDK's `PI_PACKAGE_JSON` and the integration prerequisites from `INSTALLATION.md`. The native test creates a VM, reaches a synthetic local HTTP service and verifies allowed/denied writes. It does not run a real RHEL build or establish image correctness. A missing native prerequisite fails the test; it is never treated as a successful sandbox check.
+
+KVM incidents now identify this supported capability. For other capability gaps, record the precise missing operation and prepare a reviewed source change with regression checks. This workflow does not grant the agent permission to modify the active harness or approve its own permissions.
 
 ### Requirement checkpoints and autonomy
 
@@ -325,9 +373,9 @@ Source: Codex [proxy policy](https://github.com/openai/codex/blob/rust-v0.155.1/
 
 ### Codex shell sandbox (macOS and Linux)
 
-The installer deploys the executable launcher to `<agent-dir>/scripts/codex-shell.mjs` and sets `shellPath` to that absolute path. Restart Pi after installation. This adapter uses Pi >=0.99.1, Codex >=0.155.1 for managed network access, and Node >=22.19. It makes no model calls and does not require Codex authentication. On Linux it prefers the private backend at `~/.local/share/pi-codex/0.155.1-file-roots/codex` when installed, then falls back to `~/.local/bin/codex`. Exact file grants require the [Linux backend repair](../patches/codex-linux-file-roots.md). A trusted launcher environment can set `PI_CODEX_SANDBOX_BIN` to another installed binary. A symlink at the default path can also point to a trusted package-manager installation. Workers receive `PI_CONFINED=1` from the command launched inside Codex; OS confinement enforces permissions. Linux does not provide the macOS-specific `CODEX_SANDBOX=seatbelt` marker.
+The installer deploys the executable launcher to `<agent-dir>/packages/pi-agent-config/scripts/codex-shell.mjs` and sets `shellPath` to that absolute path. Restart Pi after installation. This adapter uses Pi >=1.0.4, Codex >=0.155.1 for managed network access, and Node >=22.19. It makes no model calls and does not require Codex authentication. On Linux it prefers the private backend at `~/.local/share/pi-codex/0.155.1-file-roots/codex` when installed, then falls back to `~/.local/bin/codex`. Exact file grants require the [Linux backend repair](../patches/codex-linux-file-roots.md). A trusted launcher environment can set `PI_CODEX_SANDBOX_BIN` to another installed binary. A symlink at the default path can also point to a trusted package-manager installation. Workers receive `PI_CONFINED=1` from the command launched inside Codex; OS confinement enforces permissions. Linux does not provide the macOS-specific `CODEX_SANDBOX=seatbelt` marker.
 
-- Native Bash, user `!` commands, and `@richardgill/pi-background-bash` use Pi's existing shell setting. Foreground/background execution, streaming, exit codes, timeouts and process-group cancellation remain owned by Pi/the background extension. No command-text rewriting or extra approval model is added. The separate `request_command_access` tool handles explicitly confirmed foreground retries.
+- Native `bash`, user `!` commands and the public background factory use Pi's existing shell setting. `bash_background` starts an explicit background operation; `bash_process` controls it and completion notifications retain its exit status. Foreground-to-background timeout handoff is not exposed. Streaming, timeouts and process cleanup remain owned by Pi/the background package. No command-text rewriting or extra approval model is added. The separate `request_command_access` tool handles explicitly confirmed foreground retries.
 - Codex applies macOS Seatbelt or Linux bubblewrap plus `no_new_privs`/seccomp to Bash and its descendants: ordinary writes are limited to the command's initial working directory and a private per-project `TMPDIR`, with explicit additional paths only for an approved one-shot retry; network access is restricted to allowed hosts through the managed proxy, or disabled when no hosts are allowed. `.git`, `.codex` and `.agents` remain protected for ordinary Bash. The separately approved `git_access` operation changes only its approved Git data; Linux uses the metadata transaction described above. The directory is the session/worker cwd, not an inferred parent repository or all of `~/workspace`. The sandbox guard also rejects single, parallel and chained delegations whose canonical cwd escapes the parent's directory.
 - Outside reads remain allowed. The strict dispatcher routes supported tools through their adapters and blocks unknown executors. Dunst remains denied by the local strict dispatcher; `request_host_access` is an explicitly confirmed host-side exception; `model_catalog` only reads in-memory registry snapshots. Model transport and trusted extension internals remain outside the sandbox. Do not use another tool to bypass a denied action.
 - `git commit`, `git push`, dependency downloads, local servers and Podman access can be blocked. A denial is an error, never permission to retry outside the sandbox. The adapter fails closed when the backend is missing, the platform is unsupported or launch fails.
@@ -397,5 +445,7 @@ npm run test:integration
 ```
 
 If `pi` on PATH is a shell wrapper, set `PI_PACKAGE_JSON` to the installed `@earendil-works/pi-coding-agent/package.json` when running tests (see the test bootstrap in `tests/resolve-pi.mjs`).
+
+The subagent extension keeps dispatch and child lifecycle in `index.ts`, its result contract and bounded handoff text in `results.ts`, and native UI rendering in `render.ts`. Rendering consumes results without starting children or changing session state.
 
 Offline subprocess tests cover large task/file transport, a 1.2 MB UTF-8 report and chain handoff, cancellation, deadlines, signal/nonzero exits, incomplete answers, mixed parallel outcomes, bounded UI history, native resume ownership/locking/corruption and permission narrowing. Deterministic real-Pi CLI tests verify denied tools never execute, protected paths, downstream argument mutation and the authoritative subagent error flag without network or provider credentials. Git tests use hostile local helpers and a promisor remote sentinel. Shared-supervisor tests cover streaming, output limits, callback failure and descendant cleanup. These tests establish harness behavior, not end-to-end project completion quality. That requires representative multi-module tasks and observation of the model's actual decisions.

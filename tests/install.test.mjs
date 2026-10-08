@@ -1,13 +1,68 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { runInstall, mergeSettings, MANAGED_DIRS } from "../scripts/install.mjs";
+import { runInstall, mergeSettings, MANAGED_DIRS, PACKAGE_DIRECTORY } from "../scripts/install.mjs";
 import { buildFixtureSource, makeFakePi, makeTmpDir } from "./fixtures/build.mjs";
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
+
+test("mandatory builtin MCP exclusion survives personal extension settings and repeated merges", () => {
+  for (const extensions of [[], ["+builtin:mcp"], ["./personal.ts", "-builtin:other"]]) {
+    const merged = mergeSettings({ extensions: ["-builtin:mcp"] }, { extensions });
+    assert.ok(merged.extensions.includes("-builtin:mcp"));
+    for (const entry of extensions) assert.ok(merged.extensions.includes(entry));
+    assert.deepEqual(mergeSettings({ extensions: ["-builtin:mcp"] }, merged), merged);
+  }
+});
+
+test("malformed extension preferences are rejected before any installation writes", async t => {
+  const source = await buildFixtureSource(), root = await makeTmpDir("pi-extension-schema-");
+  t.after(async () => { await rm(source, { recursive: true, force: true }); await rm(root, { recursive: true, force: true }); });
+  const target = join(root, "agent");
+  await mkdir(target);
+  for (const extensions of [null, "-builtin:mcp", {}, [false]]) {
+    const before = JSON.stringify({ extensions });
+    await writeFile(join(target, "settings.json"), before);
+    await assert.rejects(runInstall({ sourceRoot: source, target, noPackages: true }), /extensions must contain strings/);
+    assert.equal(await readFile(join(target, "settings.json"), "utf8"), before);
+    assert.deepEqual(await readdir(root), ["agent"]);
+    assert.deepEqual(await readdir(target), ["settings.json"]);
+  }
+});
+
+test("settings activation failure preserves the configured legacy runtime", async t => {
+  const source = await buildFixtureSource(), root = await makeTmpDir("pi-migration-failure-");
+  t.after(async () => { await rm(source, { recursive: true, force: true }); await rm(root, { recursive: true, force: true }); });
+  const target = join(root, "agent"), shell = join(target, "scripts/codex-shell.mjs");
+  await mkdir(join(source, "scripts"));
+  await writeFile(join(source, "scripts/codex-shell.mjs"), "// new shell\n");
+  await mkdir(join(target, "scripts"), { recursive: true });
+  await writeFile(shell, "// working legacy shell\n");
+  const old = JSON.stringify({ shellPath: shell, extensions: [] });
+  await writeFile(join(target, "settings.json"), old, { mode: 0o400 });
+  await assert.rejects(runInstall({ sourceRoot: source, target, noPackages: true }), /EACCES|read.only/);
+  assert.equal(await readFile(join(target, "settings.json"), "utf8"), old);
+  assert.equal(await readFile(shell, "utf8"), "// working legacy shell\n");
+  assert.deepEqual((await readdir(target)).sort(), ["scripts", "settings.json"], "read-only settings must fail before backup or package copies");
+  assert.deepEqual(await readdir(root), ["agent"]);
+  await chmod(join(target, "settings.json"), 0o600);
+  for (const committed of [false, true]) {
+    await assert.rejects(runInstall({ sourceRoot: source, target, noPackages: true }, {
+      renameSettings: async (from, to) => {
+        if (committed) await rename(from, to);
+        throw new Error("fixture activation interruption");
+      },
+    }), /activation interruption/);
+    const settings = await readJson(join(target, "settings.json"));
+    assert.equal(settings.shellPath, committed ? join(target, PACKAGE_DIRECTORY, "scripts/codex-shell.mjs") : shell);
+    assert.equal(await readFile(shell, "utf8"), "// working legacy shell\n");
+    assert.ok(!(await readdir(target)).some(name => name.endsWith(".tmp")));
+    if (committed) assert.ok(settings.extensions.includes("-extensions/demo/index.ts"));
+  }
+});
 
 test("sandbox launcher is installed executable, backed up, and refuses symlinked parents", async () => {
   const source = await buildFixtureSource();
@@ -21,16 +76,18 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     await writeFile(join(source, "scripts/codex-tool.mjs"), "// confined file worker\n");
     await writeFile(join(source, "scripts/codex-network.mjs"), "// managed network policy\n");
     await writeFile(join(source, "scripts/metal-backend.mjs"), "// qualified Metal backend\n");
+    await writeFile(join(source, "scripts/build-worker.mjs"), "// fixed KVM build worker\n");
     await writeFile(join(source, "scripts/web-read-worker.mjs"), "// fixed public GET reader\n");
     await writeFile(join(source, "scripts/jj-checkpoint.mjs"), "// fixed jj snapshot worker\n");
     await writeFile(join(source, "scripts/confined-tool.mjs"), "// confined service worker\n");
     await chmod(join(source, relative), 0o644); // installer must set executable mode itself
     await runInstall({ sourceRoot: source, target, noPackages: true });
-    assert.equal((await stat(join(target, relative))).mode & 0o777, 0o755);
-    assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, relative));
-    assert.equal(await readFile(join(target, "scripts/codex-tool.mjs"), "utf8"), "// confined file worker\n");
-    await writeFile(join(target, relative), "previous launcher\n");
-    await writeFile(join(target, "scripts/jj-checkpoint.mjs"), "// previous snapshot worker\n");
+    assert.equal((await stat(join(target, PACKAGE_DIRECTORY, relative))).mode & 0o777, 0o755);
+    assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, PACKAGE_DIRECTORY, relative));
+    assert.equal(await readFile(join(target, PACKAGE_DIRECTORY, "scripts/codex-tool.mjs"), "utf8"), "// confined file worker\n");
+    await writeFile(join(target, PACKAGE_DIRECTORY, relative), "previous launcher\n");
+    await writeFile(join(target, PACKAGE_DIRECTORY, "scripts/jj-checkpoint.mjs"), "// previous snapshot worker\n");
+    await mkdir(join(target, "scripts"), { recursive: true });
     await writeFile(join(target, "scripts/personal.mjs"), "keep\n");
     await writeFile(join(target, "tool-policy.json"), '{"bash":"deny"}\n');
     await mkdir(join(target, "extensions/tool-policy"), { recursive: true });
@@ -38,21 +95,22 @@ test("sandbox launcher is installed executable, backed up, and refuses symlinked
     await writeFile(join(target, "network-policy.json"), '{"allow":[]}\n');
     await writeFile(join(target, "settings.json"), '{"shellPath":"/bin/bash","theme":"dark"}');
     const result = await runInstall({ sourceRoot: source, target, noPackages: true });
-    assert.equal(await readFile(join(result.backupDir, relative), "utf8"), "previous launcher\n");
-    assert.equal(await readFile(join(result.backupDir, "scripts/jj-checkpoint.mjs"), "utf8"), "// previous snapshot worker\n");
-    assert.equal(await readFile(join(target, "scripts/jj-checkpoint.mjs"), "utf8"), "// fixed jj snapshot worker\n");
-    assert.equal(await readFile(join(target, relative), "utf8"), "#!/usr/bin/env node\n");
+    assert.equal(await readFile(join(result.backupDir, PACKAGE_DIRECTORY, relative), "utf8"), "previous launcher\n");
+    assert.equal(await readFile(join(result.backupDir, PACKAGE_DIRECTORY, "scripts/jj-checkpoint.mjs"), "utf8"), "// previous snapshot worker\n");
+    assert.equal(await readFile(join(target, PACKAGE_DIRECTORY, "scripts/jj-checkpoint.mjs"), "utf8"), "// fixed jj snapshot worker\n");
+    assert.equal(await readFile(join(target, PACKAGE_DIRECTORY, relative), "utf8"), "#!/usr/bin/env node\n");
     assert.equal(await readFile(join(target, "scripts/personal.mjs"), "utf8"), "keep\n");
     assert.equal(await readFile(join(result.backupDir, "tool-policy.json"), "utf8"), '{"bash":"deny"}\n');
     assert.equal(await readFile(join(result.backupDir, "extensions/tool-policy/core.ts"), "utf8"), "// legacy parser\n");
     await assert.rejects(readFile(join(target, "tool-policy.json")), { code: "ENOENT" });
     await assert.rejects(readFile(join(target, "extensions/tool-policy/core.ts")), { code: "ENOENT" });
-    assert.equal(await readFile(join(target, "scripts/confined-tool.mjs"), "utf8"), "// confined service worker\n");
+    assert.equal(await readFile(join(target, PACKAGE_DIRECTORY, "scripts/confined-tool.mjs"), "utf8"), "// confined service worker\n");
     assert.equal(await readFile(join(target, "network-policy.json"), "utf8"), '{"allow":[]}\n');
-    assert.equal(await readFile(join(target, "scripts/codex-network.mjs"), "utf8"), "// managed network policy\n");
-    assert.equal(await readFile(join(target, "scripts/metal-backend.mjs"), "utf8"), "// qualified Metal backend\n");
-    assert.equal(await readFile(join(target, "scripts/web-read-worker.mjs"), "utf8"), "// fixed public GET reader\n");
-    assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, relative));
+    assert.equal(await readFile(join(target, PACKAGE_DIRECTORY, "scripts/codex-network.mjs"), "utf8"), "// managed network policy\n");
+    assert.equal(await readFile(join(target, PACKAGE_DIRECTORY, "scripts/metal-backend.mjs"), "utf8"), "// qualified Metal backend\n");
+    assert.equal(await readFile(join(target, PACKAGE_DIRECTORY, "scripts/build-worker.mjs"), "utf8"), "// fixed KVM build worker\n");
+    assert.equal(await readFile(join(target, PACKAGE_DIRECTORY, "scripts/web-read-worker.mjs"), "utf8"), "// fixed public GET reader\n");
+    assert.equal((await readJson(join(target, "settings.json"))).shellPath, join(target, PACKAGE_DIRECTORY, relative));
     assert.equal((await readJson(join(result.backupDir, "settings.json"))).shellPath, "/bin/bash");
     await mkdir(outside);
     for (const root of [target, source]) {
@@ -138,10 +196,10 @@ test("fresh install copies managed resources and writes the source's settings.js
     assert.equal(result.backupDir, null, "nothing to back up on a fresh target");
     assert.deepEqual(result.syncedDirs.sort(), [...MANAGED_DIRS].sort());
     for (const dir of MANAGED_DIRS) {
-      await readFile(join(target, dir === "agents" ? "agents/worker.md" : dir === "extensions" ? "extensions/demo/index.ts" : dir === "lib" ? "lib/helper.ts" : "gates/pi-prek"), "utf8");
+      await readFile(join(target, PACKAGE_DIRECTORY, dir === "agents" ? "agents/worker.md" : dir === "extensions" ? "extensions/demo/index.ts" : dir === "lib" ? "lib/helper.ts" : "gates/pi-prek"), "utf8");
     }
     const settings = await readJson(join(target, "settings.json"));
-    assert.deepEqual(settings.packages, ["npm:pkg-a", "npm:pkg-b"]);
+    assert.deepEqual(settings.packages, [join(target, PACKAGE_DIRECTORY), "npm:pkg-a", "npm:pkg-b"]);
     assert.equal(settings.defaultProvider, "anthropic");
   } finally {
     await rm(source, { recursive: true, force: true });
@@ -170,7 +228,7 @@ test("reinstall keeps existing preferences, replaces managed packages by identit
     assert.equal(settings.theme, "dark", "existing preference kept");
     assert.deepEqual(
       settings.packages,
-      ["npm:pkg-a@2.0.0", "npm:perso-pkg"],
+      [join(target, PACKAGE_DIRECTORY), "npm:pkg-a@2.0.0", "npm:perso-pkg"],
       "managed package (same identity) replaced by the source version, personal package preserved",
     );
     assert.equal(settings.defaultProvider, "anthropic", "new key from the source added");
@@ -340,7 +398,7 @@ test("preserves a file/directory added by the user in a managed directory (never
     );
     assert.equal(await readFile(join(target, "agents", "perso.md"), "utf8"), "# perso\n");
     assert.ok(
-      await readFile(join(target, "extensions", "demo", "index.ts"), "utf8"),
+      await readFile(join(target, PACKAGE_DIRECTORY, "extensions", "demo", "index.ts"), "utf8"),
       "the source's managed resource must also be present",
     );
   } finally {
@@ -428,13 +486,15 @@ test("filtered package resources survive install and replace the unfiltered pack
   const source = await buildFixtureSource({ settings: { packages: [entry] } });
   const parent = await makeTmpDir("pi-filtered-package-");
   const target = join(parent, "agent");
-  const fakePi = await makeFakePi();
+  const fakePi = await makeFakePi({ rewriteSettings: true });
   try {
     await mkdir(target);
     await writeFile(join(target, "settings.json"), JSON.stringify({ packages: [entry.source] }));
     const result = await runInstall({ sourceRoot: source, target, env: fakePi.env });
     assert.deepEqual(result.packageFailures, []);
-    assert.deepEqual((await readJson(join(target, "settings.json"))).packages, [entry]);
+    assert.deepEqual((await readJson(join(target, "settings.json"))).packages, [join(target, PACKAGE_DIRECTORY), entry]);
+    assert.ok((await readJson(join(target, "settings.json"))).extensions.includes("-builtin:mcp"));
+    assert.ok((await readJson(join(target, "settings.json"))).extensions.includes("-extensions/demo/index.ts"));
     assert.match(await readFile(fakePi.logPath, "utf8"), /install npm:@ian-pascoe\/pi-lsp@0.4.4/);
   } finally {
     await rm(source, { recursive: true, force: true });

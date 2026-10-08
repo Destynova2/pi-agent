@@ -36,6 +36,16 @@ test("Metal unavailability does not suggest filesystem grants or an unrestricted
   assert.doesNotMatch(incident.hint, /current Codex backend has no qualified GPU/);
 });
 
+test("KVM failures in English and French suggest the dedicated build capability", () => {
+  for (const text of ["ls: cannot access '/dev/kvm': No such file or directory", "ls: impossible d'accéder à '/dev/kvm': Aucun fichier ou dossier de ce nom", "Could not access KVM kernel module: Permission denied", "KVM_UNAVAILABLE on host: EACCES"]) {
+    const incident = new Incidents().observe(failure("kvm check", text));
+    assert.match(incident.body, /category=kvm-unavailable/);
+    assert.match(incident.hint, /request_build_access/);
+    assert.match(incident.hint, /does not prove it is absent on the host/);
+    assert.match(incident.hint, /never modify the live harness/);
+  }
+});
+
 test("HTTP 403 is not automatically authentication; exact-read and proxy errors retain their scope", () => {
   const incidents = new Incidents();
   for (const text of ["curl: (22) The requested URL returned error: 403", "WEB_HTTP_FORBIDDEN: HTTP 403"]) {

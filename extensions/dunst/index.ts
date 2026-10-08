@@ -60,6 +60,7 @@ export default function dunstExtension(pi: ExtensionAPI) {
       if (!(request.tool === "help" && server?.rpc.alive)) {
         const observe = DUNST_OBSERVATION.has(request.tool);
         authorized = await approvals.authorize(ctx, {
+          auditOperation: request.tool, toolCallId: _id,
           resource: "dunst", identity, operation: observe ? "observation" : serialized,
           title: "Dunst : accès aux applications du Mac, hors sandbox",
           detail: observe

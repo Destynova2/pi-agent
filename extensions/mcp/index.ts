@@ -6,8 +6,13 @@ import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { McpApprovals, fingerprint, serverIdentity } from "../../lib/mcp-approvals.ts";
 import { RpcProcess } from "../../lib/rpc-process.ts";
 import { McpConnection } from "./client.ts";
+import { prepareBrowserMcp, validateBrowserServer, type BrowserProfile } from "../../lib/browser-mcp.ts";
 
-interface Server { command: string; args: string[]; env?: Record<string, string>; network?: boolean }
+interface Server { command: string; args: string[]; env?: Record<string, string>; network?: boolean; browser?: BrowserProfile }
+
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 export function readServers(agentDir: string, cwd: string): Record<string, Server> {
   const rel = relative(realpathSync(cwd), realpathSync(agentDir));
@@ -18,26 +23,48 @@ export function readServers(agentDir: string, cwd: string): Record<string, Serve
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > 65536) throw new Error("Invalid MCP configuration file");
-    const data = JSON.parse(readFileSync(fd, "utf8"));
-    if (data && Object.hasOwn(data, "mcpServers")) throw new Error("This confined MCP adapter uses servers, not native mcpServers. pi mcp commands configure native MCP, not this adapter. See docs/ORCHESTRATION.md.");
-    if (!data || typeof data.servers !== "object" || !data.servers || Array.isArray(data.servers)) throw new Error("Expected MCP servers object");
-    for (const server of Object.values(data.servers) as Server[]) {
-      if (!server || typeof server !== "object" || typeof server.command !== "string" || !server.command ||
-        !Array.isArray(server.args) || !server.args.every(arg => typeof arg === "string") ||
-        Object.keys(server).some(key => !["command", "args", "env", "network"].includes(key)) ||
-        (server.network !== undefined && typeof server.network !== "boolean") ||
-        (server.env !== undefined && (!server.env || typeof server.env !== "object" || Array.isArray(server.env) || Object.entries(server.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string")))) {
-        throw new Error("MCP supports configured local stdio servers only (command, args, env, network)");
+    const data: unknown = JSON.parse(readFileSync(fd, "utf8"));
+    if (!record(data) || (!Object.hasOwn(data, "servers") && !Object.hasOwn(data, "mcpServers"))) throw new Error("Expected MCP servers or mcpServers object");
+    const definitions = new Map<string, Server>(), names = new Set<string>();
+    for (const format of ["servers", "mcpServers"]) {
+      if (!Object.hasOwn(data, format)) continue;
+      const entries = data[format], native = format === "mcpServers";
+      if (!record(entries)) throw new Error(`Expected MCP ${format} object`);
+      for (const [name, server] of Object.entries(entries)) {
+        if (!name || names.has(name)) throw new Error("MCP server names must be nonempty and unique across servers and mcpServers");
+        names.add(name);
+        const allowed = native ? ["command", "args", "env", "network", "browser", "type", "enabled", "description", "exposure"] : ["command", "args", "env", "network", "browser"];
+        if (!record(server) || typeof server.command !== "string" || !server.command ||
+          (!native && !Array.isArray(server.args)) ||
+          (server.args !== undefined && (!Array.isArray(server.args) || !server.args.every(arg => typeof arg === "string"))) ||
+          Object.keys(server).some(key => !allowed.includes(key)) ||
+          (server.network !== undefined && typeof server.network !== "boolean") ||
+          (server.type !== undefined && server.type !== "stdio") ||
+          (server.enabled !== undefined && typeof server.enabled !== "boolean") ||
+          (server.description !== undefined && typeof server.description !== "string") ||
+          (server.exposure !== undefined && server.exposure !== "codemode") ||
+          (server.env !== undefined && (!record(server.env) || Object.entries(server.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string")))) {
+          throw new Error("MCP supports configured local stdio servers only (command, args, env, network; native type, enabled, description and codemode exposure). Remote URLs, cwd, timeout, toolExposure and other exposure modes are unsupported.");
+        }
+        if (server.enabled === false) continue;
+        const definition: Server = {
+          command: server.command, args: (server.args ?? []) as string[],
+          ...(server.env === undefined ? {} : { env: server.env as Record<string, string> }),
+          ...(native ? { network: server.network ?? true } : server.network === undefined ? {} : { network: server.network }),
+          ...(server.browser === undefined ? {} : { browser: server.browser as BrowserProfile }),
+        };
+        if (Object.hasOwn(server, "browser")) validateBrowserServer(definition);
+        definitions.set(name, definition);
       }
     }
-    return data.servers;
+    return Object.fromEntries(definitions);
   } finally { closeSync(fd); }
 }
 
 export default function (pi: ExtensionAPI) {
   const agentDir = getAgentDir();
   const launcher = fileURLToPath(new URL("../../scripts/codex-shell.mjs", import.meta.url));
-  const connections = new Map<string, { config: string; connection: McpConnection }>();
+  const connections = new Map<string, { cwd: string; name: string; definition: string; config: string; connection: McpConnection; capability?: () => void }>();
   const approvals = new McpApprovals(agentDir);
   let generation = 0;
   let lifetime = new AbortController();
@@ -57,8 +84,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", stop);
   pi.registerTool({
     name: "mcp", label: "MCP (confined)",
-    description: "Use trusted, configured local MCP stdio servers inside Codex. Omit server to list configurations; use tool:'help' to discover tools. Declared read-only tools offer once/session/project consent; other calls require fresh exact approval. /mcp permissions revokes grants. Remote servers and host automation are unsupported; Dunst is separate.",
-    promptGuidelines: ["Read-only annotations are unverified server claims, not a sandbox. Never use a remembered grant to send a message or submit a form without the user's explicit go for that exact action."],
+    description: "Use trusted local MCP stdio servers inside Codex, or Playwright's explicitly configured browser container after launch approval. Global pi mcp add/remove changes are read on each call. Omit server to list configurations; use tool:'help' to discover tools. Declared read-only tools offer once/session/project consent; other calls require fresh exact approval. /mcp permissions revokes grants and stops connections. Browser containers have their own network and no host files; host.containers.internal reaches local host services. Remote MCP and general host execution are unsupported.",
+    promptGuidelines: ["Read-only annotations are unverified server claims, not a sandbox. Never use a remembered grant to send a message or submit a form without the user's explicit go for that exact action.", "Playwright 0.0.83 navigation returns a snapshot file link. Call browser_snapshot without a filename to read the DOM inline and obtain element refs; container files are not host files. Use configured browser.localhostPorts to retain localhost URLs for local apps, or host.containers.internal for other host services."],
     parameters: Type.Object({ server: Type.Optional(Type.String()), tool: Type.Optional(Type.String()), args: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),
     executionMode: "sequential",
     async execute(_id, params, signal, _update, ctx) {
@@ -69,6 +96,14 @@ export default function (pi: ExtensionAPI) {
       if (Buffer.byteLength(serialized) > 65536) throw new Error("MCP request exceeds 64 KiB");
       const request = JSON.parse(serialized) as { server?: string; tool: string; args: Record<string, unknown> };
       const servers = readServers(agentDir, cwd);
+      // Reconcile definitions without interrupting unchanged server connections.
+      for (const [key, entry] of connections) {
+        if (entry.cwd === cwd && (!Object.hasOwn(servers, entry.name) || entry.definition !== fingerprint(servers[entry.name]))) {
+          connections.delete(key);
+          await entry.connection.rpc.shutdown();
+        }
+      }
+      owned.throwIfAborted();
       if (!request.server) return { content: [{ type: "text", text: JSON.stringify(Object.keys(servers)) }], details: undefined };
       const name = request.server;
       const configuration = () => {
@@ -78,6 +113,7 @@ export default function (pi: ExtensionAPI) {
         return { server, executable: serverIdentity(server.command, server.args, cwd, server.env) };
       };
       const { server, executable } = configuration();
+      if (server.browser && process.env.PI_SUBAGENT_CHILD) throw new Error("Browser MCP requires the parent session; browser launch is not delegated");
       const config = fingerprint({ server, executable });
       const verify = () => {
         owned.throwIfAborted();
@@ -92,29 +128,45 @@ export default function (pi: ExtensionAPI) {
       }
       verify();
       if (!entry) {
-        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-        const command = ["/usr/bin/env", ...Object.entries(server.env ?? {}).map(([key, value]) => `${key}=${value}`), executable.command, ...server.args].map(quote).join(" ");
-        entry = { config, connection: new McpConnection(new RpcProcess({ command: launcher, args: [...(server.network ? [] : ["--offline"]), "-c", command], cwd })) };
+        let connection: McpConnection, capability: (() => void) | undefined;
+        if (server.browser) {
+          const browser = await prepareBrowserMcp(server, cwd, agentDir, owned);
+          capability = await approvals.authorize(ctx, {
+            resource: `mcp-browser:${name}`, identity: fingerprint([config, browser.identity]), operation: "launch", auditOperation: "browser_launch", toolCallId: _id,
+            title: `Autoriser le navigateur MCP : ${name} ?`, detail: browser.detail, remember: true,
+            revalidate: () => { verify(); browser.verify(); },
+          }, owned);
+          connection = new McpConnection(await browser.start(capability));
+        } else {
+          const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+          const environment = ["/usr/bin/env", ...Object.entries(server.env ?? {}).map(([key, value]) => `${key}=${value}`)].map(quote).join(" ");
+          // Expand only the launcher's private TMPDIR, inside the jail. Configuration stays literal.
+          const command = `${environment} 'npm_config_ignore_scripts=true' "npm_config_cache=$TMPDIR/pi-mcp-npm" ${[executable.command, ...server.args].map(quote).join(" ")}`;
+          connection = new McpConnection(new RpcProcess({ command: launcher, args: [...(server.network ? [] : ["--offline"]), "-c", command], cwd }));
+        }
+        entry = { cwd, name, definition: fingerprint(server), config, connection, capability };
         connections.set(key, entry);
       }
       const connection = entry.connection;
+      const verifyCall = () => { verify(); entry?.capability?.(); };
       try {
         // Private stdio definitions already authorize jailed startup and discovery, not arbitrary calls.
         await connection.start(owned);
-        verify();
-        let authorized = verify;
+        verifyCall();
+        let authorized = verifyCall;
         if (request.tool !== "help") {
           const tool = connection.tools.find(tool => tool.name === request.tool);
           if (!tool) throw new Error(`Unknown MCP tool: ${request.tool}`);
           const manifest = fingerprint(tool);
           const remember = tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint !== true;
           authorized = await approvals.authorize(ctx, {
+            auditOperation: request.tool, toolCallId: _id,
             resource: `mcp:${name}`, identity: fingerprint([config, manifest]), operation: remember ? request.tool : serialized,
             title: `MCP : ${name} / ${request.tool}`,
             detail: remember
-              ? `Serveur : ${executable.command}\nOutil déclaré en lecture seule (non vérifié). Accord pour cet outil, tous ses paramètres, dans le sandbox existant. Aucun droit réseau ou fichier ajouté.\nUn accord permanent s'applique aussi aux sessions sans interface de ce projet. Révocation : /mcp permissions.`
-              : `Serveur : ${executable.command}\nOpération sensible ou non déclarée en lecture seule.\nRequête exacte : ${serialized}`,
-            remember, revalidate: () => { verify(); if (fingerprint(connection.tools.find(item => item.name === request.tool) ?? null) !== manifest) throw new Error("MCP tool definition changed"); },
+              ? `Serveur : ${server.browser ? "Playwright en conteneur Podman" : executable.command}\nOutil déclaré en lecture seule (non vérifié). Accord pour cet outil, tous ses paramètres, dans le sandbox existant. Aucun droit réseau ou fichier ajouté.\nUn accord permanent s'applique aussi aux sessions sans interface de ce projet. Révocation : /mcp permissions.`
+              : `Serveur : ${server.browser ? "Playwright en conteneur Podman" : executable.command}\nOpération sensible ou non déclarée en lecture seule.\nRequête exacte : ${serialized}`,
+            remember, revalidate: () => { verifyCall(); if (fingerprint(connection.tools.find(item => item.name === request.tool) ?? null) !== manifest) throw new Error("MCP tool definition changed"); },
           }, owned);
           authorized();
         }
@@ -142,7 +194,7 @@ export default function (pi: ExtensionAPI) {
         const accepted = await ctx.ui.confirm("Révoquer les autorisations MCP ?", `${name}\nProjet : ${cwd}\nAccords de session et permanents. Les autres projets restent inchangés.`, { signal: owned });
         owned.throwIfAborted();
         if (accepted && epoch === generation && cwd === realpathSync(ctx.cwd)) {
-          approvals.revoke(cwd, `mcp:${name}`); await stop(); ctx.ui.notify("Autorisations MCP révoquées pour ce serveur et ce projet", "info");
+          approvals.revoke(cwd, `mcp:${name}`); approvals.revoke(cwd, `mcp-browser:${name}`); await stop(); ctx.ui.notify("Autorisations MCP révoquées pour ce serveur et ce projet", "info");
         }
       } else { await stop(); ctx.ui.notify("MCP connections stopped", "info"); }
     },

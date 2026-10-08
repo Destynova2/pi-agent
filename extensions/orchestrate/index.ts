@@ -1,4 +1,5 @@
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { runtimeRoot } from "../../lib/runtime-paths.mjs";
+import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runProcess } from "../../lib/process.ts";
 import { join } from "node:path";
 import { recommendedWorkspace, workspaceHint } from "./workspace.ts";
@@ -46,7 +47,7 @@ Inspect the root and preexisting status. Run jj git init --colocate only through
 Even jj status may snapshot: use --ignore-working-copy for read-only inspection. A jj preference authorizes no Git commit, push, child conversion, or bypass of git_access. Children reuse the parent's preparation and report missing prerequisites. If a checkpoint is blocked, continue read-only work and report the blocker before edits requiring recovery coverage. Gate policy configuration remains a separate prerequisite: initialization does not enable gates.`;
 
 /** Adaptive instructions for ordinary turns, plus explicit orchestration/gate commands. */
-export default function (pi: ExtensionAPI) {
+export default function register(pi: ExtensionAPI, execute = runProcess) {
   pi.on("before_agent_start", (event) => {
     const sections = event.systemPromptOptions.sections;
     sections.task_completion = TASK_COMPLETION_PROMPT;
@@ -107,10 +108,10 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("orchestrate", `Gates ${mode} on clean copy…`);
       try {
         const signals = ctx.signal ? [active.signal, ctx.signal] : [active.signal];
-        // Official binary copied into the agent dir; PI_GATES_BIN remains an escape hatch (tests, alternative install).
-        const gatesBin = process.env.PI_GATES_BIN || join(getAgentDir(), "gates/pi-prek");
+        // Official binary lives with this package; PI_GATES_BIN supports alternative installs.
+        const gatesBin = process.env.PI_GATES_BIN || join(runtimeRoot, "gates/pi-prek");
         const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-        task = runProcess(join(getAgentDir(), "scripts/codex-shell.mjs"), ["-c", `${quote(gatesBin)} ${quote(mode)}`], {
+        task = execute(join(runtimeRoot, "scripts/codex-shell.mjs"), ["-c", `${quote(gatesBin)} ${quote(mode)}`], {
           cwd: ctx.cwd, signal: AbortSignal.any(signals), timeoutMs: 2 * 60 * 60 * 1000,
           maxBytes: 8 * 1024 * 1024,
         });

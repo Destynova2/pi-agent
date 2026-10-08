@@ -52,6 +52,10 @@ for (const mode of ['simple', 'nested', 'outside']) {
     await mkdir(root); await mkdir(home);
     const previousHome = process.env.HOME;
     const previousBackend = process.env.PI_CODEX_SANDBOX_BIN;
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const agentDir = join(home, '.pi/agent');
+    await mkdir(agentDir, { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.PI_CODEX_SANDBOX_BIN = await realpath(previousBackend ?? join(homedir(), '.local/bin/codex'));
     process.env.HOME = home;
     const cache = cacheDirectory(root, join(home, '.cache/pi-codex-sandbox', createHash('sha256').update(root).digest('hex'), 'tmp/pi-graphify'));
@@ -111,6 +115,7 @@ for (const mode of ['simple', 'nested', 'outside']) {
       else process.env.PI_GRAPHIFY_AUTO = previous;
       if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
       if (previousBackend === undefined) delete process.env.PI_CODEX_SANDBOX_BIN; else process.env.PI_CODEX_SANDBOX_BIN = previousBackend;
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       await rm(temp, { recursive: true, force: true });
     }
   });

@@ -9,11 +9,12 @@ import { DefaultResourceLoader, SettingsManager, createBashToolDefinition, getAg
 
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const launcherSource = fileURLToPath(new URL("../scripts/codex-shell.mjs", import.meta.url));
-const backgroundExtension = join(getAgentDir(), "npm/node_modules/@richardgill/pi-background-bash/src/index.ts");
+const installedNpm = join(getAgentDir(), "npm");
+const backgroundExtension = fileURLToPath(new URL("../extensions/background-bash/index.ts", import.meta.url));
 
 test("Codex shell enforces boundaries through native and background Bash without model calls", { skip: !["darwin", "linux"].includes(process.platform), timeout: 40000 }, async () => {
   const codex = realpathSync(process.env.PI_CODEX_SANDBOX_BIN ?? join(homedir(), ".local/bin/codex"));
-  assert.ok(existsSync(backgroundExtension), "Install the configured pi-background-bash package first");
+  assert.ok(existsSync(join(installedNpm, "node_modules/@richardgill/pi-background-bash")), "Install the configured pi-background-bash package first");
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-codex-integration-")));
   const project = join(root, "project");
   const agent = join(root, "agent");
@@ -23,6 +24,7 @@ test("Codex shell enforces boundaries through native and background Bash without
   let ctx;
   try {
     for (const path of [project, agent, home, join(root, "outside"), join(agent, "scripts"), join(project, ".git"), join(project, ".codex"), join(project, ".agents")]) mkdirSync(path, { recursive: true });
+    symlinkSync(installedNpm, join(agent, "npm"));
     const launcher = join(agent, "scripts/codex-shell.mjs");
     copyFileSync(launcherSource, launcher);
     copyFileSync(new URL("../scripts/codex-network.mjs", import.meta.url), join(agent, "scripts/codex-network.mjs"));
@@ -35,11 +37,12 @@ test("Codex shell enforces boundaries through native and background Bash without
     writeFileSync(join(project, ".codex/config.toml"), 'sandbox_mode="danger-full-access"\n[sandbox_workspace_write]\nnetwork_access=true\nwritable_roots=["/"]\n');
     writeFileSync(join(project, "boundaries.mjs"), `
 import assert from 'node:assert/strict';
-import { writeFileSync, readFileSync, readlinkSync } from 'node:fs';
+import { writeFileSync, readFileSync, readlinkSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 if (process.platform === 'darwin') assert.equal(process.env.CODEX_SANDBOX, 'seatbelt');
 assert.equal(process.env.PI_CONFINED, '1');
+if (process.platform === 'linux') assert.equal(existsSync('/dev/kvm'), false, 'ordinary Bash must not inherit KVM access');
 writeFileSync('inside.txt', 'inside');
 writeFileSync(process.env.TMPDIR + '/scratch.txt', 'scratch');
 for (const path of ['../outside/relative.txt', ${JSON.stringify(join(root, "outside/absolute.txt"))}, 'escape/link.txt', '.git/blocked.txt', '.codex/blocked.txt', '.agents/blocked.txt']) {
@@ -102,19 +105,18 @@ console.log('boundaries passed');
     let complete;
     loaded.runtime.sendMessage = message => complete?.(message);
     for (const handler of extension.handlers.get("session_start") ?? []) await handler({}, ctx);
-    const bash = extension.tools.get("bash").definition;
+    assert.equal(extension.tools.has("bash"), false, "foreground execution stays native");
+    const bash = extension.tools.get("bash_background").definition;
     const processes = extension.tools.get("bash_process").definition;
-    const foreground = await bash.execute("foreground", { command: shellCommand }, undefined, undefined, ctx);
-    assert.match(foreground.content[0].text, /boundaries passed/);
     const done = new Promise(resolve => { complete = resolve; });
-    const background = await bash.execute("background", { command: shellCommand, background: true }, undefined, undefined, ctx);
+    const background = await bash.execute("background", { command: shellCommand }, undefined, undefined, ctx);
     assert.ok(background.details.pgid > 0);
     const message = await done;
     assert.equal(message.details.status, "success", message.content);
     assert.match(message.content, /boundaries passed/);
 
     const sleeper = 'printf ready > sleeper.ready; exec /bin/sleep 30';
-    const waiting = await bash.execute("kill", { command: sleeper, background: true }, undefined, undefined, ctx);
+    const waiting = await bash.execute("kill", { command: sleeper }, undefined, undefined, ctx);
     // Wait only for fixture readiness; no provider or external service is involved.
     for (let i = 0; i < 100 && !existsSync(join(project, "sleeper.ready")); i++) await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(readFileSync(join(project, "sleeper.ready"), "utf8"), "ready");
@@ -134,7 +136,7 @@ console.log('boundaries passed');
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.throws(() => process.kill(processGroup, 0), error => error.code === "ESRCH");
-    await assert.rejects(bash.execute("timeout", { command: "/bin/sleep 30", timeout: 1, timeoutAction: "kill" }, undefined, undefined, ctx), /timed out|timeout/i);
+    await assert.rejects(native.execute("timeout", { command: "/bin/sleep 30", timeout: 1 }, undefined, undefined, ctx), /timed out|timeout/i);
     const listed = await processes.execute("list", { action: "list" }, undefined, undefined, ctx);
     assert.match(listed.content[0].text, /No active background processes/);
   } finally {

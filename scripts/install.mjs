@@ -1,21 +1,27 @@
 #!/usr/bin/env node
 // Idempotent installer for the pi-agent configuration into a target directory.
 // Node stdlib only. See README.md and docs/configuration.md (pi) for the contract.
-import { cp, mkdir, readdir, readFile, realpath, rm, writeFile, chmod } from "node:fs/promises";
-import { homedir } from "node:os";
+import { access, constants, cp, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile, chmod } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { closeSync, mkdtempSync, openSync, readFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { isSubPath, isSymlink, pathExists } from "./lib.mjs";
+import { PACKAGE_DIRECTORY } from "../lib/runtime-paths.mjs";
+import { REQUIRED_EXTENSION_FILTERS } from "../lib/settings-policy.mjs";
+
+export { PACKAGE_DIRECTORY };
 
 export const MANAGED_DIRS = ["agents", "extensions", "lib", "gates"];
-export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs",
-  "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", "scripts/web-read-worker.mjs", "scripts/jj-checkpoint.mjs",
+export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/build-worker.mjs", "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs",
+  "scripts/git-operation.mjs", "scripts/git-worktree.mjs", "scripts/git-hook-guard.mjs", "scripts/web-read-worker.mjs", "scripts/jj-checkpoint.mjs", "scripts/audit-report.mjs",
   ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`),
 ];
 const RETIRED_FILES = ["extensions/model-fallback/index.ts", "tool-policy.json", "extensions/tool-policy/core.ts", "extensions/tool-policy/task.ts", "extensions/tool-policy/tests/policy.test.ts", "extensions/tool-policy/tests/task.test.ts", "extensions/tool-policy/tests/skills.test.ts"];
-export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json", "tool-policy.json"];
+export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json", "tool-policy.json", PACKAGE_DIRECTORY];
 
 const DEFAULT_SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -186,6 +192,9 @@ function validateSettingsSchema(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`refuse: ${label} is not a valid JSON object (${label})`);
   }
+  if ("extensions" in value && (!Array.isArray(value.extensions) || value.extensions.some(entry => typeof entry !== "string"))) {
+    throw new Error(`refuse: ${label}.extensions must contain strings`);
+  }
   if ("packages" in value) {
     const ok = Array.isArray(value.packages) && value.packages.every((p) => typeof p === "string" ||
       (p && typeof p === "object" && !Array.isArray(p) && typeof p.source === "string" &&
@@ -231,6 +240,7 @@ export function packageIdentity(spec) {
  */
 export function mergeSettings(sourceSettings, targetSettings) {
   const merged = { ...sourceSettings, ...targetSettings };
+  merged.extensions = [...new Set([...(merged.extensions ?? []), ...REQUIRED_EXTENSION_FILTERS])];
   if (sourceSettings.lsp) {
     merged.lsp = { ...sourceSettings.lsp, ...targetSettings.lsp,
       servers: { ...sourceSettings.lsp.servers, ...targetSettings.lsp?.servers } };
@@ -260,21 +270,45 @@ export function mergeSettings(sourceSettings, targetSettings) {
   return merged;
 }
 
+async function settingsWriteMode(path) {
+  let mode = 0o600;
+  try {
+    mode = (await stat(path)).mode & 0o777;
+    await access(path, constants.W_OK);
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  return mode;
+}
+
+// A failed write or rename leaves the previously selected runtime usable.
+async function writeSettingsAtomic(path, settings, renameFile) {
+  const mode = await settingsWriteMode(path);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { flag: "wx", mode });
+    await renameFile(temporary, path);
+  } finally { await rm(temporary, { force: true }); }
+}
+
 function installPackages(packages, target, env) {
   const failures = [];
   const installed = [];
+  const logs = packages.length ? mkdtempSync(join(tmpdir(), "pi-package-install-")) : undefined;
+  let index = 0;
   for (const entry of packages) {
     const source = typeof entry === "string" ? entry : entry.source;
-    const res = spawnSync("pi", ["install", source, "--no-approve"], {
-      env: { ...env, PI_CODING_AGENT_DIR: target },
-      stdio: "pipe",
-      encoding: "utf8",
-    });
+    const log = join(logs, `${index++}.log`), fd = openSync(log, "w", 0o600);
+    let res;
+    try {
+      res = spawnSync("pi", ["install", source, "--no-approve"], {
+        env: { ...env, PI_CODING_AGENT_DIR: target },
+        stdio: ["ignore", fd, fd],
+      });
+    } finally { closeSync(fd); }
     if (res.error || res.status !== 0) {
       failures.push({
         source,
         status: res.status ?? null,
-        message: res.error ? res.error.message : (res.stderr || "").trim(),
+        message: `${res.error?.message ?? readFileSync(log, "utf8").trim()} (log: ${log})`,
       });
     } else {
       installed.push(source);
@@ -297,7 +331,7 @@ export async function runInstall({
   target,
   noPackages = false,
   env = process.env,
-} = {}) {
+} = {}, { renameSettings = rename } = {}) {
   if (target !== undefined && (typeof target !== "string" || target.trim() === "")) {
     throw new Error("refuse: --target must be a non-empty path");
   }
@@ -305,12 +339,31 @@ export async function runInstall({
   const resolvedTarget = resolve(target ?? defaultTarget(env));
 
   await assertSafeTarget(sourceRoot, resolvedTarget);
+  if (await isSymlink(join(sourceRoot, "package.json"))) throw new Error("refuse: package.json is a symbolic link");
 
   const sourceSettings = await readSettings(join(sourceRoot, "settings.json"), "settings.json source");
   const targetSettings = await readSettings(join(resolvedTarget, "settings.json"), "settings.json target");
   const mergedSettings = mergeSettings(sourceSettings, targetSettings);
+  const packageRoot = join(resolvedTarget, PACKAGE_DIRECTORY);
+  const manifest = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8"));
+  if (manifest.name !== "pi-agent-config" || !Array.isArray(manifest.pi?.extensions) ||
+      !manifest.pi.extensions.length || manifest.pi.extensions.some(entry =>
+        typeof entry !== "string" || !/^\.\/extensions\/[a-z0-9/-]+\.(ts|js)$/.test(entry))) {
+    throw new Error("refuse: expected pi-agent-config with explicit Pi extension entry points");
+  }
+  for (const entry of manifest.pi.extensions) {
+    if (!(await pathExists(join(sourceRoot, entry)))) throw new Error(`refuse: missing package entry ${entry}`);
+  }
+  // Exact native exclusions make interruption between activation and cleanup safe.
+  // They refer to the former autoload paths, never the installed package paths.
+  const legacyEntries = [...manifest.pi.extensions.map(entry => entry.slice(2)),
+    ...RETIRED_FILES.filter(entry => entry.startsWith("extensions/") && /\.(ts|js)$/.test(entry))];
+  mergedSettings.extensions = [...new Set([...mergedSettings.extensions, ...legacyEntries.map(entry => `-${entry}`)])];
+  // Local package registration is offline. Keep code outside the working project.
+  mergedSettings.packages = [packageRoot, ...mergedSettings.packages.filter(entry =>
+    (typeof entry === "string" ? entry : entry.source) !== packageRoot)];
   // Strict tool execution has no unrestricted-shell mode.
-  mergedSettings.shellPath = join(resolvedTarget, "scripts/codex-shell.mjs");
+  mergedSettings.shellPath = join(packageRoot, "scripts/codex-shell.mjs");
   const typescript = mergedSettings.lsp?.servers?.typescript;
   if (typescript?.command === "tsc" && isDeepStrictEqual(typescript, sourceSettings.lsp?.servers?.typescript)) {
     // Resolve the pinned server from the protected installation, never project PATH/npx.
@@ -318,25 +371,41 @@ export async function runInstall({
       args: [join(resolvedTarget, "npm/node_modules/typescript/bin/tsc"), ...typescript.args] };
   }
 
+  // Refuse a known unwritable activation before backups or runtime copies.
+  // writeSettingsAtomic checks again because permissions may change meanwhile.
+  await settingsWriteMode(join(resolvedTarget, "settings.json"));
   await mkdir(resolvedTarget, { recursive: true });
   const backupDir = await backupExisting(resolvedTarget, MANAGED_ENTRIES);
 
   try {
     const syncedDirs = [];
     for (const dir of MANAGED_DIRS) {
-      if (await syncDir(join(sourceRoot, dir), join(resolvedTarget, dir))) syncedDirs.push(dir);
+      if (await syncDir(join(sourceRoot, dir), join(packageRoot, dir))) syncedDirs.push(dir);
     }
+    // User agent prompts remain editable and discoverable at Pi's conventional location.
+    await syncDir(join(sourceRoot, "agents"), join(resolvedTarget, "agents"));
     const syncedFiles = [];
     for (const file of MANAGED_FILES) {
-      if (await syncFile(join(sourceRoot, file), join(resolvedTarget, file))) {
+      const destination = join(file === "keybindings.json" ? resolvedTarget : packageRoot, file);
+      if (await syncFile(join(sourceRoot, file), destination)) {
         syncedFiles.push(file);
-        if (file === "scripts/codex-shell.mjs" || file.startsWith("scripts/git-hooks/")) await chmod(join(resolvedTarget, file), 0o755);
+        if (file === "scripts/codex-shell.mjs" || file.startsWith("scripts/git-hooks/")) await chmod(destination, 0o755);
       }
     }
+    await syncFile(join(sourceRoot, "package.json"), join(packageRoot, "package.json"));
+
+    await writeSettingsAtomic(join(resolvedTarget, "settings.json"), mergedSettings, renameSettings);
+
+    // Only retire the previous runtime after the new settings are atomically active.
+    // Personal files in the old directories are deliberately retained.
+    for (const dir of MANAGED_DIRS.filter(dir => dir !== "agents")) {
+      if (!(await pathExists(join(sourceRoot, dir)))) continue;
+      for (const file of await listFiles(join(sourceRoot, dir))) await rm(join(resolvedTarget, dir, file), { force: true });
+    }
+    for (const file of MANAGED_FILES.filter(file => file !== "keybindings.json")) await rm(join(resolvedTarget, file), { force: true });
 
     // Retire only known legacy files, after backup; preserve personal extensions.
     for (const file of RETIRED_FILES) await rm(join(resolvedTarget, file), { force: true });
-    await writeFile(join(resolvedTarget, "settings.json"), `${JSON.stringify(mergedSettings, null, 2)}\n`);
 
     let installed = [];
     let packageFailures = [];
@@ -344,12 +413,15 @@ export async function runInstall({
       ({ installed, failures: packageFailures } = installPackages(sourceSettings.packages ?? [], resolvedTarget, env));
       // pi install may rewrite package entries; preserve the resource filters selected above.
       const installedSettings = await readSettings(join(resolvedTarget, "settings.json"), "installed settings.json");
-      await writeFile(join(resolvedTarget, "settings.json"), `${JSON.stringify({ ...installedSettings, packages: mergedSettings.packages }, null, 2)}\n`);
+      await writeSettingsAtomic(join(resolvedTarget, "settings.json"), {
+        ...installedSettings, packages: mergedSettings.packages, extensions: mergedSettings.extensions,
+      }, renameSettings);
     }
 
     return {
       sourceRoot,
       target: resolvedTarget,
+      packageRoot,
       backupDir,
       syncedDirs,
       syncedFiles,

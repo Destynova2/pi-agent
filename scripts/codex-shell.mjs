@@ -9,6 +9,21 @@ import { fileURLToPath } from "node:url";
 import { confinedCommand, networkHosts, networkSandboxArgs, publicWebUrl, readNetworkPolicy, requireNetworkProxyVersion, sandboxFilesystem } from "./codex-network.mjs";
 import { metalBackend } from "./metal-backend.mjs";
 
+// Own both process substitutions in the supervisor, not a pipeline subshell.
+// Reap stderr after EOF and stop stdin if the command exits without consuming it.
+export const LINUX_STDIO_RELAY = `set -o pipefail
+exec 3< <(/bin/cat)
+input_pid=$!
+exec 4> >(/bin/cat >&2)
+error_pid=$!
+"$@" <&3 2>&4 3<&- 4>&- | /bin/cat 3<&- 4>&-
+status=$?
+exec 3<&- 4>&-
+kill "$input_pid" 2>/dev/null || :
+wait "$input_pid" 2>/dev/null || :
+wait "$error_pid"
+exit "$status"`;
+
 export function sandboxBackend(env = process.env) {
   if (env.PI_CODEX_SANDBOX_BIN) return env.PI_CODEX_SANDBOX_BIN;
   const home = env.HOME ?? homedir();
@@ -121,14 +136,15 @@ export function launch(argv = process.argv.slice(2)) {
   if (argv.length !== 2 || argv[0] !== "-c") throw new Error("Codex shell expects exactly: -c <command>.");
   if (typeof process.execve !== "function") throw new Error("Codex shell requires Node with process.execve (Node >=22.19).");
   const cwd = realpathSync(process.cwd());
-  const agentDir = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
+  const runtime = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
+  const agentDir = realpathSync(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"));
   const metal = metalDigest ? metalBackend(agentDir) : undefined;
   if (metal && metal.sha256 !== metalDigest) throw new Error("Metal backend changed after approval");
   const codex = metal?.binary ?? realpathSync(sandboxBackend());
   const cache = join(homedir(), ".cache/pi-codex-sandbox");
   mkdirSync(cache, { recursive: true, mode: 0o700 });
   // Never make the launcher, its backend, or its private configuration writable to commands.
-  for (const protectedPath of [agentDir, codex, realpathSync(cache)]) {
+  for (const protectedPath of [agentDir, runtime, codex, realpathSync(cache)]) {
     const rel = relative(cwd, protectedPath);
     if (rel === "" || (!rel.startsWith("../") && rel !== ".." && !isAbsolute(rel))) {
       throw new Error("Start Pi in a project directory, not an ancestor of its sandbox/configuration files.");
@@ -139,6 +155,7 @@ export function launch(argv = process.argv.slice(2)) {
   mkdirSync(config, { recursive: true, mode: 0o700 });
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
+  env.PI_CODING_AGENT_DIR = agentDir;
   env.CODEX_HOME = config; // Do not inherit the user's Codex profiles, auth or allow rules.
   env.TMPDIR = scratch; // A private per-project temp root, not all of /tmp.
   delete env.BASH_ENV;
@@ -159,7 +176,7 @@ export function launch(argv = process.argv.slice(2)) {
   // The command stays an argv value to Codex, never evaluated by this outer shell.
   if (process.platform === "linux") {
     process.execve("/bin/bash", ["bash", "--noprofile", "--norc", "-c",
-      'set -o pipefail; "$@" < <(/bin/cat) 2> >(/bin/cat >&2) | /bin/cat',
+      LINUX_STDIO_RELAY,
       "pi-codex-sandbox", codex, ...args], env);
   } else {
     // Keep the original PGID for cancellation/timeout on both platforms.

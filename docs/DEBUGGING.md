@@ -88,7 +88,7 @@ is in the same backup directory as `fresh-pi.json`. Existing interactive session
 were not restarted. No driver, file, network or approval rule changed.
 
 For an intended GPU command, preserve its real failure status (`set -o pipefail`
-when using a pipeline), keep it foreground with `timeoutAction: "kill"`, and
+when using a pipeline), use native foreground `bash` with an explicit `timeout`, and
 make a missing-device probe exit nonzero. Then request `gpu: "metal"` against
 the exact captured `failed_call_id`. The confirmed command runs once for at
 most 60 seconds. Installation or restarting Pi never enables ordinary Bash GPU
@@ -151,39 +151,14 @@ return a structured error rather than throw: a child exits 7, the wrapper
 fulfills, and the command-access hook sees `isError: false`. No eligible
 failed call is recorded. This is not a human refusal.
 
-`patch-background-bash.mjs` makes the shared completion handler reject on a
-nonzero or missing process exit code. Output text is not used to infer
-failure. Cancellation, timeout and background completion remain intact.
+The package now keeps foreground `bash` native, so Pi's structured failure result is preserved. `bash_background` uses the package's public factory with background execution forced; its completion notification already checks the process exit code. No installed files are rewritten.
 
-The patch accepts only the exact known 0.0.3 artifact, retains a backup,
-checks for concurrent target replacement, and atomically replaces one file.
-Unknown versions/content are refused. An existing patch is accepted only
-when reversing it reproduces the original SHA-256.
-
-Operator activation, outside the agent's protected runtime write boundary:
-
-```sh
-node scripts/patch-background-bash.mjs \
-  "$HOME/.pi/agent/npm/node_modules/@richardgill/pi-background-bash"
-```
-
-Restart Pi afterward. Fixture tests are not evidence that an existing
-session loaded the patch. A package reinstall can remove it; revalidate
-and reapply the pinned patch after reinstalling 0.0.3. A newer package
-requires compatibility review, not forced patching.
-
-Tests use the installed Pi SDK and an unmodified package copy, no shell or
-provider calls. They also exercise command-access capture and human refusal:
-
-```sh
-PI_BACKGROUND_BASH_SOURCE=/canonical/path/to/unmodified/package \
-  node --test --import ./tests/resolve-pi.mjs tests/background-bash-status.test.mjs
-```
+Reinstall this configuration and restart Pi after validating the migration. The upstream background package must remain installed with `extensions: []`; otherwise its old foreground replacement can load alongside the adapter. Inspect `doctor --installed` for both package registration and filtering. A command that exits successfully while printing an error-like sentence must still remain a success.
 
 ## Avoid opaque waits, not security boundaries
 
 - Start known long operations in the background with an explicit job-level
-  deadline when they are finite tasks. Bash handoff timeout is not a kill
+  deadline when they are finite tasks. `bash_background` has no automatic kill
   deadline. Keep long-lived servers explicitly separate.
 - Preserve the process ID, raw log location, exit status and partial effects.
   A heartbeat proves the supervisor is responsive, not that the job advances.

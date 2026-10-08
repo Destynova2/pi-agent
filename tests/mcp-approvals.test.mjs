@@ -3,8 +3,11 @@ import { test } from "node:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { APPROVAL_CHOICES, McpApprovals, fingerprint, serverIdentity } from "../lib/mcp-approvals.ts";
 import { McpConnection } from "../extensions/mcp/client.ts";
+
+const projectAccess = { operation: "engine-v1", label: "Always allow this engine for this project", detail: "All engine operations, including writes, without further review. Revoke with /engine permissions." };
 
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-approvals-")));
@@ -93,7 +96,7 @@ test("refusal does not nag; aborted, stale and changed-configuration answers cre
   let valid = true;
   f.ctx.ui.select = async () => { valid = false; return APPROVAL_CHOICES[3]; };
   await assert.rejects(f.approvals.authorize(f.ctx, { ...f.request, revalidate: () => { if (!valid) throw new Error("changed config"); } }), /changed config/);
-  assert.deepEqual(readdirSync(f.agent), [], "failed approvals never create private grant files");
+  assert.deepEqual(readdirSync(f.agent), ["permission-audit"], "failed approvals only create an audit trail, never grant files");
 });
 
 test("parallel requests share only remembered consent and preserve complete request display", async t => {
@@ -184,4 +187,76 @@ test("revocation while a server starts is checked before the actual tool dispatc
   finish();
   await assert.rejects(pending, /revoked/);
   assert.equal(calls.includes("tools/call"), false);
+});
+
+test("second human request offers project resource access across commands and restarts, never infers consent", async t => {
+  const f = fixture(t), request = { ...f.request, remember: false, interactiveOnly: true, projectAccess };
+  await f.approvals.authorize(f.ctx, request);
+  const directory = join(f.agent, "mcp-approvals", fingerprint(f.cwd), fingerprint(request.resource));
+  assert.ok(readdirSync(directory).every(name => name.startsWith("seen-")), "only an offer marker, no execution grant");
+  let prompts = 0;
+  f.ctx.ui.select = async (title, options) => {
+    prompts++; assert.deepEqual(options, [...APPROVAL_CHOICES.slice(0, 2), projectAccess.label]);
+    assert.match(title, /All engine operations/); return prompts === 1 ? APPROVAL_CHOICES[1] : projectAccess.label;
+  };
+  const next = new McpApprovals(f.agent);
+  await next.authorize(f.ctx, { ...request, operation: "second" });
+  await next.authorize(f.ctx, { ...request, operation: "third" });
+  assert.equal(prompts, 2, "second once consent does not save a permanent grant");
+  f.ctx.ui.select = async () => assert.fail("saved explicit project resource grant skips prompts");
+  const ticket = await new McpApprovals(f.agent).authorize(f.ctx, { ...request, operation: "other arguments and mutation" }); ticket();
+  const db = new DatabaseSync(join(f.agent, "permission-audit/requests.sqlite"), { readOnly: true });
+  try { assert.deepEqual(db.prepare("SELECT source, scope FROM permission_requests ORDER BY rowid").all().map(row => [row.source, row.scope]), [["human", "once"], ["human", "once"], ["human", "project"], ["project", "project"]]); }
+  finally { db.close(); }
+  assert.ok(readdirSync(directory).some(name => /^[a-f0-9]{64}\.json$/.test(name)));
+  const raw = readdirSync(directory).map(name => readFileSync(join(directory, name), "utf8")).join("");
+  assert.doesNotMatch(raw, /All engine|Always allow|other arguments/);
+  f.ctx.hasUI = false;
+  await assert.rejects(next.authorize(f.ctx, request), /interactive parent/);
+});
+
+test("repeated project grant binds project, resource, executable identity and scope; revocation crosses instances", async t => {
+  const f = fixture(t), request = { ...f.request, remember: false, interactiveOnly: true, projectAccess };
+  await f.approvals.authorize(f.ctx, request);
+  f.ctx.ui.select = async () => projectAccess.label;
+  const granted = await f.approvals.authorize(f.ctx, request);
+  const other = new McpApprovals(f.agent);
+  const reused = await other.authorize(f.ctx, { ...request, operation: "different" });
+  f.ctx.ui.select = async (_title, options) => { assert.deepEqual(options, APPROVAL_CHOICES.slice(0, 2)); return APPROVAL_CHOICES[1]; };
+  const elsewhere = join(f.root, "elsewhere"); mkdirSync(elsewhere);
+  await other.authorize({ ...f.ctx, cwd: elsewhere }, request);
+  for (const changed of [{ identity: "changed" }, { resource: "other" }, { projectAccess: { ...projectAccess, operation: "engine-v2" } }]) await other.authorize(f.ctx, { ...request, ...changed });
+  other.revoke(f.cwd, request.resource);
+  assert.throws(granted, /revoked/); assert.throws(reused, /revoked/);
+  const directory = join(f.agent, "mcp-approvals", fingerprint(f.cwd), fingerprint(request.resource));
+  assert.deepEqual(readdirSync(directory), ["epoch"]);
+  await f.approvals.authorize(f.ctx, request);
+});
+
+test("first request cannot accept project consent; canceled or revoked second prompts never save it", async t => {
+  for (const mode of ["forged-first", "abort", "revoke", "reset"]) {
+    const f = fixture(t), request = { ...f.request, remember: false, interactiveOnly: true, projectAccess };
+    if (mode !== "forged-first") await f.approvals.authorize(f.ctx, request);
+    const controller = new AbortController();
+    f.ctx.ui.select = async () => {
+      if (mode === "abort") controller.abort();
+      if (mode === "revoke") new McpApprovals(f.agent).revoke(f.cwd, request.resource);
+      if (mode === "reset") f.approvals.reset();
+      return projectAccess.label;
+    };
+    await assert.rejects(f.approvals.authorize(f.ctx, request, controller.signal));
+    f.ctx.ui.select = async (_title, choices) => { assert.ok(choices.includes(APPROVAL_CHOICES[1])); return APPROVAL_CHOICES[1]; };
+    await new McpApprovals(f.agent).authorize(f.ctx, request);
+  }
+});
+
+test("repeat offers show their full scope to the display guard and serialize concurrent prompts", async t => {
+  const f = fixture(t), seen = [];
+  const request = { ...f.request, remember: false, interactiveOnly: true, projectAccess, beforePrompt: (prompt, choices) => seen.push({ prompt, choices: [...choices] }) };
+  let prompts = 0;
+  f.ctx.ui.select = async (_title, choices) => { prompts++; return choices.includes(projectAccess.label) ? projectAccess.label : APPROVAL_CHOICES[1]; };
+  await Promise.all([f.approvals.authorize(f.ctx, request), f.approvals.authorize(f.ctx, { ...request, operation: "other" })]);
+  assert.equal(prompts, 2); assert.equal(seen[0].choices.length, 2); assert.equal(seen[1].choices.length, 3);
+  assert.match(seen[1].prompt, /including writes, without further review/);
+  await f.approvals.authorize(f.ctx, { ...request, operation: "another" }); assert.equal(prompts, 2);
 });

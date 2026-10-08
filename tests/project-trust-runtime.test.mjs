@@ -5,24 +5,24 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { closeSync, openSync } from "node:fs";
 import { test } from "node:test";
 import { findPiPackageJson } from "../lib/resolve-pi.mjs";
-import { patchProjectTrust } from "../scripts/patch-project-trust.mjs";
+import { confinedArgs } from "../scripts/update-runtime.mjs";
 
 const policy = fileURLToPath(new URL("../extensions/tool-policy/index.ts", import.meta.url));
 
-test("real bundled CLI starts without --no-approve and never loads project code", { timeout: 90000 }, async () => {
+test("real bundled CLI uses native --no-approve and never loads project code", { timeout: 90000 }, async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "pi-trust-runtime-")));
   const installed = dirname(findPiPackageJson());
   const staged = join(root, "pi");
   const agent = join(root, "agent"), home = join(root, "home");
   try {
-    await cp(installed, staged, { recursive: true });
+    await cp(installed, staged, { recursive: true, dereference: false });
     // Resolve the dependency tree instead of assuming a global npm layout;
     // PI_PACKAGE_JSON can point at an isolated runtime copy.
     const jiti = createRequire(join(installed, "package.json")).resolve("jiti/package.json");
     await symlink(dirname(dirname(jiti)), join(root, "node_modules"));
-    await patchProjectTrust(staged);
     await mkdir(agent); await mkdir(home);
     await writeFile(join(agent, "settings.json"), JSON.stringify({ packages: [], defaultProvider: "offline-fixture", defaultModel: "unused" }));
     const probe = join(root, "probe.ts");
@@ -47,16 +47,21 @@ export default function(pi) {
       }
       // Even an existing trusted entry must lose to the global confined-tool policy.
       await writeFile(join(agent, "trust.json"), JSON.stringify({ [cwd]: true }));
-      const child = spawnSync(process.execPath, [join(staged, "dist/bundle/cli.js"), "--offline", "--mode", "rpc", "--no-session", "--extension", policy, "--extension", probe], {
-        cwd, encoding: "utf8", input: "", timeout: 25000, maxBuffer: 2 * 1024 * 1024,
-        env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agent, PI_PACKAGE_JSON: join(staged, "package.json"), PI_TRUST_PROOF: proof },
-      });
-      assert.equal(child.error, undefined, child.stderr);
-      assert.equal(child.status, 0, child.stderr);
-      assert.doesNotMatch(child.stdout + child.stderr, /UNTRUSTED_PROJECT_CODE_EXECUTED|Failed to load extension/);
+      const log = join(root, `startup-${resources}.log`), fd = openSync(log, "w", 0o600);
+      let child;
+      try {
+        child = spawnSync(process.execPath, [join(staged, "dist/bundle/cli.js"), ...confinedArgs(["--offline", "--mode", "rpc", "--no-session", "--extension", policy, "--extension", probe])], {
+          cwd, stdio: ["ignore", fd, fd], timeout: 25000,
+          env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agent, PI_PACKAGE_JSON: join(staged, "package.json"), PI_TRUST_PROOF: proof },
+        });
+      } finally { closeSync(fd); }
+      const output = await readFile(log, "utf8");
+      assert.equal(child.error, undefined, output);
+      assert.equal(child.status, 0, output);
+      assert.doesNotMatch(output, /UNTRUSTED_PROJECT_CODE_EXECUTED|Failed to load extension/);
       const result = JSON.parse(await readFile(proof, "utf8"));
       assert.equal(result.trusted, false, `${resources ? "resource" : "empty"} project must start confined`);
-      assert.ok(!result.argv.includes("--no-approve"), "no hidden CLI flag needed");
+      assert.ok(result.argv.includes("--no-approve"), "native trust override is required");
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

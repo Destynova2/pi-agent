@@ -56,12 +56,10 @@ run() {
   "$@" 2>&1 | tee "$stage/$log.log"
 }
 
-run check npm run check
-run fixture npm install --prefix "$stage/paste-fixture" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.0.0
-export PI_PASTE_PACKAGE_JSON="$stage/paste-fixture/node_modules/@earendil-works/pi-coding-agent/package.json"
+run check npm run check -- --evidence "$stage/check.json"
 run stage-install node scripts/install.mjs --target "$stage/agent"
 run stage-doctor node scripts/doctor.mjs --target "$stage/agent" --installed
-run integration env PI_CODING_AGENT_DIR="$stage/agent" npm run verify:integration
+run integration env PI_CODING_AGENT_DIR="$stage/agent" npm run verify:integration -- --reuse-check "$stage/check.json"
 
 printf '\nStaged checks passed. Close other Pi sessions before proceeding.\n'
 printf 'Deploy to %s with the existing installer backup? Type DEPLOY: ' "$target"

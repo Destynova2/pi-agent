@@ -69,3 +69,27 @@ test("aborted or malformed updates leave state untouched and explicit user repla
   f.entries.at(-1).data.items[0].status = "invented";
   assert.throws(() => f.context([]), /Invalid/);
 });
+
+test("native widget follows the current branch, concurrent delegations and session cleanup", async () => {
+  const f = fixture(), widgets = new Map();
+  f.ctx.mode = "tui";
+  f.ctx.ui.setWidget = (key, content) => widgets.set(key, content);
+  await f.events.get("session_start")({}, f.ctx);
+  assert.equal(widgets.get("task-progress"), undefined);
+  await f.call({ action: "start", task: "task", items: [first, second] });
+  assert.match(widgets.get("task-progress")[0], /0\/2/);
+  await f.call({ action: "update", items: [{ ...first, status: "done", evidence: "test passed" }] });
+  assert.match(widgets.get("task-progress")[0], /1\/2/);
+  for (const toolCallId of ["a", "b"]) f.events.get("tool_execution_start")({ toolName: "subagent", toolCallId }, f.ctx);
+  assert.match(widgets.get("task-progress")[1], /2/);
+  f.events.get("tool_execution_end")({ toolCallId: "a" }, f.ctx);
+  assert.match(widgets.get("task-progress")[1], /1/);
+  f.entries = [];
+  f.events.get("session_tree")({}, f.ctx);
+  assert.deepEqual(widgets.get("task-progress"), ["Delegations running: 1"]);
+  f.events.get("session_shutdown")({}, f.ctx);
+  assert.equal(widgets.get("task-progress"), undefined);
+  f.ctx.mode = "rpc";
+  f.ctx.ui.setWidget = () => assert.fail("RPC must not render terminal components");
+  await f.call({ action: "start", task: "headless", items: [first] });
+});

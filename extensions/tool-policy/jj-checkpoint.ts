@@ -1,10 +1,11 @@
+import { runtimeRoot } from "../../lib/runtime-paths.mjs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { McpApprovals, fingerprint, serverIdentity } from "../../lib/mcp-approvals.ts";
-import { checkpointReason, checkpointRoot, createCheckpointTransaction, closeCheckpointTransaction, publishCheckpoint, type CheckpointInspection, type CheckpointResult } from "../../lib/jj-checkpoint.ts";
+import { checkpointReason, checkpointRoot, checkpointIdentity, createCheckpointTransaction, closeCheckpointTransaction, publishCheckpoint, type CheckpointInspection, type CheckpointResult } from "../../lib/jj-checkpoint.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
 import { runProcess } from "../../lib/process.ts";
 import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
@@ -12,8 +13,8 @@ import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
-  const approvals = new McpApprovals(agentDir), launcher = join(agentDir, "scripts/codex-shell.mjs");
-  const command = [process.execPath, join(agentDir, "scripts/jj-checkpoint.mjs")].map(quote).join(" ");
+  const approvals = new McpApprovals(agentDir), launcher = join(runtimeRoot, "scripts/codex-shell.mjs");
+  const command = [process.execPath, join(runtimeRoot, "scripts/jj-checkpoint.mjs")].map(quote).join(" ");
   let tasks = new SessionTasks(), tail: Promise<unknown> = Promise.resolve();
   const reset = () => { approvals.reset(); const previous = tasks; tasks = new SessionTasks(); return previous.close(); };
   for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) pi.on(event, reset);
@@ -32,7 +33,7 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
   });
   pi.registerTool({
     name: "jj_checkpoint", label: "Save a local recovery point", executionMode: "sequential", exposure: "model-only",
-    description: "Before authorized file edits, initialize jj/Git only if missing, then save the current working files and return full operation/commit IDs. Existing Git index, branches, configuration and working files are preserved. Ordinary colocated repositories only. Local checkpoint consent is separate from Git commit/push consent and may be remembered per project. No restore, commit publication, network operation or arbitrary command. Ignored files and external state are not backed up; unsupported files/layouts fail explicitly.",
+    description: "Before authorized file edits, initialize jj/Git only if missing, then save the current working files and return full operation/commit IDs. Existing Git index, branches, configuration and working files are preserved. Ordinary main colocated repositories may have linked worktrees: those registrations, files and indexes remain untouched and are not backed up. Existing Git objects are read-only inputs to the isolated checkpoint. Local checkpoint consent is separate from Git commit/push consent and may be remembered per project. No restore, commit publication, network operation or arbitrary command. Ignored files and external state are not backed up; unsupported files/layouts fail explicitly.",
     promptGuidelines: ["Use once before each new authorized modification task, and before a separately requested risky phase. Reuse the checkpoint during continuation; do not reinitialize an existing jj workspace. Record both returned IDs and gitRef with the task. The private Git ref retains local file contents without creating a branch or publishing them. Do not run for read-only audits or from children. Missing jj needs installation approval; this tool never installs it. Report a blocked checkpoint without claiming recoverability. A checkpoint is not a full-system backup. Restore requires an explicit separate user request."],
     parameters: Type.Object({ reason: Type.String() }, { additionalProperties: false }),
     async execute(_id, input, signal, _update, ctx) {
@@ -52,7 +53,15 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
             if (output.error) throw new Error(output.error);
             validate(); return output.result;
           };
-          const info: CheckpointInspection = await query("inspect", cwd);
+          const inspect = async (): Promise<CheckpointInspection> => {
+            const root = checkpointRoot(cwd), identity = checkpointIdentity(root);
+            const inspected: CheckpointInspection = await query("inspect", cwd);
+            if (inspected.root !== root || checkpointRoot(cwd) !== root || checkpointIdentity(root) !== identity) throw new Error("Checkpoint repository changed during inspection");
+            // Codex can replace an empty .git with a protected mount. Keep the
+            // parent's identity, checked on both sides of every confined read.
+            return { ...inspected, identity };
+          };
+          const info = await inspect();
           if (info.root !== checkpointRoot(cwd)) throw new Error("Checkpoint root differs from the current project");
           const writePaths = [join(info.root, ".git"), join(info.root, ".jj")];
           commandWritableRoots(writePaths, cwd, agentDir, [getPackageDir()]);
@@ -67,13 +76,13 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
             return ctx.ui.select(title, choices, options);
           } } };
           const ticket = await approvals.authorize(scoped, {
-            resource: "jj-checkpoint", identity: fingerprint([info.identity, binary, gitBinary]), operation: "local-checkpoint-v1", remember: info.initialized, interactiveOnly: true,
+            resource: "jj-checkpoint", toolCallId: _id, auditOperation: "snapshot", identity: fingerprint([info.identity, binary, gitBinary]), operation: "local-checkpoint-v1", remember: info.initialized, interactiveOnly: true,
             title: "Autoriser les points de restauration jj ?",
             detail: `${info.root}\n${reason}\n${info.initialized ? "Consentement session/projet : futurs instantanés locaux." : "Initialise jj/Git et prend un premier instantané, cette fois uniquement."}\nFichiers suivis et nouveaux non ignorés. Aucun push ni restauration. Index et fichiers actuels conservés. Fichiers ignorés et état externe exclus.`,
             revalidate,
           }, owned);
           ticket();
-          const current: CheckpointInspection = await query("inspect", cwd);
+          const current = await inspect();
           if (fingerprint(current) !== fingerprint(info)) throw new Error("Checkpoint project changed during approval");
           const tx = createCheckpointTransaction(info);
           try {
@@ -81,9 +90,9 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
             // .jj is ordinary storage within the disposable cwd. Do not mount
             // its absent root: jj must create it itself on first initialization.
             const roots = commandWritableRoots([join(tx.stage, ".git")], tx.stage, agentDir, [getPackageDir()]);
-            const protectedMetadata = tx.gitBefore.size ? [join(tx.stage, ".git/config"), join(tx.stage, ".git/hooks")] : [];
+            const protectedMetadata = tx.gitBefore.size ? [join(tx.stage, ".git/config"), join(tx.stage, ".git/hooks"), ...(tx.pool ? [tx.pool.path, join(tx.stage, ".git/objects/info")] : [])] : [];
             const result: CheckpointResult = await query("snapshot", tx.stage, roots, protectedMetadata);
-            const latest: CheckpointInspection = await query("inspect", cwd);
+            const latest = await inspect();
             if (fingerprint(latest) !== fingerprint(info)) throw new Error("Checkpoint project changed while snapshotting");
             ticket();
             const published = publishCheckpoint(tx, result);

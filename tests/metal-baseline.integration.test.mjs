@@ -14,7 +14,7 @@ test("ordinary Codex Bash does not implicitly acquire Metal compute access", { s
   for (const path of [join(agent, "scripts"), cwd, home]) mkdirSync(path, { recursive: true });
   for (const file of ["codex-shell.mjs", "codex-network.mjs", "metal-backend.mjs"]) copyFileSync(new URL(`../scripts/${file}`, import.meta.url), join(agent, "scripts", file));
   copyFileSync(new URL("./fixtures/metal-probe.swift", import.meta.url), join(cwd, "probe.swift"));
-  const env = { ...process.env, HOME: home, PI_CODEX_SANDBOX_BIN: realpathSync(process.env.PI_CODEX_SANDBOX_BIN ?? join(homedir(), ".local/bin/codex")) };
+  const env = { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agent, PI_CODEX_SANDBOX_BIN: realpathSync(process.env.PI_CODEX_SANDBOX_BIN ?? join(homedir(), ".local/bin/codex")) };
   const run = command => spawnSync(process.execPath, [join(agent, "scripts/codex-shell.mjs"), "--offline", "-c", command], { cwd, env, encoding: "utf8", timeout: 60000 });
   try {
     const compiled = run(`/usr/bin/swiftc -module-cache-path ${quote(join(cwd, "module-cache"))} probe.swift -o metal-probe`);
