@@ -26,6 +26,16 @@ test("successful diagnostic text, ordinary application failures and Notes operat
   for (const toolName of ["note_add", "note_list"]) assert.equal(incidents.observe({ ...failure(), toolName }), undefined);
 });
 
+test("permission guidance names the Podman bridge and identifies expired command approvals", () => {
+  const incidents = new Incidents();
+  assert.match(incidents.observe(failure()).hint, /request_podman_access for the local Podman engine/);
+  for (const text of ["Command approval expired after five minutes", "Command approval is stale, expired or belongs to another workspace", "Podman approval expired"]) {
+    const incident = incidents.observe(failure(text, text));
+    assert.match(incident.body, /category=approval-state/);
+    assert.match(incident.hint, /failed_call_id cannot be reused/);
+  }
+});
+
 test("Metal unavailability does not suggest filesystem grants or an unrestricted retry", () => {
   const incident = new Incidents().observe(failure("metal-probe", "METAL_UNAVAILABLE: operation not permitted"));
   assert.match(incident.body, /category=gpu-unavailable/);

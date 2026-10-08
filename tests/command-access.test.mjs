@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { registerCommandAccess } from "../extensions/tool-policy/command-access.ts";
 import { commandWritableRoots } from "../scripts/codex-shell.mjs";
 import { runtimeRoot } from "../lib/runtime-paths.mjs";
@@ -177,6 +178,27 @@ test("expired failures, changed commands and results arriving after a session re
     await assert.rejects(f.request({ failed_call_id: "changed" }), /No eligible/);
     assert.equal(f.prompts, 0);
   } finally { await f.close(); }
+});
+
+test("expired confirmation is recorded as cancellation, even if a late answer says yes", async t => {
+  for (const answer of [false, true]) {
+    await t.test(String(answer), async t => {
+      let now = Date.now(); t.mock.method(Date, "now", () => now);
+      const f = fixture(async (_title, _text, options) => { now += options.timeout; return answer; });
+      try {
+        f.fail(); now += 9000;
+        await assert.rejects(f.request(), /expired after five minutes; no operation performed/);
+        await assert.rejects(f.request(), /No eligible/);
+        const db = new DatabaseSync(join(f.agent, "permission-audit/requests.sqlite"), { readOnly: true });
+        try {
+          const row = db.prepare("SELECT decision, status, source FROM permission_requests ORDER BY rowid LIMIT 1").get();
+          assert.deepEqual({ ...row }, { decision: "cancel", status: "cancelled", source: "unavailable" });
+          assert.equal(db.prepare("SELECT count(*) AS count FROM audit_events WHERE kind='permission.expired'").get().count, 1);
+        } finally { db.close(); }
+        assert.equal(f.prompts, 1); assert.deepEqual(f.journal, []);
+      } finally { await f.close(); }
+    });
+  }
 });
 
 test("new failures remain eligible after tree navigation or canceled session navigation", async () => {

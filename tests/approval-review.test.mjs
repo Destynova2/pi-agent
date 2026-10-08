@@ -235,7 +235,7 @@ test("review diagnostics retain precise failure codes and masked request context
   const f = fixture(t); await f.activate("auto-deny Build the local demo");
   const cases = [
     ["provider_error", () => { throw new Error("HTTP 401 api_key=provider-secret-value"); }],
-    ["incomplete_response", () => ({ stopReason: "error", errorMessage: "Account quota exhausted", content: [] })],
+    ["provider_error", () => ({ stopReason: "error", errorMessage: "HTTP 503 provider unavailable", content: [] })],
     ["unexpected_tool_call", () => ({ stopReason: "stop", content: [{ type: "toolCall", name: "bash" }] })],
     ["invalid_json", () => ({ stopReason: "stop", content: [{ type: "text", text: "not json" }] })],
     ["invalid_verdict", () => ({ stopReason: "stop", content: [{ type: "text", text: '{"decision":"allow","category":"secrets"}' }] })],
@@ -247,8 +247,60 @@ test("review diagnostics retain precise failure codes and masked request context
   const results = f.query("audit_events").filter(row => row.kind === "review.result").map(row => JSON.parse(row.payload_json));
   assert.deepEqual(results.map(value => value.diagnostic.code), [...cases.map(([code]) => code), "model_unavailable"]);
   assert.match(results[0].diagnostic.error.message, /HTTP 401/);
-  assert.equal(results[1].diagnostic.error.message, "Account quota exhausted");
+  assert.equal(results[1].diagnostic.error.message, "HTTP 503 provider unavailable");
   assert.doesNotMatch(JSON.stringify(f.query("audit_events")), /provider-secret-value/);
   assert.ok(f.query("permission_requests").every(row => row.status === "denied")); assert.equal(f.prompts, 0);
   assert.ok(f.query("audit_events").filter(row => row.kind === "review.request").every(row => row.request_id));
+});
+
+test("rate-limited reviews back off without reusing consent or switching models, then recover", async t => {
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  const f = fixture(t); await f.activate();
+  f.run = () => ({ stopReason: "error", errorMessage: '429 {"error":{"type":"rate_limit_error"}}', content: [] });
+  await f.authorize(); await f.authorize();
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].options.maxRetries, 0);
+  assert.equal(f.prompts, 2, "cooldown does not cache the previous human answer");
+  const results = f.query("audit_events").filter(row => row.kind === "review.result").map(row => JSON.parse(row.payload_json));
+  assert.deepEqual(results.map(row => row.diagnostic.code), ["provider_rate_limit", "reviewer_cooldown"]);
+  assert.equal(results[0].diagnostic.retryAfterMs, 60000);
+  assert.ok(f.query("permission_requests").every(row => row.source === "human"));
+  await f.activate("status"); assert.match(f.notices.at(-1), /fixture\/reviewer[\s\S]*rate-limited/);
+  now += 59999; await f.authorize(); assert.equal(f.calls.length, 1);
+  now++; f.run = undefined; await f.authorize();
+  assert.equal(f.calls.length, 2); assert.equal(f.prompts, 3);
+  assert.equal(f.query("permission_requests").at(-1).source, "policy");
+  await f.activate("status"); assert.doesNotMatch(f.notices.at(-1), /rate-limited/);
+});
+
+test("rate-limit cooldown respects auto-deny and never masks context or policy changes", async t => {
+  const f = fixture(t); await f.activate("auto-deny Build the local demo");
+  f.run = () => { throw Object.assign(new Error("Provider throttled"), { status: 429 }); };
+  await assert.rejects(f.authorize(), /unavailable/);
+  await assert.rejects(f.authorize(), /unavailable/);
+  assert.equal(f.calls.length, 1); assert.equal(f.prompts, 0);
+  f.messages.length = 0;
+  await assert.rejects(f.authorize(), /insufficient_context/);
+  f.messages.push({ type: "message", message: { role: "user", content: "Build only" } });
+  await f.activate("manual"); await f.authorize(); assert.equal(f.prompts, 1);
+  await f.activate("auto-deny Build only"); f.run = undefined;
+  await f.authorize(); assert.equal(f.calls.length, 2);
+  const other = fixture(t); await other.activate(); await other.authorize();
+  assert.equal(other.calls.length, 1, "an unrelated reviewer registry is unaffected");
+});
+
+test("reviewer HTTP retry hints are bounded and malformed hints use the default", async t => {
+  for (const [header, expected] of [["120", 120000], ["999999999999", 300000], ["0", 1000], ["invalid", 60000], ["", 60000]]) {
+    await t.test(header || "missing", async t => {
+      const f = fixture(t); await f.activate("auto-deny Build only");
+      f.run = () => {
+        f.calls.at(-1).options.onResponse({ status: 429, headers: { "Retry-After": header } });
+        return { stopReason: "error", errorMessage: "Throttled", content: [] };
+      };
+      await assert.rejects(f.authorize(), /unavailable/);
+      const diagnostic = JSON.parse(f.query("audit_events").find(row => row.kind === "review.result").payload_json).diagnostic;
+      assert.equal(diagnostic.code, "provider_rate_limit"); assert.equal(diagnostic.httpStatus, 429);
+      assert.equal(diagnostic.retryAfterMs, expected);
+      await assert.rejects(f.authorize(), /unavailable/); assert.equal(f.calls.length, 1);
+    });
+  }
 });

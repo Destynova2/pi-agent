@@ -88,7 +88,12 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
             const validate = () => {
               owned.throwIfAborted();
               verify(ctx);
-              if (root !== request.cwd || realpathSync(ctx.cwd) !== request.cwd || Date.now() > request.expires) throw new Error("Command approval is stale, expired or belongs to another workspace");
+              if (root !== request.cwd || realpathSync(ctx.cwd) !== request.cwd) throw new Error("Command approval is stale or belongs to another workspace");
+              if (Date.now() >= request.expires) {
+                audit.event("permission.expired", { expiresAt: new Date(request.expires).toISOString() });
+                audit.finish("cancelled", "unavailable", "once");
+                throw new Error("Command approval expired after five minutes; no operation performed. This failed_call_id is consumed. Inspect current state and partial effects before a new attempt.");
+              }
               if (!ctx.hasUI || !pi.getActiveTools().includes("request_command_access")) {
                 audit.finish("denied", "unavailable");
                 throw new Error("Command access requires interactive parent confirmation or automatic review");
@@ -110,12 +115,13 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
             try {
               if (review.decision === "allow") approved = true;
               else {
+                validate();
                 audit.prompted();
                 approved = await Promise.race([
                   audit.run(() => ctx.ui.confirm("Retry once with additional command access?", `The ENTIRE failed command will run again; earlier effects may repeat. Directories include their contents, but Codex may still forbid deleting or renaming the granted directory itself. ${gpu ? "Metal grants the command tree access to the GPU driver and shader compiler. " : ""}Workspace/temp permissions and network policy stay unchanged. No permanent grant, no execution outside Codex. Deadline: 60 seconds.\n${display}`, { signal: owned, timeout: Math.max(1, request.expires - Date.now()) })),
                   canceled,
                 ]);
-                audit.answered(owned.aborted ? "cancel" : approved ? "allow" : "deny");
+                audit.answered(owned.aborted || Date.now() >= request.expires ? "cancel" : approved ? "allow" : "deny");
               }
             } finally { owned.removeEventListener("abort", abort); }
             review.check();

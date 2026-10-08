@@ -23,6 +23,8 @@ export interface ReviewRecord {
 }
 
 interface ReviewRequest { resource: string; operation: string; detail: string }
+// Only suppress unavailable model calls, never cache permission decisions.
+const retryTimes = new WeakMap<ExtensionContext["modelRegistry"], Map<string, number>>();
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const POLICY = `You are a permission reviewer, separate from the working agent. You cannot execute tools.
 Return only JSON: {"decision":"allow|ask|deny","category":"within_scope|out_of_scope|destructive|secrets|permission_change|insufficient_context"}.
@@ -89,58 +91,87 @@ export async function reviewApproval(agentDir: string, ctx: ExtensionContext, re
   let record: ReviewRecord = { decision: "ask", category: "insufficient_context", model: `${policy.provider}/${policy.model}`, policy: digest };
   const payload = JSON.stringify({ project: cwd, scope: policy.scope, userMessages: JSON.parse(messages), action: request });
   const started = Date.now();
-  let diagnostic: { code: string; error?: unknown; stopReason?: string } = { code: messages === "[]" ? "no_user_context" : "payload_too_large" };
+  let diagnostic: { code: string; error?: unknown; stopReason?: string; httpStatus?: number; retryAfterMs?: number } = { code: messages === "[]" ? "no_user_context" : "payload_too_large" };
   audit.event("review.request", { model: record.model, policy: digest, systemPrompt: POLICY, request: JSON.parse(payload), bytes: Buffer.byteLength(payload) });
   if (messages !== "[]" && Buffer.byteLength(payload) <= 48000) {
-    const deadline = AbortSignal.any([AbortSignal.timeout(30000), ...(signal ? [signal] : [])]);
-    let abort = () => {};
-    try {
-      diagnostic = { code: "model_unavailable" };
-      const model = ctx.modelRegistry.find(policy.provider, policy.model);
-      if (!model) throw new Error("Reviewer model unavailable");
-      const canceled = new Promise<never>((_resolve, reject) => {
-        abort = () => reject(new Error("Review canceled"));
-        deadline.addEventListener("abort", abort, { once: true });
-        if (deadline.aborted) abort();
-      });
-      diagnostic = { code: "provider_error" };
-      const response = await Promise.race([ctx.modelRegistry.streamSimple(model, {
-        systemPrompt: POLICY,
-        messages: [{ role: "user", content: payload, timestamp: Date.now() }],
-      }, { signal: deadline, maxTokens: 512, reasoning: "minimal", cacheRetention: "none" }).result(), canceled]);
-      diagnostic = { code: "incomplete_response", stopReason: response.stopReason };
-      if (response.stopReason !== "stop") throw new Error(response.errorMessage || "Incomplete review");
-      diagnostic = { code: "unexpected_tool_call" };
-      if (response.content.some(part => part.type === "toolCall")) throw new Error("Reviewer returned a tool call");
-      const text = response.content.filter(part => part.type === "text").map(part => part.text).join("");
-      diagnostic = { code: "oversized_response" };
-      if (text.length > 4000) throw new Error("Oversized review");
-      diagnostic = { code: "invalid_json" };
-      const value: unknown = JSON.parse(text);
-      diagnostic = { code: "invalid_verdict" };
-      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid review");
-      const verdict = value as Record<string, unknown>;
-      if (Object.keys(verdict).sort().join(",") !== "category,decision" || !["allow", "ask", "deny"].includes(String(verdict.decision)) ||
-          !["within_scope", "out_of_scope", "destructive", "secrets", "permission_change", "insufficient_context"].includes(String(verdict.category)) ||
-          verdict.decision === "allow" && verdict.category !== "within_scope") throw new Error("Invalid review verdict");
-      record = { ...record, decision: verdict.decision as ReviewRecord["decision"], category: verdict.category as ReviewRecord["category"] };
-      diagnostic = { code: "verdict" };
-    } catch (error) {
+    let retries = retryTimes.get(ctx.modelRegistry);
+    if (!retries) { retries = new Map(); retryTimes.set(ctx.modelRegistry, retries); }
+    const retryAt = retries.get(digest) ?? 0;
+    if (retryAt > Date.now()) {
       record = { ...record, decision: "ask", category: "unavailable" };
-      diagnostic = { ...diagnostic, ...(deadline.aborted ? { code: signal?.aborted ? "cancelled" : "timeout" } : {}), error };
+      diagnostic = { code: "reviewer_cooldown", retryAfterMs: retryAt - Date.now() };
+    } else {
+      const deadline = AbortSignal.any([AbortSignal.timeout(30000), ...(signal ? [signal] : [])]);
+      let httpStatus: number | undefined, retryAfterMs: number | undefined;
+      let abort = () => {};
+      try {
+        diagnostic = { code: "model_unavailable" };
+        const model = ctx.modelRegistry.find(policy.provider, policy.model);
+        if (!model) throw new Error("Reviewer model unavailable");
+        const canceled = new Promise<never>((_resolve, reject) => {
+          abort = () => reject(new Error("Review canceled"));
+          deadline.addEventListener("abort", abort, { once: true });
+          if (deadline.aborted) abort();
+        });
+        diagnostic = { code: "provider_error" };
+        const response = await Promise.race([ctx.modelRegistry.streamSimple(model, {
+          systemPrompt: POLICY,
+          messages: [{ role: "user", content: payload, timestamp: Date.now() }],
+        }, { signal: deadline, maxTokens: 512, reasoning: "minimal", cacheRetention: "none", maxRetries: 0,
+          onResponse(response) {
+            httpStatus = response.status;
+            const header = Object.entries(response.headers).find(([name]) => name.toLowerCase() === "retry-after")?.[1];
+            retryAfterMs = header ? (/^\d+$/.test(header.trim()) ? Number(header) * 1000 : Date.parse(header) - Date.now()) : undefined;
+          },
+        }).result(), canceled]);
+        diagnostic = { code: response.stopReason === "error" ? "provider_error" : "incomplete_response", stopReason: response.stopReason };
+        if (response.stopReason !== "stop") throw new Error(response.errorMessage || "Incomplete review");
+        diagnostic = { code: "unexpected_tool_call" };
+        if (response.content.some(part => part.type === "toolCall")) throw new Error("Reviewer returned a tool call");
+        const text = response.content.filter(part => part.type === "text").map(part => part.text).join("");
+        diagnostic = { code: "oversized_response" };
+        if (text.length > 4000) throw new Error("Oversized review");
+        diagnostic = { code: "invalid_json" };
+        const value: unknown = JSON.parse(text);
+        diagnostic = { code: "invalid_verdict" };
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid review");
+        const verdict = value as Record<string, unknown>;
+        if (Object.keys(verdict).sort().join(",") !== "category,decision" || !["allow", "ask", "deny"].includes(String(verdict.decision)) ||
+            !["within_scope", "out_of_scope", "destructive", "secrets", "permission_change", "insufficient_context"].includes(String(verdict.category)) ||
+            verdict.decision === "allow" && verdict.category !== "within_scope") throw new Error("Invalid review verdict");
+        record = { ...record, decision: verdict.decision as ReviewRecord["decision"], category: verdict.category as ReviewRecord["category"] };
+        diagnostic = { code: "verdict" };
+        retries.delete(digest);
+      } catch (error) {
+        record = { ...record, decision: "ask", category: "unavailable" };
+        const status = httpStatus ?? (error && typeof error === "object" && "status" in error && typeof error.status === "number" ? error.status : undefined);
+        const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+        if (!deadline.aborted && diagnostic.code === "provider_error" && (status === 429 || /\b429\b|rate_limit_error|rate[ _-]?limit|quota (?:exceeded|exhausted)/i.test(message))) {
+          const delay = Math.max(1000, Math.min(300_000, Number.isFinite(retryAfterMs) ? retryAfterMs! : 60_000));
+          for (const [key, until] of retries) if (until <= Date.now()) retries.delete(key);
+          if (retries.size >= 64) retries.delete(retries.keys().next().value!);
+          retries.set(digest, Date.now() + delay);
+          diagnostic = { ...diagnostic, code: "provider_rate_limit", retryAfterMs: delay };
+        }
+        diagnostic = { ...diagnostic, ...(status !== undefined ? { httpStatus: status } : {}), ...(deadline.aborted ? { code: signal?.aborted ? "cancelled" : "timeout" } : {}), error };
+      }
+      finally { deadline.removeEventListener("abort", abort); }
     }
-    finally { deadline.removeEventListener("abort", abort); }
   }
   audit.event("review.result", { ...record, diagnostic, durationMs: Date.now() - started });
   try { check(); }
   catch (error) { audit.event("review.invalidated", { error }); throw error; }
   audit.reviewed(record);
   if (record.decision === "allow") return { decision: "allow" as const, check };
+  const recovery = diagnostic.retryAfterMs
+    ? `Reviewer rate-limited; next model attempt in ${Math.ceil(diagnostic.retryAfterMs / 1000)}s. /approvals status shows the pinned reviewer.`
+    : record.category === "unavailable" ? "Check the reviewer with /approvals status or request an explicit human decision."
+    : "Revise the scope with /approvals or request an explicit human decision.";
   if (record.decision === "deny" || policy.fallback === "deny") {
     audit.finish("denied", "policy", "once");
-    throw new Error(`Automatic approval refused [${record.category}]. No operation performed. Revise the scope with /approvals or request an explicit human decision; do not retry through another executor.`);
+    throw new Error(`Automatic approval refused [${record.category}/${diagnostic.code}]. No operation performed. ${recovery} Do not retry through another executor.`);
   }
-  ctx.ui.notify?.(`Automatic approval needs a human decision [${record.category}].`, "info");
+  ctx.ui.notify?.(`Automatic approval needs a human decision [${record.category}/${diagnostic.code}].${record.category === "unavailable" ? ` ${recovery}` : ""}`, "info");
   return { decision: "manual" as const, check };
 }
 
@@ -154,7 +185,8 @@ export function registerApprovalReview(pi: ExtensionAPI, agentDir: string, verif
       const [command = "status", ...words] = args.trim().split(/\s+/), scope = words.join(" ");
       if (!command || command === "status") {
         const policy = readPolicy(agentDir, ctx.cwd);
-        ctx.ui.notify(policy?.mode === "auto" ? `Auto review: ${policy.provider}/${policy.model}; uncertainty: ${policy.fallback}; project: ${policy.cwd}\nScope: ${policy.scope}` : "Manual approval. No automatic review policy for this project.", "info");
+        const retryAt = policy ? retryTimes.get(ctx.modelRegistry)?.get(hash(JSON.stringify(policy))) ?? 0 : 0;
+        ctx.ui.notify(policy?.mode === "auto" ? `Auto review: ${policy.provider}/${policy.model}; uncertainty: ${policy.fallback}; project: ${policy.cwd}\nScope: ${policy.scope}${retryAt > Date.now() ? `\nReviewer rate-limited; next model attempt in ${Math.ceil((retryAt - Date.now()) / 1000)}s. Requests use the configured uncertainty policy meanwhile.` : ""}` : "Manual approval. No automatic review policy for this project.", "info");
         return;
       }
       if (!["manual", "auto", "auto-deny"].includes(command) || command !== "manual" && (!scope || scope.length > 4000 || !ctx.model)) throw new Error("Usage: /approvals manual | auto <explicit project scope> | auto-deny <explicit project scope>");
