@@ -83,16 +83,16 @@ function userContext(ctx: ExtensionContext): string {
 }
 
 /** No model-generated grant is saved. Every new action is reviewed against current user intent. */
-export async function reviewApproval(agentDir: string, ctx: ExtensionContext, request: ReviewRequest, audit: PermissionAudit, signal?: AbortSignal, taskOnly = false) {
+export async function reviewApproval(agentDir: string, ctx: ExtensionContext, request: ReviewRequest, audit: PermissionAudit, signal?: AbortSignal, mode: "policy" | "task" | "task-with-prompt" = "policy") {
   // New one-command capabilities can qualify current user intent without creating a
   // standing grant. An explicitly saved manual policy always takes precedence.
-  const currentPolicy = () => readPolicy(agentDir, ctx.cwd) ?? (taskOnly ? {
-    version: 1 as const, revision: "task", cwd: realpathSync(ctx.cwd), mode: "auto" as const, fallback: "deny" as const,
+  const currentPolicy = () => readPolicy(agentDir, ctx.cwd) ?? (mode !== "policy" ? {
+    version: 1 as const, revision: "task", cwd: realpathSync(ctx.cwd), mode: "auto" as const, fallback: mode === "task-with-prompt" ? "ask" as const : "deny" as const,
     scope: "Only the work explicitly requested in the current user messages. No standing authorization beyond that task.",
     provider: ctx.model?.provider ?? "", model: ctx.model?.id ?? "",
   } : undefined);
   const policy = currentPolicy();
-  if (!policy || policy.mode === "manual") return { decision: "manual" as const, check() {} };
+  if (!policy || policy.mode === "manual" && mode !== "task-with-prompt") return { decision: "manual" as const, check() {} };
   if (process.env.PI_SUBAGENT_CHILD) throw new Error("Automatic approval is parent-only");
   const cwd = realpathSync(ctx.cwd), digest = hash(JSON.stringify(policy)), session = ctx.sessionManager.getSessionId();
   const messages = userContext(ctx);
@@ -102,8 +102,9 @@ export async function reviewApproval(agentDir: string, ctx: ExtensionContext, re
         hash(JSON.stringify(currentPolicy()) ?? "null") !== digest) throw new Error("Automatic approval became stale or was revoked");
   };
   check();
+  if (policy.mode === "manual") return { decision: "manual" as const, check };
   const refusalKey = hash(JSON.stringify([realpathSync(agentDir), cwd, session, digest, messages, request]));
-  const previousRefusal = refusedReviews.get(refusalKey);
+  const previousRefusal = refusedReviews.get(refusalKey) ?? (!ctx.hasUI ? refusedReviews.get(`${refusalKey}:headless`) : undefined);
   if (previousRefusal) {
     audit.finish("denied", "refusal_cache", "once");
     throw new Error(`Automatic approval previously refused [${previousRefusal}] for this unchanged request; no repeated review or execution.`);
@@ -187,10 +188,13 @@ export async function reviewApproval(agentDir: string, ctx: ExtensionContext, re
     ? `Reviewer rate-limited; next model attempt in ${Math.ceil(diagnostic.retryAfterMs / 1000)}s. /approvals status shows the pinned reviewer.`
     : record.category === "unavailable" ? "Check the reviewer with /approvals status or request an explicit human decision."
     : "Revise the scope with /approvals or request an explicit human decision.";
-  if (record.decision === "deny" || policy.fallback === "deny" || taskOnly || !ctx.hasUI) {
+  if (record.decision === "deny" || policy.fallback === "deny" || mode === "task" || !ctx.hasUI) {
     if (record.category !== "unavailable") {
       if (refusedReviews.size >= 512) refusedReviews.delete(refusedReviews.keys().next().value!);
-      refusedReviews.set(refusalKey, record.category);
+      // Missing UI is not a human refusal. A later interactive call can ask,
+      // while explicit denials and auto-deny remain binding across UI changes.
+      const key = record.decision === "ask" && policy.fallback !== "deny" && mode !== "task" ? `${refusalKey}:headless` : refusalKey;
+      refusedReviews.set(key, record.category);
     }
     audit.finish("denied", "policy", "once");
     throw new Error(`Automatic approval refused [${record.category}/${diagnostic.code}]. No operation performed. ${recovery} Continue independent work; do not retry through another executor or broaden the policy yourself.`);

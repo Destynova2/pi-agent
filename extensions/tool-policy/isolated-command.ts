@@ -37,7 +37,7 @@ export function registerIsolatedCommand(pi: ExtensionAPI, agentDir: string, veri
           const snapshot = snapshotCommand(cwd, agentDir, request.inputs, request.binaries);
           try {
             const args = isolatedArgs(snapshot, request.command, runtime);
-            const review = await reviewApproval(agentDir, ctx, { resource: "isolated-command", operation: "run", detail: JSON.stringify({ ...request, cwd, snapshot: { sha256: snapshot.sha256, bytes: snapshot.bytes, inputs: snapshot.inputs, binaries: snapshot.binaries }, capabilities: "private offline snapshot; no host writes, services, secrets or external network; output only", timeoutMs: 120_000 }) }, audit, owned, true);
+            const review = await reviewApproval(agentDir, ctx, { resource: "isolated-command", operation: "run", detail: JSON.stringify({ ...request, cwd, snapshot: { sha256: snapshot.sha256, bytes: snapshot.bytes, inputs: snapshot.inputs, binaries: snapshot.binaries }, capabilities: "private offline snapshot; no host writes, services, secrets or external network; output only", timeoutMs: 120_000 }) }, audit, owned, "task");
             review.check(); validate();
             if (review.decision !== "allow") { audit.finish("denied", "policy", "once"); throw new Error("Automatic review disabled by manual policy; no isolated command executed"); }
             audit.finish("granted", "policy", "once");

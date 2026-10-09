@@ -3,6 +3,8 @@ import { mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { PermissionAudit } from "../../lib/permission-audit.ts";
 import { reviewApproval } from "../../lib/approval-review.ts";
+import { approvalDialog } from "../../lib/approval-dialog.ts";
+import { APPROVAL_CHOICES, approvalDisplayText } from "../../lib/mcp-approvals.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
 import { runProcess } from "../../lib/process.ts";
 import { runtimeRoot } from "../../lib/runtime-paths.mjs";
@@ -16,11 +18,13 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
   let epoch = 0;
   let tail: Promise<unknown> = Promise.resolve();
   const refused = new Set<string>();
+  const refusedCommands = new Set<string>();
   let tasks = new SessionTasks();
   const reset = () => {
     epoch++;
     root = undefined;
     refused.clear();
+    refusedCommands.clear();
     if (process.env.PI_CODEX_NETWORK_GRANTS === grantPath) delete process.env.PI_CODEX_NETWORK_GRANTS;
     if (grantPath) rmSync(grantPath, { force: true });
     grantPath = undefined;
@@ -36,7 +40,7 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
   pi.registerTool({
     name: "request_network_access",
     label: "Request network access",
-    description: "With command: qualify and execute that exact command once in Codex with only the named public hosts for its lifetime. Tool-free LLM review, no dialog or stored grant, including without UI. Existing explicit denies win; uploads/all ports are included, private networks and host sockets remain blocked. Without command: legacy session grant, requiring manual human consent. No filesystem escalation or automatic retry.",
+    description: "With command: qualify and execute that exact command once in Codex with only the named public hosts for its lifetime. Tool-free LLM review; uncertainty opens a one-time human validation when UI is available, unless auto-deny is configured. Manual policy requests that validation directly. No stored grant. Existing explicit denies win; uploads/all ports are included, private networks and host sockets remain blocked. Without command: legacy session grant, requiring manual human consent. No filesystem escalation or automatic retry.",
     promptGuidelines: ["For an exact URL supplied by the user, use web_fetch directly. Otherwise supply command, hosts and reason together for a one-command grant. Inspect partial effects before requesting a retry. Do not use a session grant for a single download.", "Use clients that honor the managed HTTP_PROXY/HTTPS_PROXY environment. Direct DNS probes do not validate proxied HTTP(S) access, and DNS failures are not website HTTP refusals. Never disable the proxy or request an unrestricted host shell to repair resolution."],
     parameters: Type.Object({
       hosts: Type.Array(Type.String({ minLength: 1, maxLength: 253 }), { minItems: 1, maxItems: 10 }),
@@ -53,6 +57,7 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
           const command = input.command, cwd = realpathSync(ctx.cwd);
           if (!command.trim() || command.length > 8000 || command.includes("\0")) throw new Error("Expected a bounded command");
           const requested = [...new Set(hosts.map(normalizeHost))].sort();
+          const commandKey = JSON.stringify([command, requested]);
           const expires = Date.now() + 300_000;
           return await tasks.run(async owned => {
             const validate = () => {
@@ -60,12 +65,25 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
               if (process.env.PI_SUBAGENT_CHILD || root !== cwd || realpathSync(ctx.cwd) !== cwd || generation !== epoch || Date.now() > expires || pi.getActiveTools && !pi.getActiveTools().includes("request_network_access")) throw new Error("Network command is stale, expired or unavailable in this parent session");
               if (requested.some(host => readNetworkPolicy(agentDir).deny.includes(host))) throw new Error("A requested host is explicitly denied by network-policy.json");
               if (requested.some(host => refused.has(host))) throw new Error("Network access was refused earlier in this session");
+              if (refusedCommands.has(commandKey)) throw new Error("This network command was refused earlier in this session; no repeated prompt");
             };
             validate();
-            const review = await reviewApproval(agentDir, ctx, { resource: "network-access", operation: "run-command", detail: JSON.stringify({ command, cwd, hosts: requested, scope: "this command and descendants only, up to 120 seconds; proxy access on any port, including uploads; no stored grant; ordinary workspace writes and filesystem read policy", reason }) }, audit, owned, true);
+            const review = await reviewApproval(agentDir, ctx, { resource: "network-access", operation: "run-command", detail: JSON.stringify({ command, cwd, hosts: requested, scope: "this command and descendants only, up to 120 seconds; proxy access on any port, including uploads; no stored grant; ordinary workspace writes and filesystem read policy", reason }) }, audit, owned, "task-with-prompt");
             review.check(); validate();
-            if (review.decision !== "allow") { audit.finish("denied", "policy", "once"); throw new Error("Automatic review disabled by manual policy; no network command executed"); }
-            audit.finish("granted", "policy", "once");
+            if (review.decision !== "allow") {
+              if (!ctx.hasUI) { audit.finish("denied", "unavailable", "once"); throw new Error("This network command needs an interactive human decision; no command executed"); }
+              audit.prompted();
+              const choice = await audit.run(() => approvalDialog(ctx, approvalDisplayText(
+                `Autoriser cette commande réseau une fois ?\nProjet : ${cwd}\nHôtes : ${requested.join(", ")}\nCommande : ${command}\nPortée : commande et descendants, 120 s maximum ; tous ports et envois inclus. Confinement fichiers inchangé. Aucun droit conservé.\nMotif de l'agent : ${reason}`,
+              ), APPROVAL_CHOICES.slice(0, 2), { signal: owned, timeout: Math.max(1, expires - Date.now()) }));
+              audit.answered(!choice || owned.aborted || Date.now() >= expires ? "cancel" : choice === APPROVAL_CHOICES[1] ? "allow" : "deny", "once");
+              review.check(); validate();
+              if (choice !== APPROVAL_CHOICES[1]) {
+                if (choice) refusedCommands.add(commandKey);
+                throw new Error("Network command not approved; no command executed");
+              }
+            }
+            audit.finish("granted", review.decision === "allow" ? "policy" : "human", "once");
             const output: Buffer[] = [];
             try {
               await execute(join(runtimeRoot, "scripts/codex-shell.mjs"), ["--network-hosts", JSON.stringify(requested), "-c", command], {
@@ -142,6 +160,6 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
     let description: string;
     try { description = `Automatically allowed public hosts: ${networkHosts(agentDir, ctx.cwd, grantPath).join(", ") || "none"}.`; }
     catch { description = "Network policy cannot be read; sandbox launches will fail closed."; }
-    event.systemPromptOptions.sections.network_access = `${description} Ordinary network commands must use Codex's managed HTTP(S) proxy; direct sockets/private networks are blocked. git_access push with private_network=true separately qualifies one configured private remote DNS name; it does not grant Bash or session networking. Read an exact user-supplied public URL with web_fetch. For additional access use request_network_access with command, hosts and reason: tool-free LLM qualification executes only that command, with only those hosts, no dialog and no stored grant. Explicit denies remain binding. Omitting command is the legacy human-approved session mode, never an automatic session grant. Inspect partial effects before any retry. For offline provider validation or tests requiring Unix sockets, use run_isolated with explicit copied inputs and installed standalone binaries; no host sockets or external network are exposed. Never bypass an outer sandbox restriction.`;
+    event.systemPromptOptions.sections.network_access = `${description} Ordinary network commands must use Codex's managed HTTP(S) proxy; direct sockets/private networks are blocked. git_access push with private_network=true separately qualifies one configured private remote DNS name; it does not grant Bash or session networking. Read an exact user-supplied public URL with web_fetch. For additional access use request_network_access with command, hosts and reason: tool-free LLM qualification executes only that command, with only those hosts and no stored grant. An uncertain review opens one-time human validation in an interactive session unless auto-deny is configured; manual policy asks directly. Explicit denies remain binding. Omitting command is the legacy human-approved session mode, never an automatic session grant. Inspect partial effects before any retry. For offline provider validation or tests requiring Unix sockets, use run_isolated with explicit copied inputs and installed standalone binaries; no host sockets or external network are exposed. Never bypass an outer sandbox restriction.`;
   });
 }
