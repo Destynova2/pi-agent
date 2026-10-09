@@ -68,8 +68,17 @@ creates a permanent grant. Child agents cannot launch or use this profile.
 
 `/mcp permissions playwright` revokes both launch and tool grants for this project
 and closes connections. `/mcp` closes connections without deleting project grants.
-Tool calls retain their existing approvals: unverified read-only annotations may
-use remembered consent; other calls require approval of the exact operation.
+Each named tool offers once, session or project consent. A remembered tool grant
+covers all its arguments, including clicks, navigation and JavaScript that can
+modify sites or send data. It binds the project, server configuration, exact image
+and tool declaration. Changing any of them requires new consent. Sensitive browser
+tools require the interactive parent even with a saved grant. A matching grant
+skips both the dialog and automatic model review. Past one-time approvals are not
+converted into project grants.
+
+This choice is specific to the configured isolated browser profile. Other MCP
+servers offer remembered consent only for unverified read-only annotations;
+their sensitive tools still require approval of each exact operation.
 
 The container runs as UID 1000 with a read-only root filesystem, dropped Linux
 capabilities, no privilege escalation, 2 GiB RAM, two CPUs, 512 processes, 256 MiB

@@ -64,6 +64,9 @@ test("optional browser profile: real consent, localhost origin, DOM, click, scre
   const snapshot = text(await call("browser_snapshot"));
   const ref = snapshot.match(/button "Verify click" \[ref=(e\d+)\]/)?.[1]; assert.ok(ref, snapshot);
   await call("browser_click", { element: "Verify click", target: ref });
+  const afterClick = prompts;
+  await call("browser_click", { element: "Verify click again", target: ref });
+  assert.equal(prompts, afterClick, "remembered browser control does not prompt for each interaction");
   assert.match(text(await call("browser_snapshot")), /Click verified/);
   const screenshot = await call("browser_take_screenshot", { type: "png" });
   const png = screenshot.content.find(item => item.type === "image"); assert.ok(png);

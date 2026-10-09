@@ -22,7 +22,7 @@ async function fixture(network, run) {
   process.env.HOME = home; process.env.PI_CODING_AGENT_DIR = agent; delete process.env.PI_CODEX_NETWORK_GRANTS;
   const handlers = new Map(); let tool; let prompts = 0;
   const ctx = { cwd, hasUI: true, ui: { confirm: async (_title, text) => { prompts++; assert.match(text, /ENTIRE failed command/); return true; } } };
-  registerCommandAccess({ on: (event, handler) => handlers.set(event, handler), registerTool: value => { tool = value; }, getActiveTools: () => ["request_command_access"] }, agent, () => {});
+  registerCommandAccess({ on: (event, handler) => handlers.set(event, handler), registerCommand() {}, registerTool: value => { tool = value; }, getActiveTools: () => ["request_command_access"] }, agent, () => {});
   await handlers.get("session_start")({}, ctx);
   const options = { cwd, timeoutMs: 30_000, maxBytes: 1024 * 1024 };
   const capture = async command => {

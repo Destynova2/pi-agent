@@ -49,12 +49,20 @@ Pi reuses `request_command_access` after an actual failed foreground Bash call:
 ```
 
 The human sees the stored command, cwd, optional additional write paths, backend
-digest and 60-second deadline. Approval is consumed once. The backend digest is
-checked before and after confirmation and again by the launcher. Cancellation,
-timeout and session navigation stop the command tree. `metal_command` session
-entries record start and completion/failure/cancellation, exact command, digest,
-deadline and bounded output. Ordinary commands use the existing stock backend;
-GPU grants do not enter child capability ceilings or persist across commands.
+digest and 60-second deadline. GPU-only requests offer once, session or project
+consent. Remembered consent covers other eligible commands in that canonical
+project with the same qualified backend, without adding file or network rights.
+Each captured failure still expires after five minutes and is consumed once.
+Requests with additional write paths retain exact one-time approval.
+
+The backend digest is checked before and after consent and again by the launcher.
+Cancellation, timeout and session navigation stop the command tree. `metal_command`
+session entries record start and completion/failure/cancellation, exact command,
+digest, deadline and bounded output. Ordinary commands use the existing stock
+backend; remembered consent never enables ordinary Bash GPU access, headless use
+or delegation. `/command-access permissions` revokes project and session consent;
+`/command-access reset` clears session consent and refusals, preserving project
+grants. Both cancel pending and running commands in this session.
 
 The driver and shader compiler are additional attack surfaces. This is not a
 security certification or an independent audit. A qualification report is a
@@ -84,8 +92,8 @@ print(device.name)
 ```
 
 After the failed Bash result, call `request_command_access` with that result's
-exact `failed_call_id`, `gpu: "metal"` and a reason, then confirm the one-command
-rerun. Do not invent an unrelated failure or add write paths for a GPU denial.
+exact `failed_call_id`, `gpu: "metal"` and a reason, then choose the consent scope
+unless a matching grant exists. Do not invent an unrelated failure or add write paths for a GPU denial.
 An exit-zero shell result is ineligible even if its output contains an error.
 The approved command must complete within 60 seconds; no background handoff is
 available. Only a failure from the approved Metal rerun can demonstrate a missing

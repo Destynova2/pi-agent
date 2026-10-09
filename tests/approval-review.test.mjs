@@ -191,7 +191,7 @@ test("automatic command and network grants pass exact requests through existing 
   process.env.HOME = join(f.root, "home");
   t.after(() => { if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; if (originalGrants === undefined) delete process.env.PI_CODEX_NETWORK_GRANTS; else process.env.PI_CODEX_NETWORK_GRANTS = originalGrants; });
   const handlers = new Map(), tools = new Map();
-  const pi = { on: (name, handler) => handlers.set(name, handler), registerTool: tool => tools.set(tool.name, tool), getActiveTools: () => [...tools.keys()] };
+  const pi = { on: (name, handler) => handlers.set(name, handler), registerCommand() {}, registerTool: tool => tools.set(tool.name, tool), getActiveTools: () => [...tools.keys()] };
   const executions = [];
   registerCommandAccess(pi, f.agent, () => {}, async (program, args, options) => {
     assert.equal(program, join(runtimeRoot, "scripts/codex-shell.mjs"));

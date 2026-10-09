@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { registerCommandAccess } from "../../extensions/tool-policy/command-access.ts";
 import { runProcess } from "../../lib/process.ts";
 import { metalBackend } from "../../scripts/metal-backend.mjs";
+import { APPROVAL_CHOICES } from "../../lib/mcp-approvals.ts";
 
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -23,10 +24,10 @@ export async function validatePi(backend, qualification, output) {
   writeFileSync(join(agent, "metal-backend.json"), JSON.stringify({ schema: 1, sha256: proof.backendSha256 }), { mode: 0o600 });
   writeFileSync(join(agent, "network-policy.json"), JSON.stringify({ allow: [] }));
   copyFileSync(new URL("./metal-probe.swift", import.meta.url), join(cwd, "probe.swift"));
-  const handlers = new Map(), journal = [], prompts = [];
+  const handlers = new Map(), commands = new Map(), journal = [], prompts = [];
   let tool;
-  const ctx = { cwd, hasUI: true, ui: { confirm: async (title, text) => { prompts.push({ title, text }); return true; } } };
-  registerCommandAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: value => { tool = value; }, appendEntry: (type, data) => journal.push({ type, ...data }), getActiveTools: () => ["request_command_access"] }, agent, () => {});
+  const ctx = { cwd, hasUI: true, ui: { select: async (text, choices) => { prompts.push({ text }); assert.deepEqual(choices, APPROVAL_CHOICES); return APPROVAL_CHOICES[3]; }, notify() {} } };
+  registerCommandAccess({ on: (name, handler) => handlers.set(name, handler), registerCommand: (name, value) => commands.set(name, value), registerTool: value => { tool = value; }, appendEntry: (type, data) => journal.push({ type, ...data }), getActiveTools: () => ["request_command_access"] }, agent, () => {});
   const report = { schema: 1, passed: false, backendSha256: proof.backendSha256, checks: [] };
   const run = async command => {
     let stdout = "";
@@ -68,6 +69,16 @@ for (const path of ${JSON.stringify([outside, join(cwd, ".git/config"), join(age
       return true;
     });
     report.checks.push("exact_approval", "metal_compute", "file_boundaries", "result_journal", "one_shot", "ordinary_gpu_denied", "nested_upgrade_denied");
+
+    await handlers.get("session_start")({}, ctx);
+    await capture("remembered", command);
+    assert.match((await request("remembered")).content[0].text, /METAL_COMPUTE_OK/);
+    assert.equal(prompts.length, 1, "project consent survives a session reset");
+    await commands.get("command-access").handler("permissions", ctx);
+    await capture("revoked", command);
+    assert.match((await request("revoked")).content[0].text, /METAL_COMPUTE_OK/);
+    assert.equal(prompts.length, 2, "revocation requires new consent");
+    report.checks.push("project_consent", "revocation");
 
     // Session navigation must reap both the approved command and its descendant.
     writeFileSync(join(cwd, "wait.mjs"), `import {spawn} from 'node:child_process'; import fs from 'node:fs';

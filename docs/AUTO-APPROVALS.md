@@ -52,6 +52,15 @@ policy. Every fresh approval is reviewed again. Explicit human session/project
 grants retain their existing behavior and revocation commands. Cached human
 refusals retain precedence over auto review.
 
+GPU-only Metal requests and tools in the configured isolated Playwright container
+offer once/session/project consent. Metal consent covers eligible commands with
+the same qualified backend, without extra file or network rights. Browser consent
+covers one named tool with all its arguments, including site interactions and
+JavaScript. Both require the interactive parent. A saved grant skips the dialog
+and the model review; a past one-time answer is never promoted automatically.
+If auto review keeps approving once, use `/approvals manual` to expose the human
+choice on the next request, then re-enable auto with the desired scope if needed.
+
 The [Podman bridge](PODMAN-ACCESS.md) offers engine-wide project access at the next
 human prompt after a human once approval. Only an explicit human choice saves
 that grant. It then skips both prompts and automatic review for all supported
@@ -63,7 +72,8 @@ approval choices and do not acquire this broader permission.
 reviews. A changed scope, session or user message also invalidates a pending
 review. It cannot undo effects already performed. Existing remembered human
 grants are separate; revoke them with `/mcp permissions`, `/git-access permissions`
-or `/jj-checkpoint permissions`; use `/podman-access permissions` for the Podman
+or `/jj-checkpoint permissions`; use `/command-access permissions` for Metal and
+`/podman-access permissions` for the Podman
 engine grant and its first-use marker. Already-issued network grants last until the Pi
 session ends, including grants approved automatically. Restart Pi to discard them.
 These network grants cover uploads and all ports of the approved hosts; the

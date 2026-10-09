@@ -37,6 +37,7 @@ interface Approval {
   /** Offer this broader human-only project grant after a prior human once grant. */
   projectAccess?: { operation: string; label: string; detail: string };
   interactiveOnly?: boolean;
+  expiresAt?: number;
   revalidate: () => void;
   beforePrompt?: (prompt: string, choices: string[]) => void;
 }
@@ -120,8 +121,8 @@ export class McpApprovals {
     for (const name of readdirSync(directory)) if (/^(?:seen-)?[a-f0-9]{64}\.json$/.test(name)) rmSync(join(directory, name), { force: true });
   }
 
-  async authorize(ctx: ExtensionContext, input: Approval, signal?: AbortSignal): Promise<() => void> {
-    const audit = new PermissionAudit(this.agentDir, ctx, {
+  async authorize(ctx: ExtensionContext, input: Approval, signal?: AbortSignal, existingAudit?: PermissionAudit): Promise<() => void> {
+    const audit = existingAudit ?? new PermissionAudit(this.agentDir, ctx, {
       resource: input.resource, operation: input.auditOperation ?? "authorize", toolCallId: input.toolCallId, payload: input,
     });
     try {
@@ -145,7 +146,7 @@ export class McpApprovals {
           if (scope === "project" && !this.saved(cwd, request.resource, grantKey, epoch)) throw new Error("MCP project approval revoked");
         };
         check();
-        if (request.interactiveOnly && !ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error("Dunst requires an interactive parent session, including remembered approvals"); }
+        if (request.interactiveOnly && !ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error("This capability requires an interactive parent session, including remembered approvals"); }
         if (this.refused.has(key)) { audit.finish("denied", "refusal_cache"); throw new Error(`Operation refused earlier; use ${request.resource === "host-access" ? "/host-access reset" : "the permissions command"} to reconsider`); }
         if (request.remember && this.session.get(key) === epoch) { scope = "session"; source = "session"; }
         else if (request.remember && this.saved(cwd, request.resource, key, epoch)) { scope = "project"; source = "project"; }
@@ -167,9 +168,11 @@ export class McpApprovals {
           const prompt = `${title}\n${detail}`;
           request.beforePrompt?.(prompt, choices);
           audit.prompted();
-          const choice = await audit.run(() => ctx.ui.select(prompt, choices, { signal }));
+          const choice = await audit.run(() => ctx.ui.select(prompt, choices, { signal,
+            ...(request.expiresAt === undefined ? {} : { timeout: Math.max(1, request.expiresAt - Date.now()) }),
+          }));
           const acceptProject = !!offerProject && choice === offerProject.label;
-          audit.answered(!choice ? "cancel" : choice === APPROVAL_CHOICES[0] || !choices.includes(choice) ? "deny" : "allow",
+          audit.answered((request.expiresAt !== undefined && Date.now() >= request.expiresAt) || !choice ? "cancel" : choice === APPROVAL_CHOICES[0] || !choices.includes(choice) ? "deny" : "allow",
             choice === APPROVAL_CHOICES[3] || acceptProject ? "project" : choice === APPROVAL_CHOICES[2] ? "session" : "once");
           check();
           if (!choice || choice === APPROVAL_CHOICES[0] || !choices.includes(choice)) {
@@ -191,6 +194,6 @@ export class McpApprovals {
       const result = this.tail.then(run, run);
       this.tail = result.catch(() => undefined);
       return await result;
-    } catch (error) { audit.fail(signal, error); throw error; }
+    } catch (error) { if (!existingAudit) audit.fail(signal, error); throw error; }
   }
 }

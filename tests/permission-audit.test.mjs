@@ -186,7 +186,7 @@ test("network requests record baseline, new and reused grants, explicit denies, 
 test("command approval is recorded before execution and execution failure does not erase consent", async t => {
   const f = fixture(t), handlers = new Map(); let tool;
   f.ctx.ui.confirm = async () => true;
-  registerCommandAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: value => { tool = value; }, getActiveTools: () => ["request_command_access"] }, f.agent, () => {}, async () => { throw new Error("fixture exit 2"); });
+  registerCommandAccess({ on: (name, handler) => handlers.set(name, handler), registerCommand() {}, registerTool: value => { tool = value; }, getActiveTools: () => ["request_command_access"] }, f.agent, () => {}, async () => { throw new Error("fixture exit 2"); });
   handlers.get("session_start")({}, f.ctx);
   t.after(() => handlers.get("session_shutdown")());
   const event = { toolName: "bash", toolCallId: "failed-call", input: { command: "secret command" } };

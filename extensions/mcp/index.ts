@@ -61,7 +61,7 @@ export function readServers(agentDir: string, cwd: string): Record<string, Serve
   } finally { closeSync(fd); }
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, prepareBrowser = prepareBrowserMcp) {
   const agentDir = getAgentDir();
   const launcher = fileURLToPath(new URL("../../scripts/codex-shell.mjs", import.meta.url));
   const connections = new Map<string, { cwd: string; name: string; definition: string; config: string; connection: McpConnection; capability?: () => void }>();
@@ -84,7 +84,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", stop);
   pi.registerTool({
     name: "mcp", label: "MCP (confined)",
-    description: "Use trusted local MCP stdio servers inside Codex, or Playwright's explicitly configured browser container after launch approval. Global pi mcp add/remove changes are read on each call. Omit server to list configurations; use tool:'help' to discover tools. Declared read-only tools offer once/session/project consent; other calls require fresh exact approval. /mcp permissions revokes grants and stops connections. Browser containers have their own network and no host files; host.containers.internal reaches local host services. Remote MCP and general host execution are unsupported.",
+    description: "Use trusted local MCP stdio servers inside Codex, or Playwright's explicitly configured browser container after launch approval. Global pi mcp add/remove changes are read on each call. Omit server to list configurations; use tool:'help' to discover tools. Declared read-only tools and tools in the isolated Playwright container offer once/session/project consent per tool; other calls require fresh exact approval. Remembered browser control requires the interactive parent. /mcp permissions revokes grants and stops connections. Browser containers have their own network and no host files; host.containers.internal reaches local host services. Remote MCP and general host execution are unsupported.",
     promptGuidelines: ["Read-only annotations are unverified server claims, not a sandbox. Never use a remembered grant to send a message or submit a form without the user's explicit go for that exact action.", "Playwright 0.0.83 navigation returns a snapshot file link. Call browser_snapshot without a filename to read the DOM inline and obtain element refs; container files are not host files. Use configured browser.localhostPorts to retain localhost URLs for local apps, or host.containers.internal for other host services."],
     parameters: Type.Object({ server: Type.Optional(Type.String()), tool: Type.Optional(Type.String()), args: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),
     executionMode: "sequential",
@@ -130,7 +130,7 @@ export default function (pi: ExtensionAPI) {
       if (!entry) {
         let connection: McpConnection, capability: (() => void) | undefined;
         if (server.browser) {
-          const browser = await prepareBrowserMcp(server, cwd, agentDir, owned);
+          const browser = await prepareBrowser(server, cwd, agentDir, owned);
           capability = await approvals.authorize(ctx, {
             resource: `mcp-browser:${name}`, identity: fingerprint([config, browser.identity]), operation: "launch", auditOperation: "browser_launch", toolCallId: _id,
             title: `Autoriser le navigateur MCP : ${name} ?`, detail: browser.detail, remember: true,
@@ -158,15 +158,20 @@ export default function (pi: ExtensionAPI) {
           const tool = connection.tools.find(tool => tool.name === request.tool);
           if (!tool) throw new Error(`Unknown MCP tool: ${request.tool}`);
           const manifest = fingerprint(tool);
-          const remember = tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint !== true;
+          const readOnly = tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint !== true;
+          const browserControl = !!server.browser && !readOnly;
+          const remember = readOnly || browserControl;
           authorized = await approvals.authorize(ctx, {
             auditOperation: request.tool, toolCallId: _id,
             resource: `mcp:${name}`, identity: fingerprint([config, manifest]), operation: remember ? request.tool : serialized,
             title: `MCP : ${name} / ${request.tool}`,
-            detail: remember
+            detail: readOnly
               ? `Serveur : ${server.browser ? "Playwright en conteneur Podman" : executable.command}\nOutil déclaré en lecture seule (non vérifié). Accord pour cet outil, tous ses paramètres, dans le sandbox existant. Aucun droit réseau ou fichier ajouté.\nUn accord permanent s'applique aussi aux sessions sans interface de ce projet. Révocation : /mcp permissions.`
-              : `Serveur : ${server.browser ? "Playwright en conteneur Podman" : executable.command}\nOpération sensible ou non déclarée en lecture seule.\nRequête exacte : ${serialized}`,
-            remember, revalidate: () => { verifyCall(); if (fingerprint(connection.tools.find(item => item.name === request.tool) ?? null) !== manifest) throw new Error("MCP tool definition changed"); },
+              : browserControl
+                ? `Playwright en conteneur Podman isolé. Cette fois : la requête exacte ci-dessous. Session/projet : cet outil avec tous ses paramètres, y compris interactions et JavaScript pouvant modifier les sites visités ou envoyer des données. Accès au réseau du conteneur et aux services locaux configurés ; aucun dossier, profil ou secret hôte monté. Accord lié au projet, à la configuration, à l'image et à la définition de l'outil. Révocation : /mcp permissions.\nRequête exacte : ${serialized}`
+                : `Serveur : ${executable.command}\nOpération sensible ou non déclarée en lecture seule.\nRequête exacte : ${serialized}`,
+            remember, interactiveOnly: browserControl,
+            revalidate: () => { verifyCall(); if (fingerprint(connection.tools.find(item => item.name === request.tool) ?? null) !== manifest) throw new Error("MCP tool definition changed"); },
           }, owned);
           authorized();
         }

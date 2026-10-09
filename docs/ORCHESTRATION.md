@@ -147,9 +147,9 @@ returned the article text.
 Eligible calls offer **Autoriser cette fois**, **Autoriser pour cette session**, **Toujours autoriser pour ce projet**, or **Refuser**. Refusal is the initial selection; Escape denies. A remembered grant applies to the scope displayed in that dialog, not to every operation of every server.
 
 - **Dunst:** the displayed observation group covers perception and target attachment, including daemon startup, for all host windows. It can expose private applications outside the project. Clicks, typing, app launches, server risk approvals and unknown operations always require a fresh confirmation of the exact request. Cached help needs no new consent. No Dunst grant enables headless or delegated use.
-- **MCP:** consent is per configured server and named tool. Only `readOnlyHint: true` without `destructiveHint: true` offers remembered consent, for all arguments to that tool. Other calls require fresh exact confirmation. These hints are unverified server claims, **not an enforced read-only sandbox**. Trust the configured server; remembered consent does not authorize sending messages or submitting forms without explicit agreement to that action. Trusted private stdio definitions already authorize jailed startup and discovery, which do not prompt.
+- **MCP:** consent is per configured server and named tool. `readOnlyHint: true` without `destructiveHint: true` offers remembered consent, for all arguments to that tool. These hints are unverified server claims, **not an enforced read-only sandbox**. The configured [isolated Playwright profile](BROWSER-MCP.md) also offers remembered consent for interactions and JavaScript, explicitly covering site modifications and data transfers. Sensitive tools on other servers require fresh exact confirmation. Remembered consent does not authorize sending messages or submitting forms without the user's request. Trusted private stdio definitions already authorize jailed startup and discovery, which do not prompt.
 
-Session grants are memory-only and cleared on session navigation, stop, reload or shutdown. They are not inherited by another process. Project grants persist under private `<agent-dir>/mcp-approvals/`, outside the writable workspace, as hashes without request arguments or credentials. Scope is the canonical working directory, not its parent repository or all projects. Confined headless MCP calls may consume an existing matching project grant; they cannot create one. Dunst always requires interactive UI.
+Session grants are memory-only and cleared on session navigation, stop, reload or shutdown. They are not inherited by another process. Project grants persist under private `<agent-dir>/mcp-approvals/`, outside the writable workspace, as hashes without request arguments or credentials. Scope is the canonical working directory, not its parent repository or all projects. Confined headless MCP calls may consume an existing matching read-only project grant; they cannot create one. Sensitive browser tools and Dunst always require interactive UI.
 
 MCP grants bind the server definition (including configured arguments, environment/network settings), resolved executable metadata and discovered tool declaration. Dunst binds its fixed observation list and executable identity. Changed identities need new consent; a changed declaration during approval fails before dispatch rather than replaying automatically. This fingerprints configuration, not script contents or transitive dependencies, and does not attest a server's behavior. Mutable data files passed as arguments do not invalidate consent when their contents change. File and network sandbox rights remain unchanged.
 
@@ -339,6 +339,16 @@ On the Mac, stock Codex CLI 0.160.0 compiles `tests/fixtures/metal-probe.swift` 
 Native diagnosis on 2026-10-04 confirmed the hardware supports Metal (Apple M5 Max, macOS 26.5.1). `codex sandbox --log-denials` recorded denied `IOSurfaceRootUserClient` and `AGXDeviceUserClient` opens. The failure is at `MTLCreateSystemDefaultDevice()`, before shader compilation or GPU submission. See [the captured denial and its limits](DEBUGGING.md#native-metal-diagnosis-on-codex-01600). Additional filesystem roots and network grants cannot authorize these IOKit operations.
 
 The [experimental Metal backend](../experiments/metal/README.md) adds a separately qualified, digest-bound capability through `request_command_access` with `gpu: "metal"`. Its native qualification covers a successful compute result `[2,4,6,8]`, simultaneous file/network denial, ordinary-command isolation, timeout, cancellation and result journaling. Installation remains separate from the normal configuration installer; an absent or invalid qualification fails closed. There is no generic `request_gpu_access` or unconfined `host_command` fallback. A nil device in ordinary Bash does not test the approved one-command backend; see [the installed capability and its validation](DEBUGGING.md#installed-one-command-metal-capability).
+
+GPU-only requests offer once, session or project consent, bound to the canonical
+working directory and qualified backend digest. Saved consent skips further
+prompts and model reviews for eligible Metal commands. Each command still needs
+its exact captured foreground failure, expires after five minutes and runs once
+for at most 60 seconds. Additional `write_paths` always retain exact one-time
+approval. No grant enables ordinary Bash GPU access, headless use or delegation.
+`/command-access permissions` revokes Metal consent for this project;
+`/command-access reset` clears session grants and refusals while preserving project
+grants. Both cancel this session's pending or running approved commands.
 
 ### Incident records
 

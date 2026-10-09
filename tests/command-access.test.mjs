@@ -8,6 +8,7 @@ import { registerCommandAccess } from "../extensions/tool-policy/command-access.
 import { commandWritableRoots } from "../scripts/codex-shell.mjs";
 import { runtimeRoot } from "../lib/runtime-paths.mjs";
 import { CONFINED_TOOLS } from "../lib/confined-tools.ts";
+import { APPROVAL_CHOICES, McpApprovals } from "../lib/mcp-approvals.ts";
 import { metalFixture } from "./metal-fixture.mjs";
 
 function fixture(confirm = async () => true) {
@@ -17,9 +18,18 @@ function fixture(confirm = async () => true) {
   const previousHome = process.env.HOME;
   process.env.HOME = join(root, "home"); // Isolate the protected-cache policy from the outer sandbox's TMPDIR.
   // Unit transport only; OS confinement is exercised by command-access.integration.test.mjs.
-  const handlers = new Map(); const journal = []; let tool; let prompts = 0; let active = true;
-  const ctx = { cwd, hasUI: true, ui: { confirm: (...args) => { prompts++; return confirm(...args); } } };
-  registerCommandAccess({ on: (name, fn) => handlers.set(name, fn), appendEntry: (type, data) => journal.push({ type, ...data }), registerTool: value => { tool = value; }, getActiveTools: () => active ? ["request_command_access"] : [] }, agent, () => {}, async (program, args, options) => {
+  const handlers = new Map(), commands = new Map(); const journal = []; let tool; let prompts = 0; let active = true;
+  const ctx = { cwd, hasUI: true, ui: {
+    notify() {},
+    confirm: (...args) => { prompts++; return confirm(...args); },
+    select: async (text, choices, options) => {
+      prompts++;
+      assert.deepEqual(choices, APPROVAL_CHOICES);
+      const answer = await confirm("Metal", text, options);
+      return answer === true ? choices[1] : answer === false ? choices[0] : answer;
+    },
+  } };
+  registerCommandAccess({ on: (name, fn) => handlers.set(name, fn), registerCommand: (name, value) => commands.set(name, value), appendEntry: (type, data) => journal.push({ type, ...data }), registerTool: value => { tool = value; }, getActiveTools: () => active ? ["request_command_access"] : [] }, agent, () => {}, async (program, args, options) => {
     assert.equal(program, join(runtimeRoot, "scripts/codex-shell.mjs"));
     assert.equal(options.env.PI_CODING_AGENT_DIR, agent);
     options.onStdout(Buffer.from(JSON.stringify({ argv: args, cwd: options.cwd })));
@@ -32,7 +42,7 @@ function fixture(confirm = async () => true) {
     return handlers.get("tool_result")({ ...event, content: [{ type: "text", text: "EPERM" }], isError, structuredContent: { exit_code: isError ? 1 : 0 } }, ctx);
   };
   const request = (input = {}, signal) => tool.execute("approval", { failed_call_id: "failed", write_paths: [target], reason: "write one output file", ...input }, signal, undefined, ctx);
-  return { root, agent, cwd, target, ctx, handlers, journal, fail, request, disable: () => { active = false; }, get prompts() { return prompts; }, close: async () => { try { await handlers.get("session_shutdown")(); } finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; rmSync(root, { recursive: true, force: true }); } } };
+  return { root, agent, cwd, target, ctx, handlers, commands, journal, fail, request, disable: () => { active = false; }, get prompts() { return prompts; }, close: async () => { try { await handlers.get("session_shutdown")(); } finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; rmSync(root, { recursive: true, force: true }); } } };
 }
 
 test("additional paths are canonical and narrow; runtime, links, hardlinks and ancestors are refused", async () => {
@@ -84,12 +94,114 @@ test("Metal fails before prompting when unavailable, and rejects backend replace
     try {
       if (mode !== "missing") metalFixture(f.agent);
       f.fail();
-      await assert.rejects(f.request({ gpu: "metal", write_paths: undefined }), /unavailable|changed during approval|refused/);
+      await assert.rejects(f.request({ gpu: "metal", write_paths: undefined }), /unavailable|changed during approval|not approved/);
       assert.equal(f.prompts, mode === "missing" ? 0 : 1);
       assert.deepEqual(f.journal, []);
       await assert.rejects(f.request(), /No eligible/);
     } finally { await f.close(); }
   }
+});
+
+test("Metal project consent covers later commands and survives reset, without duplicate audit rows", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+  const f = fixture(async () => APPROVAL_CHOICES[3]);
+  try {
+    metalFixture(f.agent);
+    for (const command of ["./probe", "./benchmark --size 8", "./benchmark --size 16"]) {
+      if (command.endsWith("16")) await f.commands.get("command-access").handler("reset", f.ctx);
+      f.fail("failed", command);
+      const result = await f.request({ gpu: "metal", write_paths: undefined });
+      assert.equal(JSON.parse(result.content[0].text.split("\n")[0]).argv.at(-1), command);
+    }
+    assert.equal(f.prompts, 1);
+    const db = new DatabaseSync(join(f.agent, "permission-audit/requests.sqlite"), { readOnly: true });
+    try {
+      assert.deepEqual(db.prepare("SELECT resource, operation, source, scope, status FROM permission_requests ORDER BY rowid").all().map(row => ({ ...row })), ["human", "project", "project"].map(source => ({
+        resource: "command-access", operation: "retry-metal", source, scope: "project", status: "granted",
+      })));
+    } finally { db.close(); }
+    const other = join(f.root, "other-project"); mkdirSync(other); f.ctx.cwd = other;
+    await f.handlers.get("session_start")({}, f.ctx);
+    f.fail(); await f.request({ gpu: "metal", write_paths: undefined });
+    assert.equal(f.prompts, 2, "another project needs its own consent");
+    f.ctx.cwd = f.cwd; await f.handlers.get("session_start")({}, f.ctx);
+    metalFixture(f.agent, "#!/bin/sh\nexit 3\n");
+    f.fail(); await f.request({ gpu: "metal", write_paths: undefined });
+    assert.equal(f.prompts, 3, "a different qualified backend needs new consent");
+  } finally { await f.close(); }
+});
+
+test("Metal session grants expire on session changes; project grants can be revoked across processes", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+  for (const scope of [2, 3]) {
+    const f = fixture(async () => APPROVAL_CHOICES[scope]);
+    try {
+      metalFixture(f.agent);
+      for (let i = 0; i < 2; i++) { f.fail(); await f.request({ gpu: "metal", write_paths: undefined }); }
+      assert.equal(f.prompts, 1);
+      if (scope === 2) await f.handlers.get("session_start")({}, f.ctx);
+      else new McpApprovals(f.agent).revoke(f.cwd, "command-access");
+      f.fail(); await f.request({ gpu: "metal", write_paths: undefined });
+      assert.equal(f.prompts, 2);
+      await f.commands.get("command-access").handler("permissions", f.ctx);
+      f.fail(); await f.request({ gpu: "metal", write_paths: undefined });
+      assert.equal(f.prompts, 3);
+    } finally { await f.close(); }
+  }
+});
+
+test("remembered Metal never grants extra filesystem writes or headless, disabled, delegated or stale execution", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+  for (const mode of ["files", "headless", "disabled", "delegated", "stale"]) {
+    const f = fixture(async title => title === "Metal" ? APPROVAL_CHOICES[3] : false);
+    const oldChild = process.env.PI_SUBAGENT_CHILD;
+    try {
+      metalFixture(f.agent);
+      f.fail(); await f.request({ gpu: "metal", write_paths: undefined });
+      const journalLength = f.journal.length;
+      f.fail();
+      if (mode === "headless") f.ctx.hasUI = false;
+      if (mode === "disabled") f.disable();
+      if (mode === "delegated") process.env.PI_SUBAGENT_CHILD = "1";
+      if (mode === "stale") await f.handlers.get("session_start")({}, f.ctx);
+      await assert.rejects(f.request({ gpu: "metal", write_paths: mode === "files" ? [f.target] : undefined }), /refused|confirmation|No eligible/);
+      assert.equal(f.prompts, mode === "files" ? 2 : 1);
+      assert.equal(f.journal.length, journalLength, "no additional command executed");
+    } finally {
+      if (oldChild === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = oldChild;
+      await f.close();
+    }
+  }
+});
+
+test("late Metal consent expires without saving a project grant and logs one cancellation", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async t => {
+  let now = Date.now(), late = true; t.mock.method(Date, "now", () => now);
+  const f = fixture(async (_title, _text, options) => { if (late) now += options.timeout; return APPROVAL_CHOICES[3]; });
+  try {
+    metalFixture(f.agent); f.fail();
+    await assert.rejects(f.request({ gpu: "metal", write_paths: undefined }), /expired/);
+    assert.deepEqual(f.journal, []);
+    const db = new DatabaseSync(join(f.agent, "permission-audit/requests.sqlite"), { readOnly: true });
+    try {
+      assert.deepEqual(db.prepare("SELECT decision, status, source FROM permission_requests").all().map(row => ({ ...row })), [{ decision: "cancel", status: "cancelled", source: "unavailable" }]);
+    } finally { db.close(); }
+    late = false; f.fail(); await f.request({ gpu: "metal", write_paths: undefined });
+    assert.equal(f.prompts, 2);
+  } finally { await f.close(); }
+});
+
+test("revocation while Metal confirmation is open prevents execution and cannot restore the grant", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+  let answer;
+  const f = fixture(() => new Promise(resolve => { answer = resolve; }));
+  try {
+    metalFixture(f.agent); f.fail();
+    const rejected = assert.rejects(f.request({ gpu: "metal", write_paths: undefined }), /revoked/);
+    await new Promise(resolve => setImmediate(resolve));
+    new McpApprovals(f.agent).revoke(f.cwd, "command-access");
+    answer(APPROVAL_CHOICES[3]); await rejected;
+    assert.deepEqual(f.journal, []);
+    f.fail(); const pending = f.request({ gpu: "metal", write_paths: undefined });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.prompts, 2);
+    answer(APPROVAL_CHOICES[1]); await pending;
+  } finally { await f.close(); }
 });
 
 test("only a captured foreground failure can request a one-shot retry, preserving structured results", async () => {
