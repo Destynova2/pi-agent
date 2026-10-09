@@ -16,7 +16,7 @@ import { StringDecoder } from "node:string_decoder";
 import { runProcess } from "../../lib/process.ts";
 import { CONFINED_TOOLS } from "../../lib/confined-tools.ts";
 import { openRun } from "./runs.ts";
-import { getFinalOutput, getResultOutput, isFailedResult, type SingleResult, type SubagentDetails } from "./results.ts";
+import { getFinalOutput, getPartialOutput, getResultOutput, isFailedResult, type SingleResult, type SubagentDetails } from "./results.ts";
 import { subagentRenderer } from "./render.ts";
 import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
@@ -173,6 +173,8 @@ async function runSingleAgent(
 		const runDir = run.attemptDir;
 		currentResult.resumeId = run.id;
 		currentResult.sessionPath = run.sessionPath;
+		currentResult.cwd = cwd;
+		currentResult.timeoutSeconds = dispatchDefaults.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
 		args.push("--session", run.sessionPath, "--session-dir", path.dirname(run.sessionPath));
 		if (run.tools.length) args.push("--tools", run.tools.join(",")); else args.push("--no-tools");
 		const taskPath = path.join(runDir, "task.md");
@@ -247,7 +249,8 @@ async function runSingleAgent(
 			if (currentResult.reportPath) {
 				const status = isFailedResult(currentResult) ? `FAILED: ${currentResult.errorMessage || currentResult.stopReason}\n\nPartial output:\n` : "";
 				try {
-					fs.writeFileSync(currentResult.reportPath, status + (getFinalOutput(currentResult.messages) || "(no output)"), { mode: 0o600 });
+					const output = isFailedResult(currentResult) ? getPartialOutput(currentResult.messages) : getFinalOutput(currentResult.messages);
+					fs.writeFileSync(currentResult.reportPath, status + (output || "(no intermediate text; inspect trace.jsonl for tool activity)"), { mode: 0o600 });
 				} catch (error) {
 					currentResult.exitCode = 1;
 					currentResult.errorMessage = `${currentResult.errorMessage || ""}\nCannot save report: ${String(error)}`.trim();
@@ -329,6 +332,7 @@ export default function (pi: ExtensionAPI) {
 			"Delegate tasks to specialized subagents. Fresh children have isolated context; resume continues an owned native Pi session.",
 			"Modes: single (agent + task), parallel (independent tasks only), chain (dependent steps with {previous} handoff; stops on failure).",
 			"Default execution deadline: 300 seconds per child. Use a scoped acceptance check; inspect returned reports and current changes before any further delegation.",
+			"On interruption, partial text and resume parameters are returned. Inspect that evidence, then continue the same owned session for remaining authorized work; do not restart completed work or treat partial findings as a final review.",
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
