@@ -16,7 +16,7 @@ test("user URL reads use the native sandbox without dialogs or a grant to subseq
   const handlers = new Map(), tools = new Map();
   const ctx = { cwd, ui: { confirm() { assert.fail("No dialog for the user's exact URL"); }, select() { assert.fail("No dialog for the user's exact URL"); } } };
   try {
-    for (const file of ["extensions/web/index.ts", "extensions/web/core.ts", "lib/confined.ts", "lib/process.ts", "lib/session-tasks.ts", "lib/web-consent.ts", "scripts/codex-shell.mjs", "scripts/codex-network.mjs", "scripts/web-read-worker.mjs", "scripts/metal-backend.mjs"]) {
+    for (const file of ["extensions/web/index.ts", "extensions/web/core.ts", "lib/confined.ts", "lib/claude-search.ts", "lib/audit-redaction.ts", "lib/process.ts", "lib/session-tasks.ts", "lib/web-consent.ts", "scripts/codex-shell.mjs", "scripts/codex-network.mjs", "scripts/web-read-worker.mjs", "scripts/metal-backend.mjs"]) {
       if (file.endsWith("metal-backend.mjs") && !existsSync(join(source, file))) continue;
       const path = join(agent, file); mkdirSync(dirname(path), { recursive: true }); copyFileSync(join(source, file), path);
     }
