@@ -239,7 +239,9 @@ test("second Podman request can grant the whole engine for this project without 
   assert.equal(f.prompts, 2); assert.equal(f.reviews.length, 0);
   assert.equal(f.calls.filter(call => call.args[0] === "--url").length, 4);
   await assert.rejects(f.run({ args: ["machine", "ssh"] }), /Unsupported/);
-  f.ctx.hasUI = false; await assert.rejects(f.run(), /interactive parent/);
+  f.ctx.hasUI = false; await assert.rejects(f.run(), /out_of_scope/);
+  assert.equal(f.reviews.length, 1, "headless use reviews the exact action even with broad saved consent");
+  assert.equal(f.calls.filter(call => call.args[0] === "--url").length, 4);
 });
 
 test("project engine access does not follow another project, endpoint or replaced identity", async t => {
@@ -270,9 +272,11 @@ test("reset keeps explicit project access; permissions revokes it and resets the
 
 test("automatic successes never create repeated-access offers or project engine grants", async t => {
   largeTerminal(t); const f = fixture(t); await f.activate();
+  f.ctx.hasUI = false;
   await f.run(); await f.run({ args: ["ps"] });
   assert.equal(f.prompts, 0); assert.equal(f.reviews.length, 2);
   assert.equal(readdirSync(f.agent).includes("mcp-approvals"), false);
+  f.ctx.hasUI = true;
   await f.commands.get("approvals").handler("manual", f.ctx);
   await f.run(); assert.equal(f.promptPayloads[0].choices.length, 2);
 });

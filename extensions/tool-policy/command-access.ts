@@ -36,7 +36,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
   });
 
   pi.on("tool_call", (event, ctx) => {
-    if (event.toolName !== "bash" || event.parentToolCallId || ("background" in event.input && event.input.background) || !ctx.hasUI || !pi.getActiveTools().includes("request_command_access")) return;
+    if (event.toolName !== "bash" || event.parentToolCallId || process.env.PI_SUBAGENT_CHILD || ("background" in event.input && event.input.background) || !pi.getActiveTools().includes("request_command_access")) return;
     const command = event.input.command;
     if (!root || root !== realpathSync(ctx.cwd) || typeof command !== "string" || command.length > 2000 || running.size >= 16) return;
     verify(ctx);
@@ -57,7 +57,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
 
   pi.registerTool({
     name: "request_command_access", label: "Request one-command access",
-    description: "After a failed foreground Bash call, request approval to rerun that exact command once with additional filesystem write paths and/or Metal GPU access. Metal requires a separately reviewed, installed and natively qualified backend; it never grants file or network access. The stored command and cwd cannot be replaced. Runtime/configuration paths (including Pi locks) and workspace ancestors cannot be granted. Codex confinement and existing network policy remain active. Directories grant their subtree. No background, headless, delegated, permanent or unsandboxed execution. Requests expire after five minutes and are consumed once, including refusal. Execution is limited to 60 seconds and the command tree is canceled on session changes.",
+    description: "After a failed foreground Bash call, request approval to rerun that exact command once with additional filesystem write paths and/or Metal GPU access. Metal requires a separately reviewed, installed and natively qualified backend; it never grants file or network access. The stored command and cwd cannot be replaced. Runtime/configuration paths (including Pi locks) and workspace ancestors cannot be granted. Codex confinement and existing network policy remain active. Directories grant their subtree. Automatic review also works without UI. No background, delegated, permanent or unsandboxed execution. Requests expire after five minutes and are consumed once, including refusal. Execution is limited to 60 seconds and the command tree is canceled on session changes.",
     promptGuidelines: [
       "KVM is not a filesystem write grant. For an authorized Packer/Ansible image build needing /dev/kvm, use request_build_access after inspecting the project sources; do not request /dev or /dev/kvm in write_paths.",
       "Only request the write paths or Metal capability necessary for the reported failure. Inspect partial effects before proposing a retry. Never use another executor to bypass a sandbox denial.",
@@ -89,7 +89,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
               owned.throwIfAborted();
               verify(ctx);
               if (root !== request.cwd || realpathSync(ctx.cwd) !== request.cwd || Date.now() > request.expires) throw new Error("Command approval is stale, expired or belongs to another workspace");
-              if (!ctx.hasUI || !pi.getActiveTools().includes("request_command_access")) {
+              if (process.env.PI_SUBAGENT_CHILD || !pi.getActiveTools().includes("request_command_access")) {
                 audit.finish("denied", "unavailable");
                 throw new Error("Command access requires interactive parent confirmation or automatic review");
               }
@@ -110,6 +110,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
             try {
               if (review.decision === "allow") approved = true;
               else {
+                if (!ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error("Command access needs an automatic review policy or interactive confirmation"); }
                 audit.prompted();
                 approved = await Promise.race([
                   audit.run(() => ctx.ui.confirm("Retry once with additional command access?", `The ENTIRE failed command will run again; earlier effects may repeat. Directories include their contents, but Codex may still forbid deleting or renaming the granted directory itself. ${gpu ? "Metal grants the command tree access to the GPU driver and shader compiler. " : ""}Workspace/temp permissions and network policy stay unchanged. No permanent grant, no execution outside Codex. Deadline: 60 seconds.\n${display}`, { signal: owned, timeout: Math.max(1, request.expires - Date.now()) })),

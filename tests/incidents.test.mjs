@@ -36,6 +36,16 @@ test("Metal unavailability does not suggest filesystem grants or an unrestricted
   assert.doesNotMatch(incident.hint, /current Codex backend has no qualified GPU/);
 });
 
+test("provider IPC diagnostics distinguish denied syscalls from path errors without granting access", () => {
+  const incidents = new Incidents();
+  const denied = incidents.observe(failure("tofu validate", 'plugin init error: listen unix /private/plugin123: socket: operation not permitted'));
+  assert.match(denied.body, /category=unix-ipc-denied/); assert.match(denied.hint, /run_isolated/);
+  assert.match(denied.hint, /no host sockets/); assert.match(denied.hint, /outer sandbox/);
+  const path = incidents.observe(failure("tofu validate", "listen unix /long/plugin123: bind: invalid argument"));
+  assert.match(path.body, /category=unix-path-length/); assert.match(path.hint, /107 bytes/);
+  assert.equal(new Incidents().observe(failure("tofu validate", "Unrecognized remote plugin message")), undefined);
+});
+
 test("KVM failures in English and French suggest the dedicated build capability", () => {
   for (const text of ["ls: cannot access '/dev/kvm': No such file or directory", "ls: impossible d'accéder à '/dev/kvm': Aucun fichier ou dossier de ce nom", "Could not access KVM kernel module: Permission denied", "KVM_UNAVAILABLE on host: EACCES"]) {
     const incident = new Incidents().observe(failure("kvm check", text));

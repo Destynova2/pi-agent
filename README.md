@@ -25,6 +25,8 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Review permissions automatically | `/approvals auto <scope>` for this project; `/approvals auto-deny <scope>` refuses uncertainty without prompting; [automatic review](docs/AUTO-APPROVALS.md) |
 | Audit dialogs and failures | `/audit` or `/audit session`; `npm run audit -- --json --events 100` for the correlated timeline; [audit coverage](docs/AUDIT.md) |
 | Preserve all parts of a request | `task_checkpoint` records requirements and verification evidence in the session; `/task-status` shows them after reload, compaction or restart; a terminal widget shows counts and active delegations |
+| Validate providers or tests needing Unix sockets | [`run_isolated`: private offline IPC and disposable inputs](docs/PRIVATE-IPC.md) |
+| Download with temporary network access | [`request_network_access` with `command`: automatic review, no session grant](docs/PRIVATE-IPC.md) |
 | Retry a denied write | `request_command_access`: [one confirmed command with exact additional paths](docs/ORCHESTRATION.md#one-command-filesystem-access) |
 | Request local service access | `request_host_access`: [one confirmed host operation](docs/ORCHESTRATION.md#one-host-operation), without opening Bash |
 | Diagnose Podman | `podman_list`, `podman_inspect`, `podman_logs` (bounded, last hour), `podman_machine_list` through `request_host_access` |

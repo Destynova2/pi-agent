@@ -1,9 +1,9 @@
 # Worktree cleanup with approval
 
-`git_worktree_cleanup` lets the interactive parent inspect and retire linked Git
+`git_worktree_cleanup` lets the parent inspect and retire linked Git
 worktrees. It does not need a failed Bash command first. Ask Pi to inspect the
 worktrees and propose the paths to retire; Pi presents the concrete operation
-through the approval dialog. Long details are paginated, with approval choices
+through automatic review or the approval dialog. Long dialog details are paginated, with approval choices
 available only after the last page. Escape refuses the request.
 
 The operations are:
@@ -25,7 +25,8 @@ fresh verification of remote state.
 The existing `/approvals` policy applies to the exact request. Cleanup never
 creates a session or project grant and never inherits `git_access` permission.
 `/git-worktree reset` cancels pending cleanup and clears refusals. Existing
-archives remain. Child agents and headless execution cannot use this capability.
+archives remain. Child agents cannot use this capability. Without UI, the parent
+needs a configured automatic policy and a fresh review of the exact operation.
 
 ## Storage and recovery
 

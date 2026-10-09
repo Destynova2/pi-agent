@@ -1,3 +1,4 @@
+import { hasAutomaticReview } from "../../lib/approval-review.ts";
 import { runtimeRoot } from "../../lib/runtime-paths.mjs";
 import { realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -52,7 +53,7 @@ export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (c
       if (request.repository !== undefined && workdir !== request.repository) throw new Error("Repository path must be canonical without links");
       return tasks.run(async owned => {
         const run = async () => {
-          const validate = () => { owned.throwIfAborted(); verify(ctx); if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("git_access")) throw new Error("Git access requires the interactive parent in the same workspace"); };
+          const validate = () => { owned.throwIfAborted(); verify(ctx); if ((!ctx.hasUI && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("git_access")) throw new Error("Git access requires the interactive parent or a configured automatic parent policy in the same workspace"); };
           validate();
           const query = async (action: "inspect" | "execute", expected?: GitSnapshot) => {
             const transaction = expected && process.platform === "linux" ? createGitTransaction(expected, request) : undefined;
@@ -85,11 +86,11 @@ export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (c
           const ticket = await approvals.authorize(scoped, {
             auditOperation: request.operation, toolCallId: _id,
             resource: "git-access", identity: fingerprint([snapshot.identity, binary]), operation: request.operation === "push" ? fingerprint(["push", request.remote, request.branch, snapshot.pushHead ?? snapshot.head, snapshot.remoteUrl]) : "local-branch-stage-commit-v1",
-            remember: request.operation !== "push", interactiveOnly: true,
+            remember: request.operation !== "push", interactiveOnly: true, automaticWithoutUI: true,
             title: request.operation === "push" ? "Autoriser ce push uniquement ?" : "Autoriser Git pour ce projet ?",
             detail: `${request.operation === "push" ? "Publication HTTPS, destination et commit exacts ci-dessous. Jamais mémorisée." : "Session/projet autorise les FUTURES créations de branche, indexations de fichiers et commits de ce dépôt, pas les pushs ni un shell."}\nHooks et contrôles dans Codex, exécution limitée à 5 min. Aucun droit ajouté à Bash.\n${JSON.stringify({ ...request, repository: snapshot.root, head: snapshot.head, ...(snapshot.remoteUrl ? { destination: snapshot.remoteUrl, commit: snapshot.pushHead ?? snapshot.head } : {}) })}`,
             revalidate,
-          }, owned);
+          }, owned, ctx);
           ticket();
           const current: GitSnapshot = await query("inspect");
           if (current.stamp !== snapshot.stamp || current.identity !== snapshot.identity) throw new Error("Git state changed during approval; no operation performed");

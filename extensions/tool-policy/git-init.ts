@@ -1,3 +1,4 @@
+import { hasAutomaticReview } from "../../lib/approval-review.ts";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -38,18 +39,18 @@ export function registerGitInit(pi: ExtensionAPI, agentDir: string, verify: (ctx
         const identity = inspectGitInitTarget(request.repository), binary = serverIdentity("/usr/bin/git", [], cwd), expires = Date.now() + 300000;
         const validate = () => {
           owned.throwIfAborted(); verify(ctx);
-          if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("git_repository_init")) throw new Error("Git initialization requires the active interactive parent");
+          if ((!ctx.hasUI && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("git_repository_init")) throw new Error("Git initialization requires the active interactive parent or a configured automatic parent policy");
           if (Date.now() > expires || inspectGitInitTarget(request.repository) !== identity || fingerprint(serverIdentity("/usr/bin/git", [], cwd)) !== fingerprint(binary)) throw new Error("Git initialization request expired or destination changed");
           commandWritableRoots([join(request.repository, ".git")], cwd, agentDir, [getPackageDir()]);
         };
         validate();
         const scoped: ExtensionContext = { ...ctx, cwd: request.repository, ui: { ...ctx.ui, select: (title, choices, options) => approvalDialog(ctx, title, choices, options) } };
         const ticket = await approvals.authorize(scoped, {
-          resource: "git-init", auditOperation: "initialize", toolCallId: id, identity: fingerprint([identity, binary]), operation: fingerprint(request), remember: false, interactiveOnly: true,
+          resource: "git-init", auditOperation: "initialize", toolCallId: id, identity: fingerprint([identity, binary]), operation: fingerprint(request), remember: false, interactiveOnly: true, automaticWithoutUI: true,
           title: "Initialiser ce nouveau dépôt Git ?",
           detail: `Cette destination uniquement, avec un commit racine vide, une identité locale et un remote HTTPS. Aucun fichier existant indexé, aucune modification du dépôt source, aucun push. Hooks et signature restent actifs dans le sandbox.\n${JSON.stringify(request)}`,
           revalidate: validate,
-        }, owned);
+        }, owned, ctx);
         ticket();
         const stage = createGitInitStage();
         try {

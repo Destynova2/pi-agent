@@ -1,3 +1,4 @@
+import { hasAutomaticReview } from "../../lib/approval-review.ts";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -36,7 +37,7 @@ export function registerGitWorktree(pi: ExtensionAPI, agentDir: string, verify: 
       const request = worktreeRequest(input), cwd = realpathSync(ctx.cwd);
       return tasks.run(async owned => {
         const run = async () => {
-          const validate = () => { owned.throwIfAborted(); verify(ctx); if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("git_worktree_cleanup")) throw new Error("Worktree cleanup requires the active interactive parent in the same workspace"); };
+          const validate = () => { owned.throwIfAborted(); verify(ctx); if ((!ctx.hasUI && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("git_worktree_cleanup")) throw new Error("Worktree cleanup requires the active interactive parent or a configured automatic parent policy in the same workspace"); };
           validate();
           const binary = serverIdentity("/usr/bin/git", [], cwd);
           const inspect = async (): Promise<WorktreeSnapshot> => {
@@ -59,11 +60,11 @@ export function registerGitWorktree(pi: ExtensionAPI, agentDir: string, verify: 
           revalidate();
           const scoped: ExtensionContext = { ...ctx, cwd: snapshot.root, ui: { ...ctx.ui, select: (title, choices, options) => approvalDialog(ctx, title, choices, options) } };
           const ticket = await approvals.authorize(scoped, {
-            resource: "git-worktree", auditOperation: request.operation, toolCallId: id, identity: fingerprint([snapshot.identity, binary]), operation: fingerprint([request, snapshot]), remember: false, interactiveOnly: true,
+            resource: "git-worktree", auditOperation: request.operation, toolCallId: id, identity: fingerprint([snapshot.identity, binary]), operation: fingerprint([request, snapshot]), remember: false, interactiveOnly: true, automaticWithoutUI: true,
             title: "Valider le retrait de ces worktrees ?",
             detail: `Cette opération uniquement. Branches et commits locaux conservés, aucun push. Tous les fichiers et métadonnées seront archivés dans ${join(agentDir, "worktree-archives")}. Aucun effacement définitif.\n${request.reason}\n${JSON.stringify(snapshot.entries.map(({ path, head, branch, present, locked, dirty, knownRemote, files }) => ({ path, head, branch, present, locked, dirty, knownRemote, files })), null, 2)}`,
             revalidate,
-          }, owned);
+          }, owned, ctx);
           ticket();
           if (fingerprint(await inspect()) !== fingerprint(snapshot)) throw new Error("Worktree state changed during approval; inspect again");
           ticket();

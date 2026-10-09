@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { accessSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
 import { PermissionAudit } from "./permission-audit.ts";
-import { reviewApproval } from "./approval-review.ts";
+import { hasAutomaticReview, reviewApproval } from "./approval-review.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const APPROVAL_CHOICES = ["Refuser", "Autoriser cette fois", "Autoriser pour cette session", "Toujours autoriser pour ce projet"];
@@ -37,6 +37,8 @@ interface Approval {
   /** Offer this broader human-only project grant after a prior human once grant. */
   projectAccess?: { operation: string; label: string; detail: string };
   interactiveOnly?: boolean;
+  /** This executor supports fresh automatic review without UI, never a remembered grant. */
+  automaticWithoutUI?: boolean;
   revalidate: () => void;
   beforePrompt?: (prompt: string, choices: string[]) => void;
 }
@@ -120,7 +122,7 @@ export class McpApprovals {
     for (const name of readdirSync(directory)) if (/^(?:seen-)?[a-f0-9]{64}\.json$/.test(name)) rmSync(join(directory, name), { force: true });
   }
 
-  async authorize(ctx: ExtensionContext, input: Approval, signal?: AbortSignal): Promise<() => void> {
+  async authorize(ctx: ExtensionContext, input: Approval, signal?: AbortSignal, reviewContext: ExtensionContext = ctx): Promise<() => void> {
     const audit = new PermissionAudit(this.agentDir, ctx, {
       resource: input.resource, operation: input.auditOperation ?? "authorize", toolCallId: input.toolCallId, payload: input,
     });
@@ -145,13 +147,14 @@ export class McpApprovals {
           if (scope === "project" && !this.saved(cwd, request.resource, grantKey, epoch)) throw new Error("MCP project approval revoked");
         };
         check();
-        if (request.interactiveOnly && !ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error("Dunst requires an interactive parent session, including remembered approvals"); }
+        const reviewWithoutUI = !!request.interactiveOnly && !ctx.hasUI && !!request.automaticWithoutUI && hasAutomaticReview(this.agentDir, reviewContext);
+        if (request.interactiveOnly && !ctx.hasUI && !reviewWithoutUI) { audit.finish("denied", "unavailable"); throw new Error("This executor requires an interactive parent or a supported automatic review policy, including remembered approvals"); }
         if (this.refused.has(key)) { audit.finish("denied", "refusal_cache"); throw new Error(`Operation refused earlier; use ${request.resource === "host-access" ? "/host-access reset" : "the permissions command"} to reconsider`); }
-        if (request.remember && this.session.get(key) === epoch) { scope = "session"; source = "session"; }
-        else if (request.remember && this.saved(cwd, request.resource, key, epoch)) { scope = "project"; source = "project"; }
-        else if (projectKey && this.saved(cwd, request.resource, projectKey, epoch)) { scope = "project"; source = "project"; grantKey = projectKey; }
+        if (!reviewWithoutUI && request.remember && this.session.get(key) === epoch) { scope = "session"; source = "session"; }
+        else if (!reviewWithoutUI && request.remember && this.saved(cwd, request.resource, key, epoch)) { scope = "project"; source = "project"; }
+        else if (!reviewWithoutUI && projectKey && this.saved(cwd, request.resource, projectKey, epoch)) { scope = "project"; source = "project"; grantKey = projectKey; }
         else {
-          const review = await reviewApproval(this.agentDir, ctx, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal);
+          const review = await reviewApproval(this.agentDir, reviewContext, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal);
           reviewCheck = review.check;
           check();
           if (review.decision === "allow") {

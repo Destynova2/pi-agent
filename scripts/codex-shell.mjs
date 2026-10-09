@@ -6,7 +6,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { confinedCommand, networkHosts, networkSandboxArgs, publicWebUrl, readNetworkPolicy, requireNetworkProxyVersion, sandboxFilesystem } from "./codex-network.mjs";
+import { confinedCommand, networkHosts, networkSandboxArgs, normalizeHost, publicWebUrl, readNetworkPolicy, requireNetworkProxyVersion, sandboxFilesystem } from "./codex-network.mjs";
 import { metalBackend } from "./metal-backend.mjs";
 
 // Own both process substitutions in the supervisor, not a pipeline subshell.
@@ -104,6 +104,15 @@ export function sandboxArgs(command, cwd, scratch, writableRoots = [], readOnlyR
 export function launch(argv = process.argv.slice(2)) {
   if (!["darwin", "linux"].includes(process.platform)) throw new Error("Codex shell sandbox requires macOS or Linux; no unsandboxed fallback.");
   let webUrl;
+  let commandHosts;
+  if (argv[0] === "--network-hosts") {
+    if (!argv[1] || Buffer.byteLength(argv[1]) > 4096) throw new Error("Invalid one-command network request");
+    commandHosts = JSON.parse(argv[1]);
+    if (!Array.isArray(commandHosts) || !commandHosts.length || commandHosts.length > 10) throw new Error("Expected 1–10 one-command hosts");
+    commandHosts = [...new Set(commandHosts.map(normalizeHost))].sort();
+    argv = argv.slice(2);
+    if (argv.length !== 2 || argv[0] !== "-c") throw new Error("One-command network access cannot combine capabilities");
+  }
   if (argv[0] === "--web-url") {
     if (argv.length !== 2) throw new Error("Exact web read expects only --web-url <url>");
     webUrl = publicWebUrl(argv[1]);
@@ -151,7 +160,7 @@ export function launch(argv = process.argv.slice(2)) {
     }
   }
   const config = join(cache, "config");
-  const scratch = join(cache, createHash("sha256").update(cwd).digest("hex"), "tmp");
+  const scratch = join(cache, createHash("sha256").update(cwd).digest("hex").slice(0, 32), "tmp");
   mkdirSync(config, { recursive: true, mode: 0o700 });
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
@@ -163,7 +172,8 @@ export function launch(argv = process.argv.slice(2)) {
   const webHost = webUrl && new URL(webUrl).hostname;
   if (webHost && readNetworkPolicy(agentDir).deny.includes(webHost)) throw new Error("WEB_NETWORK_DENIED: destination explicitly denied by network-policy.json");
   // The fixed reader gets only its exact destination, never the baseline/session hosts.
-  const allowedHosts = webHost ? [webHost] : service ? [] : networkHosts(agentDir, cwd, env.PI_CODEX_NETWORK_GRANTS);
+  if (commandHosts?.some(host => readNetworkPolicy(agentDir).deny.includes(host))) throw new Error("NETWORK_DENIED: destination explicitly denied by network-policy.json");
+  const allowedHosts = commandHosts ?? (webHost ? [webHost] : service ? [] : networkHosts(agentDir, cwd, env.PI_CODEX_NETWORK_GRANTS));
   if (allowedHosts.length) requireNetworkProxyVersion(execFileSync(codex, ["--version"], { env, encoding: "utf8", timeout: 5000, maxBuffer: 65536 }));
   const roots = requestedRoots === undefined ? (service === "notes" ? notesWritableRoots(cwd) : [])
     : commandWritableRoots(requestedRoots, cwd, process.env.PI_CODING_AGENT_DIR ?? agentDir, [codex]);
