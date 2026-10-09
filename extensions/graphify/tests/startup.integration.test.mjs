@@ -58,7 +58,7 @@ for (const mode of ['simple', 'nested', 'outside']) {
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.PI_CODEX_SANDBOX_BIN = await realpath(previousBackend ?? join(homedir(), '.local/bin/codex'));
     process.env.HOME = home;
-    const cache = cacheDirectory(root, join(home, '.cache/pi-codex-sandbox', createHash('sha256').update(root).digest('hex'), 'tmp/pi-graphify'));
+    const cache = cacheDirectory(root, join(home, '.cache/pi-codex-sandbox', createHash('sha256').update(root).digest('hex').slice(0, 32), 'tmp/pi-graphify'));
     const graphPath = join(cache, 'graphify-out/graph.json');
     const events = new Map();
     const notifications = [];

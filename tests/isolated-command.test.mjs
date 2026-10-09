@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { isolatedArgs, snapshotCommand } from "../lib/isolated-command.ts";
+import { inspectRuntimeTrees, isolatedArgs, snapshotCommand } from "../lib/isolated-command.ts";
 import { CONFINED_TOOLS } from "../lib/confined-tools.ts";
 
 function fixture(t) {
@@ -70,4 +70,20 @@ test("the private profile has no host root, home, network, services, environment
   assert.deepEqual(grants, [["--ro-bind", "/usr/bin", "/usr/bin"], ["--ro-bind", "/usr/lib64", "/usr/lib64"], ["--ro-bind", snapshot.workspace, "/input"], ["--ro-bind", snapshot.bin, "/job-bin"]]);
   assert.equal(args.includes("--bind"), false, "no host path is writable, including the snapshot");
   assert.ok(Buffer.byteLength("/tmp/plugin1234567890") < 108);
+});
+
+test("unreadable administrator runtime subtrees are masked without accepting unsafe ownership or errors", () => {
+  const denied = Object.assign(new Error("fixture unreadable directory"), { code: "EACCES" });
+  const roots = ["/usr/lib"], hidden = "/usr/lib/private-storage";
+  const directory = { uid: 0, mode: 0o755, isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
+  const inspect = { stat: () => directory, list: path => { if (path === hidden) throw denied; return ["private-storage"]; } };
+  const masked = inspectRuntimeTrees(roots, inspect);
+  assert.deepEqual(masked, [hidden]);
+  const args = isolatedArgs({ workspace: "/private/input", bin: "/private/bin" }, "true", { roots, aliases: [], masked });
+  assert.deepEqual(args.slice(args.indexOf("--size"), args.indexOf("--size") + 6), ["--size", "4096", "--tmpfs", hidden, "--remount-ro", hidden]);
+  assert.ok(args.indexOf(hidden) > args.indexOf("--ro-bind"), "mask replaces the existing runtime mount before execution");
+  assert.throws(() => inspectRuntimeTrees(roots, { ...inspect, stat: () => ({ ...directory, uid: 1000 }) }), /administrator-owned/);
+  assert.throws(() => inspectRuntimeTrees(roots, { ...inspect, stat: () => ({ ...directory, mode: 0o777 }) }), /administrator-owned/);
+  assert.throws(() => inspectRuntimeTrees(roots, { ...inspect, list: () => { throw denied; } }), /unreadable/);
+  assert.throws(() => inspectRuntimeTrees(roots, { ...inspect, list: () => { throw Object.assign(new Error("I\/O failure"), { code: "EIO" }); } }), /I\/O failure/);
 });

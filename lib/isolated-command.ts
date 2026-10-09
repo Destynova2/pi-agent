@@ -99,17 +99,33 @@ export function snapshotCommand(cwd: string, agentDir: string, inputs: string[],
   finally { if (sourceFd !== undefined) closeSync(sourceFd); }
 }
 
+/** Uninspectable administrator directories are hidden, never trusted implicitly. */
+export function inspectRuntimeTrees(roots: string[], inspect = { stat: lstatSync, list: (path: string) => readdirSync(path) }) {
+  let entries = 0;
+  const masked: string[] = [];
+  const check = (path: string) => {
+    if (++entries > 300_000) throw new Error("OS runtime exceeds inspection limit");
+    const stat = inspect.stat(path);
+    if (stat.uid !== 0 || (!stat.isSymbolicLink() && stat.mode & 0o022) || !(stat.isFile() || stat.isDirectory() || stat.isSymbolicLink())) throw new Error(`OS runtime is not an immutable administrator-owned tree: ${path}`);
+    if (stat.isDirectory()) {
+      let children: string[];
+      try { children = inspect.list(path); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EACCES" || roots.includes(path)) throw error;
+        masked.push(path);
+        return;
+      }
+      for (const entry of children) check(join(path, entry));
+    }
+  };
+  for (const root of roots) check(root);
+  return masked;
+}
+
 /** Only administrator-owned OS runtime trees are shared; home, /run and host /tmp are absent. */
 export function isolatedRuntime() {
   const roots = ["/usr/bin", "/usr/lib", "/usr/lib64"].filter(path => { try { return lstatSync(path).isDirectory(); } catch { return false; } });
-  let entries = 0;
-  const check = (path: string) => {
-    if (++entries > 300_000) throw new Error("OS runtime exceeds inspection limit");
-    const stat = lstatSync(path);
-    if (stat.uid !== 0 || (!stat.isSymbolicLink() && stat.mode & 0o022) || !(stat.isFile() || stat.isDirectory() || stat.isSymbolicLink())) throw new Error(`OS runtime is not an immutable administrator-owned tree: ${path}`);
-    if (stat.isDirectory()) for (const entry of readdirSync(path)) check(join(path, entry));
-  };
-  for (const root of roots) check(root);
+  const masked = inspectRuntimeTrees(roots);
   const backend = "/usr/bin/bwrap";
   const stat = lstatSync(backend);
   if (!stat.isFile() || stat.uid !== 0 || stat.mode & 0o022 || !(stat.mode & 0o111)) throw new Error("A protected /usr/bin/bwrap is required");
@@ -121,7 +137,7 @@ export function isolatedRuntime() {
       return [[path, target]];
     } catch { return []; }
   });
-  return { backend, roots, aliases };
+  return { backend, roots, aliases, masked };
 }
 
 export function isolatedArgs(snapshot: ReturnType<typeof snapshotCommand>, command: string, runtime = isolatedRuntime()) {
@@ -129,6 +145,7 @@ export function isolatedArgs(snapshot: ReturnType<typeof snapshotCommand>, comma
   return ["--unshare-all", "--unshare-user", "--disable-userns", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
     "--seccomp", "0",
     ...runtime.roots.flatMap(path => ["--ro-bind", path, path]),
+    ...(runtime.masked ?? []).flatMap(path => ["--size", "4096", "--tmpfs", path, "--remount-ro", path]),
     ...runtime.aliases.flatMap(([path, target]) => ["--symlink", target, path]),
     "--proc", "/proc", "--dev", "/dev", "--size", "268435456", "--tmpfs", "/tmp", "--size", "16777216", "--tmpfs", "/home", "--dir", "/home/job", "--dir", "/run",
     "--ro-bind", snapshot.workspace, "/input", "--ro-bind", snapshot.bin, "/job-bin", "--size", "1073741824", "--tmpfs", "/work", "--remount-ro", "/", "--chdir", "/work", "--clearenv",

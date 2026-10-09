@@ -67,6 +67,8 @@ check script may need separate prepare/offline phases to use this capability.
 - Only administrator-owned, non-writable OS runtime trees under `/usr/bin`,
   `/usr/lib` and `/usr/lib64` are shared read-only. Links cannot expose an unmounted
   host path. Writable/non-root-owned entries and special files fail qualification.
+  Administrator-only subdirectories that cannot be inspected are covered by
+  empty read-only mounts; their contents are never exposed to the job.
   The host administrator and installed kernel/runtime remain trusted.
 - Inputs are copied using pinned directory descriptors and no-follow opens.
   Symlinks, hardlinks, sockets/devices, path traversal and unsafe storage are

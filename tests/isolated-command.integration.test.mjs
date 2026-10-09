@@ -12,10 +12,17 @@ test("native private IPC works while host files, environment and external networ
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-private-native-"))), agent = join(root, "agent"), cwd = join(root, "project");
   mkdirSync(agent); mkdirSync(cwd);
   writeFileSync(join(root, "host-only"), "must remain hidden");
-  writeFileSync(join(cwd, "probe.py"), `import os, socket, pathlib, subprocess
+  writeFileSync(join(cwd, "probe.py"), `import os, socket, pathlib, json
 assert 'PI_PRIVATE_TEST_SECRET' not in os.environ
 assert not pathlib.Path(${JSON.stringify(join(root, "host-only"))}).exists()
 assert not pathlib.Path('/run/user').exists()
+for name in json.loads(pathlib.Path('runtime-masks.json').read_text()):
+ masked = pathlib.Path(name)
+ assert not list(masked.iterdir())
+ try:
+  (masked / 'forbidden').write_text('must fail')
+  raise AssertionError('hidden runtime directory unexpectedly writable')
+ except OSError: pass
 path = os.environ['TMPDIR'] + '/plugin1234567890'
 assert len(path.encode()) < 108
 server = socket.socket(socket.AF_UNIX); server.bind(path); server.listen(1)
@@ -38,7 +45,9 @@ print('private IPC and confinement verified')
 `);
   let snapshot;
   try {
-    const runtime = isolatedRuntime(); snapshot = snapshotCommand(cwd, agent, ["probe.py"]);
+    const runtime = isolatedRuntime();
+    writeFileSync(join(cwd, "runtime-masks.json"), JSON.stringify(runtime.masked));
+    snapshot = snapshotCommand(cwd, agent, ["probe.py", "runtime-masks.json"]);
     const result = await runProcess(runtime.backend, isolatedArgs(snapshot, "python3 probe.py", runtime), { cwd: snapshot.directory, input: Readable.from([privateIpcSeccomp()]), timeoutMs: 20000, env: { PI_PRIVATE_TEST_SECRET: "not-for-child" } });
     assert.match(result, /private IPC and confinement verified/);
     assert.throws(() => readFileSync(join(cwd, "generated")), /ENOENT/);
