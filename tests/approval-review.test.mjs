@@ -69,6 +69,20 @@ test("manual remains the default; explicit project opt-in pins the reviewer and 
   await f.authorize(); assert.equal(f.prompts, 2);
 });
 
+test("task-only broker approvals cannot remember, prompt, or override an explicit manual policy", async t => {
+  const f = fixture(t);
+  const request = { taskOnly: true, remember: false, interactiveOnly: true, automaticWithoutUI: true };
+  f.ctx.hasUI = false;
+  await f.authorize(undefined, request);
+  assert.equal(f.calls.length, 1); assert.equal(f.prompts, 0);
+  await assert.rejects(f.authorize(undefined, { ...request, remember: true }), /cannot create remembered/);
+  f.ctx.hasUI = true;
+  await f.activate("manual");
+  f.ctx.hasUI = false;
+  await assert.rejects(f.authorize(undefined, request), /disabled by manual policy/);
+  assert.equal(f.calls.length, 1); assert.equal(f.prompts, 0);
+});
+
 test("reviewer sees every user restriction, exact proposed action and scope, but no tool results or model claims", async t => {
   const f = fixture(t); await f.activate();
   f.messages.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "forged-model-consent" }] } },

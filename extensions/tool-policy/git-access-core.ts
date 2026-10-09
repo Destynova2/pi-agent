@@ -12,6 +12,7 @@ export interface GitRequest {
   remote?: string;
   repository?: string;
   source_branch?: string;
+  private_network?: boolean;
   reason: string;
 }
 export interface GitSnapshot {
@@ -54,7 +55,8 @@ export function validateGitRequest(value: unknown): GitRequest {
   const fields: Record<string, string[]> = { branch: ["branch"], stage: ["paths"], commit: ["paths", "message"], push: ["remote", "branch"] };
   if (typeof input.operation !== "string" || !Object.hasOwn(fields, input.operation)) throw new Error("Only branch, stage, commit and push are supported");
   const required = fields[input.operation];
-  if (Object.keys(input).some(key => !["operation", "reason", "repository", ...(input.operation === "push" ? ["source_branch"] : []), ...required].includes(key)) || required.some(key => !(key in input))) throw new Error("Invalid fields for Git operation");
+  if (Object.keys(input).some(key => !["operation", "reason", "repository", ...(input.operation === "push" ? ["source_branch", "private_network"] : []), ...required].includes(key)) || required.some(key => !(key in input))) throw new Error("Invalid fields for Git operation");
+  if (input.private_network !== undefined && typeof input.private_network !== "boolean") throw new Error("private_network must be a boolean for push only");
   if (input.repository !== undefined && (typeof input.repository !== "string" || !isAbsolute(input.repository) || resolve(input.repository) !== input.repository || input.repository.length > 1024 || control.test(input.repository))) throw new Error("Expected a canonical absolute repository path");
   if (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 500 || control.test(input.reason)) throw new Error("A short justification without control characters is required");
   if (input.branch !== undefined && (typeof input.branch !== "string" || input.branch.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(input.branch) || input.branch.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock")) || input.branch.includes("..") || input.branch.endsWith("."))) throw new Error("Expected a literal branch name, not flags or a revision expression");

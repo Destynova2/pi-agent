@@ -39,6 +39,8 @@ interface Approval {
   interactiveOnly?: boolean;
   /** This executor supports fresh automatic review without UI, never a remembered grant. */
   automaticWithoutUI?: boolean;
+  /** One-use capability qualified against the user task by default, with no human fallback. */
+  taskOnly?: boolean;
   revalidate: () => void;
   beforePrompt?: (prompt: string, choices: string[]) => void;
 }
@@ -128,6 +130,7 @@ export class McpApprovals {
     });
     try {
       const request = { ...input, projectAccess: input.projectAccess && { ...input.projectAccess } }, cwd = realpathSync(ctx.cwd), generation = this.generation;
+      if (request.taskOnly && (request.remember || request.projectAccess)) throw new Error("Task review cannot create remembered permissions");
       if (request.projectAccess && (request.remember || !request.interactiveOnly || !request.projectAccess.operation || !request.projectAccess.detail ||
           !request.projectAccess.label || APPROVAL_CHOICES.includes(request.projectAccess.label) || /[\u0000-\u001f\u007f]/.test(request.projectAccess.label))) throw new Error("Invalid repeated project permission configuration");
       const epoch = this.epoch(cwd, request.resource);
@@ -147,20 +150,21 @@ export class McpApprovals {
           if (scope === "project" && !this.saved(cwd, request.resource, grantKey, epoch)) throw new Error("MCP project approval revoked");
         };
         check();
-        const reviewWithoutUI = !!request.interactiveOnly && !ctx.hasUI && !!request.automaticWithoutUI && hasAutomaticReview(this.agentDir, reviewContext);
+        const reviewWithoutUI = !!request.interactiveOnly && !ctx.hasUI && (!!request.taskOnly || !!request.automaticWithoutUI && hasAutomaticReview(this.agentDir, reviewContext));
         if (request.interactiveOnly && !ctx.hasUI && !reviewWithoutUI) { audit.finish("denied", "unavailable"); throw new Error("This executor requires an interactive parent or a supported automatic review policy, including remembered approvals"); }
         if (this.refused.has(key)) { audit.finish("denied", "refusal_cache"); throw new Error(`Operation refused earlier; use ${request.resource === "host-access" ? "/host-access reset" : "the permissions command"} to reconsider`); }
         if (!reviewWithoutUI && request.remember && this.session.get(key) === epoch) { scope = "session"; source = "session"; }
         else if (!reviewWithoutUI && request.remember && this.saved(cwd, request.resource, key, epoch)) { scope = "project"; source = "project"; }
         else if (!reviewWithoutUI && projectKey && this.saved(cwd, request.resource, projectKey, epoch)) { scope = "project"; source = "project"; grantKey = projectKey; }
         else {
-          const review = await reviewApproval(this.agentDir, reviewContext, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal);
+          const review = await reviewApproval(this.agentDir, reviewContext, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal, request.taskOnly);
           reviewCheck = review.check;
           check();
           if (review.decision === "allow") {
             audit.finish("granted", "policy", "once");
             return check;
           }
+          if (request.taskOnly) { audit.finish("denied", "policy", "once"); throw new Error("Automatic review disabled by manual policy; no operation executed"); }
           if (!ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error("MCP access requires human approval; no matching project grant"); }
           const title = approvalDisplayText(request.title).replaceAll("\n", "\\n").replaceAll("\t", "\\t");
           const offerProject = projectKey && this.saved(cwd, request.resource, `seen-${projectKey}`, epoch) ? request.projectAccess : undefined;

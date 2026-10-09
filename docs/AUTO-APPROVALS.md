@@ -1,9 +1,11 @@
 # Automatic approval review
 
-Legacy permission requests use manual confirmation by default. `run_isolated` and
-`request_network_access` with `command` instead use automatic, per-task review
+Legacy permission requests use manual confirmation by default. `run_isolated`,
+`request_network_access` with `command`, and `git_access` push with
+`private_network: true` instead use automatic, per-task review
 without dialogs or persistent policy changes. An explicitly saved manual policy
-disables these two no-dialog operations. See [private IPC](PRIVATE-IPC.md). An interactive parent can
+disables these no-dialog operations. See [private IPC](PRIVATE-IPC.md) and
+[private Git push scope](ORCHESTRATION.md#git-operation-consent). An interactive parent can
 delegate their evaluation to a separate, tool-free model call for one project:
 
 ```text
@@ -43,7 +45,7 @@ the accuracy of a live model's judgment.
 Existing executor limits still apply: exact paths, supported operations, protected
 runtime files, parent-only capabilities, network deny rules, executable identity,
 expiry and cancellation. Auto review does not install missing Podman/Metal/W4re
-backends, introduce a host shell, or enable unsupported tools. The two one-command capabilities work without UI. With a configured automatic
+backends, introduce a host shell, or enable unsupported tools. These one-command capabilities work without UI. With a configured automatic
 policy, the parent can also use command/write/Metal, host, Podman, build, Git,
 worktree and checkpoint review without UI. These host capabilities receive fresh
 automatic review in that mode, even if a human previously saved broader consent.
@@ -104,5 +106,5 @@ node --import ./tests/resolve-pi.mjs --test --test-timeout=15000 \
 Tests use a fake model and disposable executors. They make no provider calls and
 do not operate real containers. Install with the normal backup-producing installer
 and restart Pi before using the new command. Installation preserves explicit project policies. Legacy capabilities remain
-manual until project opt-in; the two no-dialog capabilities qualify the current
+manual until project opt-in; the no-dialog capabilities above qualify the current
 user task unless a saved policy overrides that default.

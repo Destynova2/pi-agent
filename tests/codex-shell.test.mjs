@@ -103,6 +103,43 @@ test("one-command proxy destinations exclude the baseline and session grants and
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Git networking is fixed-worker-only, isolated from session hosts and checked against the agent policy", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-git-network-"))), agent = join(root, "agent"), cwd = join(root, "repo"), home = join(root, "home");
+  try {
+    mkdirSync(join(agent, "scripts"), { recursive: true }); mkdirSync(cwd); mkdirSync(home); mkdirSync(join(cwd, ".git"));
+    for (const name of ["codex-shell.mjs", "codex-network.mjs", "metal-backend.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(agent, "scripts", name));
+    const backend = join(root, "backend.mjs");
+    writeFileSync(backend, `#!${process.execPath}\nif(process.argv.includes('--version')) console.log('codex-cli 0.155.1'); else console.log(JSON.stringify({args:process.argv.slice(2),host:process.env.PI_GIT_NETWORK_HOST,private:process.env.PI_GIT_PRIVATE_NETWORK,grants:process.env.PI_CODEX_NETWORK_GRANTS}));\n`, { mode: 0o755 });
+    writeFileSync(join(agent, "network-policy.json"), '{"allow":["github.com"],"deny":["blocked.example.com"]}');
+    const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+    const command = [process.execPath, join(agent, "scripts/git-operation.mjs")].map(quote).join(" ");
+    const invoke = (network, tail = ["-c", command]) => {
+      const path = join(root, "output"), fd = openSync(path, "w", 0o600);
+      let result;
+      try {
+        result = spawnSync(process.execPath, [join(agent, "scripts/codex-shell.mjs"), "--git-network", JSON.stringify(network), "--write-roots", JSON.stringify([join(cwd, ".git")]), ...tail], {
+          cwd, env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agent, PI_CODEX_SANDBOX_BIN: backend, PI_CODEX_NETWORK_GRANTS: "/must-not-read-for-git", PI_GIT_NETWORK_HOST: "forged.example.com", PI_GIT_PRIVATE_NETWORK: "true" }, stdio: ["ignore", fd, fd], timeout: 10000,
+        });
+      } finally { closeSync(fd); }
+      assert.ifError(result.error); return { status: result.status, output: readFileSync(path, "utf8") };
+    };
+    for (const privateNetwork of [false, true]) {
+      const result = invoke({ host: "GIT.EXAMPLE.COM", privateNetwork });
+      assert.equal(result.status, 0, result.output);
+      const captured = JSON.parse(result.output), profile = captured.args.find(arg => arg.startsWith("permissions="));
+      assert.equal(captured.host, "git.example.com"); assert.equal(captured.private, String(privateNetwork)); assert.equal(captured.grants, undefined);
+      assert.ok(profile.includes(`allow_local_binding=${privateNetwork}`));
+      assert.match(profile, /domains=\{"git.example.com"="allow"\}/);
+      assert.doesNotMatch(profile, /github.com|forged.example.com/);
+    }
+    for (const value of [{ host: "*.example.com", privateNetwork: true }, { host: "127.0.0.1", privateNetwork: true }, { host: "git.example.com", privateNetwork: "true" }, { host: "git.example.com", privateNetwork: true, extra: true }]) assert.equal(invoke(value).status, 1);
+    const denied = invoke({ host: "BLOCKED.EXAMPLE.COM", privateNetwork: true }); assert.equal(denied.status, 1); assert.match(denied.output, /NETWORK_DENIED/);
+    for (const tail of [["-c", "arbitrary command"], ["--offline", "-c", command]]) {
+      const invalid = invoke({ host: "git.example.com", privateNetwork: true }, tail); assert.equal(invalid.status, 1); assert.match(invalid.output, /fixed Git worker/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("sandbox guard rejects project shell overrides and stale sessions, including before reload", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-sandbox-guard-"));
   const previous = process.env.PI_CODING_AGENT_DIR;

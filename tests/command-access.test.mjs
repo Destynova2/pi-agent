@@ -34,6 +34,16 @@ function fixture(confirm = async () => true) {
   return { root, agent, cwd, target, ctx, handlers, journal, fail, request, disable: () => { active = false; }, get prompts() { return prompts; }, close: async () => { try { await handlers.get("session_shutdown")(); } finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; rmSync(root, { recursive: true, force: true }); } } };
 }
 
+test("a proxy tunnel refusal does not suggest unrelated filesystem or GPU grants", async () => {
+  const f = fixture();
+  try {
+    const event = { toolName: "bash", toolCallId: "proxy", input: { command: "git ls-remote origin" } };
+    f.handlers.get("tool_call")(event, f.ctx);
+    const result = f.handlers.get("tool_result")({ ...event, content: [{ type: "text", text: "CONNECT tunnel failed, response 403" }], isError: true }, f.ctx);
+    assert.equal(result, undefined); assert.equal(f.prompts, 0); assert.equal(f.journal.length, 0);
+  } finally { await f.close(); }
+});
+
 test("additional paths are canonical and narrow; runtime, links, hardlinks and ancestors are refused", async () => {
   const f = fixture();
   const validate = paths => commandWritableRoots(paths, f.cwd, f.agent);

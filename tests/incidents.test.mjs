@@ -63,7 +63,7 @@ test("HTTP 403 is not automatically authentication; exact-read and proxy errors 
     assert.match(observed.hint, /does not identify the cause/);
     assert.doesNotMatch(observed.hint, /Use the service's human authentication flow/);
   }
-  for (const [text, category] of [["WEB_PROXY_DENIED: proxy 403", "network-policy"], ["WEB_NETWORK_DENIED: destination explicitly denied", "network-policy"], ["WEB_URL_NOT_AUTHORIZED", "web-url-scope"], ["401 Unauthorized", "authentication"]]) {
+  for (const [text, category] of [["CONNECT tunnel failed, response 403", "proxy-connect-denied"], ["GIT_PROXY_CONNECT_DENIED", "proxy-connect-denied"], ["WEB_PROXY_DENIED: proxy 403", "network-policy"], ["WEB_NETWORK_DENIED: destination explicitly denied", "network-policy"], ["WEB_URL_NOT_AUTHORIZED", "web-url-scope"], ["401 Unauthorized", "authentication"]]) {
     assert.match(incidents.observe(failure(text, text)).body, new RegExp(`category=${category}`));
   }
 });

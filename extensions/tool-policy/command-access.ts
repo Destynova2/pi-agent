@@ -49,6 +49,9 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
     if (!request || !event.isError || request.command !== event.input.command || root !== request.cwd || realpathSync(ctx.cwd) !== root) return;
     if (failed.size >= 16) failed.delete(failed.keys().next().value!);
     failed.set(event.toolCallId, { ...request, expires: Date.now() + 300_000 });
+    // Keep the failure record, but do not suggest filesystem/GPU escalation for
+    // a diagnosed tunnel refusal. The incident handler supplies network guidance.
+    if (event.content.some(block => block.type === "text" && /GIT_PROXY_CONNECT_DENIED|CONNECT tunnel failed, response 403/i.test(block.text))) return;
     return {
       content: [...event.content, { type: "text" as const, text: `If this failure needs additional filesystem writes or Metal access, use request_command_access with failed_call_id=${JSON.stringify(event.toolCallId)}, only the necessary write_paths and/or gpu="metal", and a reason. Metal requires an operator-installed qualified backend. Approval reruns this entire command once; earlier side effects may repeat. No automatic retry.` }],
       structuredContent: event.structuredContent,
