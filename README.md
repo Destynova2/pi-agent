@@ -25,6 +25,8 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Review permissions automatically | `/approvals auto <scope>` for this project; `/approvals auto-deny <scope>` refuses uncertainty without prompting; [automatic review](docs/AUTO-APPROVALS.md) |
 | Audit dialogs and failures | `/audit` or `/audit session`; `npm run audit -- --json --events 100` for the correlated timeline; [audit coverage](docs/AUDIT.md) |
 | Preserve all parts of a request | `task_checkpoint` records requirements and verification evidence in the session; `/task-status` shows them after reload, compaction or restart; a terminal widget shows counts and active delegations |
+| Validate providers or tests needing Unix sockets | [`run_isolated`: private offline IPC and disposable inputs](docs/PRIVATE-IPC.md) |
+| Download with temporary network access | [`request_network_access` with `command`: automatic review, no session grant](docs/PRIVATE-IPC.md) |
 | Retry a denied write | `request_command_access`: [one confirmed command with exact additional paths](docs/ORCHESTRATION.md#one-command-filesystem-access) |
 | Request local service access | `request_host_access`: [one confirmed host operation](docs/ORCHESTRATION.md#one-host-operation), without opening Bash |
 | Diagnose Podman | `podman_list`, `podman_inspect`, `podman_logs` (bounded, last hour), `podman_machine_list` through `request_host_access` |
@@ -36,6 +38,7 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Allow another public host | `request_network_access`: filesystem confinement stays unchanged |
 | Inspect Git without general shell access | `git_inspect`: status, diff, log or files |
 | Authorize Git writes for a repository | `git_access`: [branch, explicit files and commit with remembered consent; push confirmed separately](docs/ORCHESTRATION.md#git-operation-consent) |
+| Prepare an empty main and populated develop | `git_repository_init`: [new repository, local identity, HTTPS remote and empty root commit](docs/GIT-INITIALIZATION.md) |
 | Revoke repository Git consent | `/git-access permissions` |
 | Note a decision without a model turn | `/btw decision <text>` (kinds: plan, decision, done, blocker, lesson, claim) |
 | Talk to another project agent | `/btw [@agent] <text>`: routed by @name, otherwise by claimed path, otherwise broadcast; delivered on its next turn or between tool calls if it's running |

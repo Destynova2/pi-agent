@@ -45,6 +45,18 @@ function fixture(confirm = async () => true) {
   return { root, agent, cwd, target, ctx, handlers, commands, journal, fail, request, disable: () => { active = false; }, get prompts() { return prompts; }, close: async () => { try { await handlers.get("session_shutdown")(); } finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; rmSync(root, { recursive: true, force: true }); } } };
 }
 
+test("proxy and DNS failures do not suggest unrelated filesystem or GPU grants", async () => {
+  const f = fixture();
+  try {
+    for (const text of ["CONNECT tunnel failed, response 403", "curl: (6) Could not resolve host: example.com", "getaddrinfo ENOTFOUND example.com", "getaddrinfo EAI_AGAIN example.com", "dns resolution error: failed to lookup address information: nodename nor servname provided, or not known"]) {
+      const event = { toolName: "bash", toolCallId: "network", input: { command: "curl https://example.com" } };
+      f.handlers.get("tool_call")(event, f.ctx);
+      const result = f.handlers.get("tool_result")({ ...event, content: [{ type: "text", text }], isError: true }, f.ctx);
+      assert.equal(result, undefined); assert.equal(f.prompts, 0); assert.equal(f.journal.length, 0);
+    }
+  } finally { await f.close(); }
+});
+
 test("additional paths are canonical and narrow; runtime, links, hardlinks and ancestors are refused", async () => {
   const f = fixture();
   const validate = paths => commandWritableRoots(paths, f.cwd, f.agent);

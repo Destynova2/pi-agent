@@ -58,7 +58,9 @@ for that call. Changes to the default cannot redirect an approved operation.
 Existing connections stored only in a custom containers.conf are not imported;
 configure the default with `podman system connection` outside Pi first.
 
-The parent interactive session is required. Every engine command passes through
+The parent session is required. Without UI, an explicitly configured automatic
+review policy is required; it qualifies every exact action, including when an
+older human engine grant exists. Every engine command passes through
 the permission broker, including read-only requests. `/approvals auto <scope>`
 enables the [separate reviewer](AUTO-APPROVALS.md); `auto-deny` refuses uncertainty
 without a dialog. Manual remains the default for projects without a policy.
@@ -73,10 +75,11 @@ Automatic decisions create neither this marker nor a permanent grant.
 The permanent option covers **every operation supported by this bridge** on that
 local engine, including deletion, publication, host mounts and private environment
 transfer. Engine resources are not isolated by project name. Subsequent requests
-skip both human confirmation and automatic review. The grant is bound to the
+skip both human confirmation and automatic review in interactive sessions.
+Headless use still requires fresh automatic review. The grant is bound to the
 canonical project path, connection, client executable and SSH identity; it survives
 Pi restart, but does not follow another project, endpoint or changed identity.
-The ordinary command restrictions, interactive-parent requirement, request audit,
+The ordinary command restrictions, parent-session requirement, request audit,
 timeouts and cancellation remain active. Permission to use the engine does not
 itself request a deployment, deletion or any other task.
 

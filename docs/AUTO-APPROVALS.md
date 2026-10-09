@@ -1,6 +1,11 @@
 # Automatic approval review
 
-Permission requests use manual confirmation by default. An interactive parent can
+Legacy permission requests use manual confirmation by default. `run_isolated`,
+`request_network_access` with `command`, and `git_access` push with
+`private_network: true` instead use automatic, per-task review
+without dialogs or persistent policy changes. An explicitly saved manual policy
+disables these no-dialog operations. See [private IPC](PRIVATE-IPC.md) and
+[private Git push scope](ORCHESTRATION.md#git-operation-consent). An interactive parent can
 delegate their evaluation to a separate, tool-free model call for one project:
 
 ```text
@@ -40,9 +45,13 @@ the accuracy of a live model's judgment.
 Existing executor limits still apply: exact paths, supported operations, protected
 runtime files, parent-only capabilities, network deny rules, executable identity,
 expiry and cancellation. Auto review does not install missing Podman/Metal/W4re
-backends, introduce a host shell, or enable unsupported tools. The existing UI and
-terminal requirements of individual capabilities remain; this is not a new
-headless execution mode. Ordinary actions already allowed by the sandbox do not
+backends, introduce a host shell, or enable unsupported tools. These one-command capabilities work without UI. With a configured automatic
+policy, the parent can also use command/write/Metal, host, Podman, build, Git,
+worktree and checkpoint review without UI. These host capabilities receive fresh
+automatic review in that mode, even if a human previously saved broader consent.
+Manual requests without UI remain denied. Terminal sizing is checked only for
+human dialogs. Dunst retains its interactive-only boundary; none of these host
+capabilities is delegated to subagents. Ordinary actions already allowed by the sandbox do not
 make an extra model call.
 
 ## Memory and revocation
@@ -51,20 +60,27 @@ Automatic success never creates a remembered MCP/host/Git grant or expands the
 policy. Every fresh approval is reviewed again. Explicit human session/project
 grants retain their existing behavior and revocation commands. Cached human
 refusals retain precedence over auto review.
+Explicit model refusals and uncertainty refusals are also cached for the same
+session, user context, policy and action (bounded to 512 entries). A changed task,
+policy or action is reviewed afresh. Provider unavailability is not a standing
+refusal. The cache never grants access or becomes reviewer training/context.
 
 GPU-only Metal requests and tools in the configured isolated Playwright container
 offer once/session/project consent. Metal consent covers eligible commands with
 the same qualified backend, without extra file or network rights. Browser consent
 covers one named tool with all its arguments, including site interactions and
-JavaScript. Both require the interactive parent. A saved grant skips the dialog
+JavaScript. Saving or reusing human grants requires the interactive parent. Metal
+without UI instead requires a configured automatic policy and fresh exact review;
+browser consent remains interactive-only. A saved human grant skips the dialog
 and the model review; a past one-time answer is never promoted automatically.
 If auto review keeps approving once, use `/approvals manual` to expose the human
 choice on the next request, then re-enable auto with the desired scope if needed.
 
 The [Podman bridge](PODMAN-ACCESS.md) offers engine-wide project access at the next
 human prompt after a human once approval. Only an explicit human choice saves
-that grant. It then skips both prompts and automatic review for all supported
-commands on the same local engine and project. Automatic successes never create
+that grant. In an interactive session it then skips both prompts and automatic
+review for supported commands on the same local engine and project. Without UI,
+a configured automatic policy and fresh exact review are still required. Automatic successes never create
 the first-use marker or select this option. Other capabilities keep their current
 approval choices and do not acquire this broader permission.
 
@@ -74,10 +90,11 @@ review. It cannot undo effects already performed. Existing remembered human
 grants are separate; revoke them with `/mcp permissions`, `/git-access permissions`
 or `/jj-checkpoint permissions`; use `/command-access permissions` for Metal and
 `/podman-access permissions` for the Podman
-engine grant and its first-use marker. Already-issued network grants last until the Pi
-session ends, including grants approved automatically. Restart Pi to discard them.
-These network grants cover uploads and all ports of the approved hosts; the
-reviewer evaluates that full session scope.
+engine grant and its first-use marker. Legacy human-approved network grants last
+until the Pi session ends. New automatic network requests must include `command`
+and never save session grants. The exact host set lasts only for that supervised
+command and its descendants; it includes uploads and all ports. Restart Pi to
+discard old session grants.
 
 ## Audit and verification
 
@@ -101,5 +118,6 @@ node --import ./tests/resolve-pi.mjs --test --test-timeout=15000 \
 
 Tests use a fake model and disposable executors. They make no provider calls and
 do not operate real containers. Install with the normal backup-producing installer
-and restart Pi before using the new command. Installation leaves manual mode in
-place until the user opts in for a project.
+and restart Pi before using the new command. Installation preserves explicit project policies. Legacy capabilities remain
+manual until project opt-in; the no-dialog capabilities above qualify the current
+user task unless a saved policy overrides that default.

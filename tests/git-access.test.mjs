@@ -25,7 +25,7 @@ function fixture(t) {
 }
 
 test("Git request grammar excludes broad staging, arbitrary flags, destructive operations and malformed fields", () => {
-  for (const request of [{ operation: "reset" }, { operation: "stage", paths: ["."] }, { operation: "stage", paths: ["../other"] }, { operation: "stage", paths: [".git/config"] }, { operation: "branch", branch: "-f" }, { operation: "branch", branch: "@{-1}" }, { operation: "push", branch: "main", remote: "--mirror" }, { operation: "commit", paths: ["x"], message: "m", noVerify: true }]) assert.throws(() => validateGitRequest({ reason: "test", ...request }));
+  for (const request of [{ operation: "reset" }, { operation: "stage", paths: ["."] }, { operation: "stage", paths: ["../other"] }, { operation: "stage", paths: [".git/config"] }, { operation: "branch", branch: "-f" }, { operation: "branch", branch: "@{-1}" }, { operation: "push", branch: "main", remote: "--mirror" }, { operation: "commit", paths: ["x"], message: "m", noVerify: true }, { operation: "stage", paths: ["x"], private_network: true }, { operation: "push", remote: "origin", branch: "main", private_network: "true" }]) assert.throws(() => validateGitRequest({ reason: "test", ...request }));
   assert.deepEqual(validateGitRequest({ operation: "stage", paths: ["literal*file", "-filename"], reason: "test" }).paths, ["literal*file", "-filename"]);
 });
 
@@ -79,14 +79,67 @@ function broker(t, f, state = {}) {
   const ctx = { cwd: f.cwd, hasUI: true, ui: { select: async (_title, choices) => { if (choices.includes("Lire la page suivante")) return "Lire la page suivante"; prompts++; return state.choice ?? choices[3]; }, notify() {} } };
   const snapshot = { root: f.cwd, gitDir: join(f.cwd, ".git"), commonDir: join(f.cwd, ".git"), identity: "repo-id", stamp: "same", head: "a".repeat(40), branch: "main", staged: [], remoteUrl: "https://github.com/fixture/project.git" };
   registerGitAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command), getActiveTools: () => ["git_access"] }, f.agent, () => {}, async (_program, args, options) => {
+    assert.equal(options.cwd, ctx.cwd, "repository selection must not widen the sandbox workspace");
     const data = JSON.parse(options.input);
     if (data.action === "inspect") return JSON.stringify({ result: { ...snapshot, stamp: state.stamp ?? "same" } });
-    assert.equal(args[0], "--write-roots"); dispatches++;
+    assert.equal(options.env.PI_CODING_AGENT_DIR, f.agent);
+    if (data.request.operation === "push") {
+      assert.equal(args[0], "--git-network");
+      assert.deepEqual(JSON.parse(args[1]), { host: new URL(snapshot.remoteUrl).hostname, privateNetwork: data.request.private_network === true });
+      assert.equal(args[2], "--write-roots");
+    } else assert.equal(args[0], "--write-roots");
+    dispatches++;
     return JSON.stringify({ result: { operation: data.request.operation, head: snapshot.head } });
   });
   t.after(() => handlers.get("session_shutdown")());
   return { ctx, snapshot, handlers, commands, get prompts() { return prompts; }, get dispatches() { return dispatches; }, request: input => tools.get("git_access").execute("test", { reason: "fixture", ...input }, undefined, undefined, ctx) };
 }
+
+test("a separate repository keeps the session cwd and its remembered consent can be revoked explicitly", async t => {
+  const f = fixture(t), b = broker(t, f), source = join(f.base, "source");
+  mkdirSync(source); b.ctx.cwd = source;
+  const request = { repository: f.cwd, operation: "branch", branch: "develop" };
+  await b.request(request); assert.equal(b.prompts, 1);
+  await b.request(request); assert.equal(b.prompts, 1);
+  await b.commands.get("git-access").handler(`permissions ${f.cwd}`, b.ctx);
+  b.ctx.ui.select = async () => undefined;
+  await assert.rejects(b.request(request), /not approved/);
+});
+
+test("a push reviews its exact network host without session grants and explicit denies invalidate approval", async t => {
+  const f = fixture(t), b = broker(t, f);
+  b.snapshot.remoteUrl = "https://git.example.com/team/repo.git";
+  writeFileSync(join(f.agent, "network-policy.json"), '{"allow":[]}');
+  b.ctx.ui.select = async (_title, choices) => choices.includes("Lire la page suivante") ? "Lire la page suivante" : APPROVAL_CHOICES[1];
+  const request = { operation: "push", remote: "origin", branch: "main" };
+  await b.request(request); assert.equal(b.dispatches, 1);
+  assert.equal(existsSync(join(f.agent, "network-grants")), false);
+  b.ctx.ui.select = async () => { writeFileSync(join(f.agent, "network-policy.json"), '{"allow":[],"deny":["git.example.com"]}'); return APPROVAL_CHOICES[1]; };
+  await assert.rejects(b.request(request), /NETWORK_DENIED/); assert.equal(b.dispatches, 1);
+});
+
+test("private pushes require fresh no-dialog task review, bind the capability and preserve cancellation and denials", async t => {
+  const f = fixture(t), b = broker(t, f);
+  b.ctx.hasUI = false;
+  b.snapshot.remoteUrl = "https://git.example.com/team/repo.git";
+  b.ctx.model = { provider: "fixture", id: "reviewer" };
+  b.ctx.sessionManager = { getBranch: () => [{ type: "message", message: { role: "user", content: "Push main to the configured internal Git server" } }], getSessionId: () => "test", getSessionFile: () => undefined };
+  let reviews = 0, verdict = "allow", hook = () => {};
+  b.ctx.modelRegistry = { find: () => b.ctx.model, streamSimple: (_model, context) => {
+    reviews++; assert.equal(context.tools, undefined);
+    const payload = JSON.parse(context.messages[0].content).action.detail;
+    for (const value of [b.snapshot.remoteUrl, '"private_network":true', "adresses privées/locales", "tous ses ports", "a".repeat(40)]) assert.ok(payload.includes(value), value);
+    return { result: async () => { hook(); return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ decision: verdict, category: verdict === "allow" ? "within_scope" : "insufficient_context" }) }] }; } };
+  } };
+  const request = { operation: "push", remote: "origin", branch: "main", private_network: true };
+  await b.request(request); await b.request(request);
+  assert.equal(reviews, 2); assert.equal(b.prompts, 0); assert.equal(b.dispatches, 2);
+  assert.equal(existsSync(join(f.agent, "network-grants")), false);
+  hook = () => { void b.handlers.get("session_start")(); };
+  await assert.rejects(b.request(request), /abort|cancel|stale/i); assert.equal(b.dispatches, 2);
+  hook = () => {}; verdict = "ask";
+  await assert.rejects(b.request(request), /insufficient_context/); assert.equal(b.dispatches, 2); assert.equal(b.prompts, 0);
+});
 
 test("project consent spans different local operations and restart, but push asks once every time and revocation removes the grant", async t => {
   const f = fixture(t), b = broker(t, f);
@@ -139,6 +192,7 @@ test("once/session consent, forged push grants, child use and paginated dialogs 
   await b.handlers.get("session_start")(); await b.request({ operation: "stage", paths: ["three"] }); assert.equal(b.prompts, 4);
   state.choice = APPROVAL_CHOICES[3]; await assert.rejects(b.request({ operation: "push", remote: "origin", branch: "fix/a" }), /not approved/);
   await assert.rejects(b.request({ operation: "push", remote: "origin", branch: "fix/a", reason: "a different justification" }), /refused earlier/); assert.equal(b.prompts, 5);
+  await assert.rejects(b.request({ operation: "push", remote: "origin", branch: "fix/a", private_network: true }), /refused earlier/, "private network review cannot bypass a human refusal of the same push");
   const old = process.env.PI_SUBAGENT_CHILD; process.env.PI_SUBAGENT_CHILD = "1";
   try { await assert.rejects(b.request({ operation: "stage", paths: ["three"] }), /interactive parent/); }
   finally { if (old === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = old; }

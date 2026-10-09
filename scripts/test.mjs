@@ -110,7 +110,8 @@ async function main() {
   if (useBootstrap) nodeArgs.push("--import", BOOTSTRAP_PATH);
   nodeArgs.push(...files);
 
-  const env = { ...process.env, PI_CODEX_SANDBOX_BIN: sandboxBackend(), ...(args.integration ? { PI_TEST_INTEGRATION: "1" } : {}) };
+  // Native error assertions need stable diagnostics regardless of the host locale.
+  const env = { ...process.env, LC_ALL: "C", PI_CODEX_SANDBOX_BIN: sandboxBackend(), ...(args.integration ? { PI_TEST_INTEGRATION: "1" } : {}) };
   const result = spawnSync(process.execPath, nodeArgs, { stdio: "inherit", env });
   let exitCode = result.status ?? 1;
 

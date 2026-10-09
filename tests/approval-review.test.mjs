@@ -8,8 +8,10 @@ import { registerApprovalReview } from "../lib/approval-review.ts";
 import { APPROVAL_CHOICES, McpApprovals } from "../lib/mcp-approvals.ts";
 import { registerCommandAccess } from "../extensions/tool-policy/command-access.ts";
 import { registerNetworkAccess } from "../extensions/tool-policy/network.ts";
+import { registerIsolatedCommand } from "../extensions/tool-policy/isolated-command.ts";
 import { registerHostAccess } from "../extensions/tool-policy/host-access.ts";
 import { runtimeRoot } from "../lib/runtime-paths.mjs";
+import { metalFixture } from "./metal-fixture.mjs";
 
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-auto-review-test-")));
@@ -66,6 +68,20 @@ test("manual remains the default; explicit project opt-in pins the reviewer and 
   assert.equal(f.query("permission_reviews").length, 2);
   await f.activate("manual"); assert.throws(first, /revoked/);
   await f.authorize(); assert.equal(f.prompts, 2);
+});
+
+test("task-only broker approvals cannot remember, prompt, or override an explicit manual policy", async t => {
+  const f = fixture(t);
+  const request = { taskOnly: true, remember: false, interactiveOnly: true, automaticWithoutUI: true };
+  f.ctx.hasUI = false;
+  await f.authorize(undefined, request);
+  assert.equal(f.calls.length, 1); assert.equal(f.prompts, 0);
+  await assert.rejects(f.authorize(undefined, { ...request, remember: true }), /cannot create remembered/);
+  f.ctx.hasUI = true;
+  await f.activate("manual");
+  f.ctx.hasUI = false;
+  await assert.rejects(f.authorize(undefined, request), /disabled by manual policy/);
+  assert.equal(f.calls.length, 1); assert.equal(f.prompts, 0);
 });
 
 test("reviewer sees every user restriction, exact proposed action and scope, but no tool results or model claims", async t => {
@@ -187,6 +203,7 @@ test("human refusals and explicit remembered grants retain their original preced
 
 test("automatic command and network grants pass exact requests through existing executors and audits", async t => {
   const f = fixture(t); await f.activate("auto-deny Build the local demo and download from packages.example.com");
+  f.ctx.hasUI = false;
   const originalHome = process.env.HOME, originalGrants = process.env.PI_CODEX_NETWORK_GRANTS;
   process.env.HOME = join(f.root, "home");
   t.after(() => { if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; if (originalGrants === undefined) delete process.env.PI_CODEX_NETWORK_GRANTS; else process.env.PI_CODEX_NETWORK_GRANTS = originalGrants; });
@@ -209,26 +226,142 @@ test("automatic command and network grants pass exact requests through existing 
   assert.match(f.calls[0].context.messages[0].content, /exact-command/);
   await handlers.get("session_shutdown")();
   writeFileSync(join(f.agent, "network-policy.json"), JSON.stringify({ allow: [], deny: ["blocked.example.com"] }));
-  registerNetworkAccess(pi, f.agent, () => {}); handlers.get("session_start")({}, f.ctx);
+  registerNetworkAccess(pi, f.agent, () => {}, async (_program, args, options) => { executions.push({ args, cwd: options.cwd }); options.onStdout(Buffer.from("download complete")); }); handlers.get("session_start")({}, f.ctx);
   try {
     const network = tools.get("request_network_access");
-    await network.execute("net", { hosts: ["packages.example.com"], reason: "download" }, undefined, undefined, f.ctx);
+    await network.execute("net", { command: "curl https://packages.example.com/archive", hosts: ["packages.example.com"], reason: "download" }, undefined, undefined, f.ctx);
     assert.match(f.calls[1].context.messages[0].content, /including uploads/);
-    await assert.rejects(network.execute("net-denied", { hosts: ["blocked.example.com"], reason: "download" }, undefined, undefined, f.ctx), /explicitly denied/);
+    await assert.rejects(network.execute("net-denied", { command: "curl https://blocked.example.com", hosts: ["blocked.example.com"], reason: "download" }, undefined, undefined, f.ctx), /explicitly denied/);
     assert.equal(f.calls.length, 2); assert.equal(f.prompts, 0);
+    assert.equal(process.env.PI_CODEX_NETWORK_GRANTS, undefined);
+    assert.deepEqual(executions[1].args, ["--network-hosts", '["packages.example.com"]', "-c", "curl https://packages.example.com/archive"]);
     assert.deepEqual(f.query("permission_requests").slice(0, 2).map(row => [row.source, row.status]), [["policy", "granted"], ["policy", "granted"]]);
   } finally { handlers.get("session_shutdown")(); }
 });
 
+test("one-command network review uses current user intent by default, never prompts and never saves grants", async t => {
+  const f = fixture(t), tools = new Map(), handlers = new Map(), executions = [];
+  f.ctx.hasUI = false;
+  registerNetworkAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: tool => tools.set(tool.name, tool) }, f.agent, () => {}, async (_program, args) => { executions.push(args); });
+  handlers.get("session_start")({}, f.ctx);
+  t.after(() => handlers.get("session_shutdown")());
+  const call = () => tools.get("request_network_access").execute("network", { command: "curl https://packages.example.com", hosts: ["packages.example.com"], reason: "download" }, undefined, undefined, f.ctx);
+  await call(); await call();
+  assert.equal(f.calls.length, 2); assert.equal(executions.length, 2); assert.equal(f.prompts, 0);
+  assert.equal(readdirSync(f.agent).includes("network-grants"), false);
+  assert.equal(readdirSync(f.agent).includes("approval-policies"), false);
+  assert.match(f.calls[0].context.messages[0].content, /Do not push/);
+  f.verdict = { decision: "ask", category: "insufficient_context" };
+  await assert.rejects(call(), /insufficient_context/); assert.equal(executions.length, 2);
+  const calls = f.calls.length;
+  f.verdict = { decision: "allow", category: "within_scope" };
+  await assert.rejects(call(), /previously refused/); assert.equal(f.calls.length, calls);
+  f.messages.push({ type: "message", message: { role: "user", content: "Download the exact archive from packages.example.com for the demo." } });
+  await call(); assert.equal(executions.length, 3);
+  f.ctx.hasUI = true; await f.activate("manual");
+  await assert.rejects(call(), /manual policy/); assert.equal(f.prompts, 0);
+});
+
+test("Metal project consent and headless exact review share one audit per request", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async t => {
+  const f = fixture(t), handlers = new Map(); let tool, executions = 0;
+  metalFixture(f.agent);
+  registerCommandAccess({
+    on: (name, handler) => handlers.set(name, handler), registerCommand() {}, appendEntry() {},
+    registerTool: value => { tool = value; }, getActiveTools: () => ["request_command_access"],
+  }, f.agent, () => {}, async () => { executions++; });
+  handlers.get("session_start")({}, f.ctx);
+  t.after(() => handlers.get("session_shutdown")());
+  const call = async command => {
+    const event = { toolName: "bash", toolCallId: command, input: { command } };
+    handlers.get("tool_call")(event, f.ctx);
+    handlers.get("tool_result")({ ...event, content: [], isError: true }, f.ctx);
+    return tool.execute(command, { failed_call_id: command, gpu: "metal", reason: "Run the authorized GPU check" }, undefined, undefined, f.ctx);
+  };
+  f.answer = APPROVAL_CHOICES[3];
+  await call("./gpu-check --first");
+  await f.activate("auto-deny Run the local GPU checks"); f.ctx.hasUI = false;
+  await call("./gpu-check --second"); await call("./gpu-check --third");
+  assert.equal(f.prompts, 1); assert.equal(f.calls.length, 2); assert.equal(executions, 3);
+  f.verdict = { decision: "deny", category: "out_of_scope" };
+  await assert.rejects(call("./gpu-check --denied"), /out_of_scope/);
+  assert.equal(executions, 3); assert.equal(f.prompts, 1);
+  assert.deepEqual(f.query("permission_requests").map(row => [row.source, row.scope, row.status]), [
+    ["human", "project", "granted"], ["policy", "once", "granted"], ["policy", "once", "granted"], ["policy", "once", "denied"],
+  ]);
+});
+
+test("network command cancellation, policy denial and new user restrictions stop dispatch", async t => {
+  for (const mode of ["session", "deny", "user", "abort"]) await t.test(mode, async t => {
+    const f = fixture(t), handlers = new Map(); let tool, answer, entered, executions = 0;
+    const started = new Promise(resolve => { entered = resolve; });
+    f.run = () => { entered(); return new Promise(resolve => { answer = resolve; }); };
+    registerNetworkAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: value => { tool = value; } }, f.agent, () => {}, async () => { executions++; });
+    handlers.get("session_start")({}, f.ctx);
+    const controller = new AbortController();
+    const rejected = assert.rejects(tool.execute("network", { command: "true", hosts: ["packages.example.com"], reason: "test" }, controller.signal, undefined, f.ctx), /stale|revoked|abort|denied/i);
+    await started;
+    if (mode === "session") handlers.get("session_before_tree")();
+    if (mode === "deny") writeFileSync(join(f.agent, "network-policy.json"), '{"allow":[],"deny":["packages.example.com"]}');
+    if (mode === "user") f.messages.push({ type: "message", message: { role: "user", content: "Stop" } });
+    if (mode === "abort") controller.abort();
+    answer({ stopReason: "stop", content: [{ type: "text", text: '{"decision":"allow","category":"within_scope"}' }] });
+    await rejected; assert.equal(executions, 0); assert.equal(f.prompts, 0); await handlers.get("session_shutdown")();
+  });
+});
+
+test("private jobs review the immutable snapshot, clean up after success/failure and never invoke a dialog", { skip: process.platform !== "linux" }, async t => {
+  const f = fixture(t), handlers = new Map(); let tool, captured, executions = 0;
+  f.ctx.hasUI = false;
+  writeFileSync(join(f.cwd, "main.tf"), "reviewed version");
+  registerIsolatedCommand({ on: (name, fn) => handlers.set(name, fn), registerTool: value => { tool = value; }, getActiveTools: () => ["run_isolated"] }, f.agent, () => {}, async (_program, args, options) => {
+    executions++; captured = args; assert.equal(readFileSync(join(options.cwd, "work/main.tf"), "utf8"), "reviewed version"); options.onStdout(Buffer.from("schema valid"));
+  }, () => ({ backend: "/fixture/bwrap", roots: ["/usr/bin"], aliases: [["/bin", "usr/bin"]] }));
+  const call = () => tool.execute("private", { command: "validate", inputs: ["main.tf"], reason: "validate schema" }, undefined, undefined, f.ctx);
+  f.run = () => { writeFileSync(join(f.cwd, "main.tf"), "changed after snapshot"); return { stopReason: "stop", content: [{ type: "text", text: '{"decision":"allow","category":"within_scope"}' }] }; };
+  assert.match((await call()).content[0].text, /schema valid/);
+  assert.equal(captured.at(-1), "validate"); assert.equal(executions, 1); assert.equal(f.prompts, 0);
+  assert.deepEqual(readdirSync(join(f.agent, "isolated-jobs")), []);
+  assert.match(f.calls[0].context.messages[0].content, /sha256/);
+  f.run = undefined; f.verdict = { decision: "deny", category: "out_of_scope" };
+  await assert.rejects(call(), /out_of_scope/);
+  assert.deepEqual(readdirSync(join(f.agent, "isolated-jobs")), []); assert.equal(executions, 1);
+  await handlers.get("session_shutdown")();
+});
+
 test("host bridge auto review executes once with fixed argv and denial executes nothing", async t => {
   const f = fixture(t); await f.activate("auto-deny Inspect local processes");
+  f.ctx.hasUI = false;
   const tools = new Map(), handlers = new Map(), executions = [];
   registerHostAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: tool => tools.set(tool.name, tool), registerCommand() {}, getActiveTools: () => [...tools.keys()] }, f.agent, () => {}, async (program, args) => { executions.push([program, args]); return "123 1 fixture"; });
   t.after(() => handlers.get("session_shutdown")());
   const call = () => tools.get("request_host_access").execute("host", { operation: "process_info", pid: 123, reason: "inspect process" }, undefined, undefined, f.ctx);
-  await call(); assert.deepEqual(executions, [["/bin/ps", ["-p", "123", "-o", "pid=,ppid=,comm="]]]); assert.equal(f.prompts, 0);
+  await call(); assert.deepEqual(executions, [[realpathSync("/bin/ps"), ["-p", "123", "-o", "pid=,ppid=,comm="]]]); assert.equal(f.prompts, 0);
   f.verdict = { decision: "deny", category: "out_of_scope" };
   await assert.rejects(call(), /out_of_scope/); assert.equal(executions.length, 1);
+});
+
+test("headless host capabilities require fresh automatic review even with a remembered human grant", async t => {
+  const f = fixture(t);
+  f.answer = APPROVAL_CHOICES[3]; await f.authorize(undefined, { interactiveOnly: true, automaticWithoutUI: true });
+  await f.activate("auto-deny Build the local demo"); f.ctx.hasUI = false;
+  await f.authorize(undefined, { interactiveOnly: true, automaticWithoutUI: true });
+  await f.authorize(undefined, { interactiveOnly: true, automaticWithoutUI: true });
+  assert.equal(f.calls.length, 2); assert.equal(f.prompts, 1);
+  f.verdict = { decision: "deny", category: "out_of_scope" };
+  await assert.rejects(f.authorize(undefined, { interactiveOnly: true, automaticWithoutUI: true }), /out_of_scope/);
+  await assert.rejects(f.authorize(undefined, { interactiveOnly: true }), /interactive parent/);
+});
+
+test("resource paths do not replace the original task's review policy or user context", async t => {
+  const f = fixture(t); await f.activate("auto-deny Initialize the explicitly requested separate repository");
+  f.ctx.hasUI = false;
+  const target = join(f.root, "target"); mkdirSync(target);
+  const ticket = await f.approvals.authorize({ ...f.ctx, cwd: target }, { ...f.request, interactiveOnly: true, automaticWithoutUI: true, detail: `Initialize the repository at ${target}` }, undefined, f.ctx);
+  ticket(); assert.equal(f.calls.length, 1); assert.equal(f.prompts, 0);
+  const payload = JSON.parse(f.calls[0].context.messages[0].content);
+  assert.equal(payload.project, f.cwd); assert.match(payload.action.detail, /target/);
+  f.messages.push({ type: "message", message: { role: "user", content: "Stop" } });
+  assert.throws(ticket, /stale|revoked/);
 });
 
 test("review diagnostics retain precise failure codes and masked request context without changing grants", async t => {

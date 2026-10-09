@@ -46,6 +46,16 @@ test("Metal unavailability does not suggest filesystem grants or an unrestricted
   assert.doesNotMatch(incident.hint, /current Codex backend has no qualified GPU/);
 });
 
+test("provider IPC diagnostics distinguish denied syscalls from path errors without granting access", () => {
+  const incidents = new Incidents();
+  const denied = incidents.observe(failure("tofu validate", 'plugin init error: listen unix /private/plugin123: socket: operation not permitted'));
+  assert.match(denied.body, /category=unix-ipc-denied/); assert.match(denied.hint, /run_isolated/);
+  assert.match(denied.hint, /no host sockets/); assert.match(denied.hint, /outer sandbox/);
+  const path = incidents.observe(failure("tofu validate", "listen unix /long/plugin123: bind: invalid argument"));
+  assert.match(path.body, /category=unix-path-length/); assert.match(path.hint, /107 bytes/);
+  assert.equal(new Incidents().observe(failure("tofu validate", "Unrecognized remote plugin message")), undefined);
+});
+
 test("KVM failures in English and French suggest the dedicated build capability", () => {
   for (const text of ["ls: cannot access '/dev/kvm': No such file or directory", "ls: impossible d'accéder à '/dev/kvm': Aucun fichier ou dossier de ce nom", "Could not access KVM kernel module: Permission denied", "KVM_UNAVAILABLE on host: EACCES"]) {
     const incident = new Incidents().observe(failure("kvm check", text));
@@ -63,8 +73,21 @@ test("HTTP 403 is not automatically authentication; exact-read and proxy errors 
     assert.match(observed.hint, /does not identify the cause/);
     assert.doesNotMatch(observed.hint, /Use the service's human authentication flow/);
   }
-  for (const [text, category] of [["WEB_PROXY_DENIED: proxy 403", "network-policy"], ["WEB_NETWORK_DENIED: destination explicitly denied", "network-policy"], ["WEB_URL_NOT_AUTHORIZED", "web-url-scope"], ["401 Unauthorized", "authentication"]]) {
+  for (const [text, category] of [["CONNECT tunnel failed, response 403", "proxy-connect-denied"], ["GIT_PROXY_CONNECT_DENIED", "proxy-connect-denied"], ["WEB_PROXY_DENIED: proxy 403", "network-policy"], ["WEB_NETWORK_DENIED: destination explicitly denied", "network-policy"], ["WEB_URL_NOT_AUTHORIZED", "web-url-scope"], ["401 Unauthorized", "authentication"]]) {
     assert.match(incidents.observe(failure(text, text)).body, new RegExp(`category=${category}`));
+  }
+});
+
+test("DNS errors suggest confined proxy-aware requests without asserting a website or policy refusal", () => {
+  for (const text of ["curl: (6) Could not resolve host: example.com", "curl: (5) Could not resolve proxy: proxy.example.com", "getaddrinfo ENOTFOUND example.com", "getaddrinfo EAI_AGAIN example.com", "Temporary failure in name resolution", "Name or service not known", "dns resolution error: failed to lookup address information: nodename nor servname provided, or not known", "nodename nor servname provided, or not known"]) {
+    const incident = new Incidents().observe(failure("network probe", text));
+    assert.match(incident.body, /category=dns-resolution/);
+    assert.match(incident.hint, /before any website HTTP response/);
+    assert.match(incident.hint, /neither a site refusal nor a permission denial/);
+    assert.match(incident.hint, /web_fetch/);
+    assert.match(incident.hint, /request_network_access with command, hosts and reason/);
+    assert.match(incident.hint, /outer sandbox restrictions/);
+    assert.doesNotMatch(incident.hint, /use request_command_access/i);
   }
 });
 

@@ -6,7 +6,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { confinedCommand, networkHosts, networkSandboxArgs, publicWebUrl, readNetworkPolicy, requireNetworkProxyVersion, sandboxFilesystem } from "./codex-network.mjs";
+import { confinedCommand, networkHosts, networkSandboxArgs, normalizeHost, publicWebUrl, readNetworkPolicy, requireNetworkProxyVersion, sandboxFilesystem } from "./codex-network.mjs";
 import { metalBackend } from "./metal-backend.mjs";
 
 // Own both process substitutions in the supervisor, not a pipeline subshell.
@@ -104,6 +104,24 @@ export function sandboxArgs(command, cwd, scratch, writableRoots = [], readOnlyR
 export function launch(argv = process.argv.slice(2)) {
   if (!["darwin", "linux"].includes(process.platform)) throw new Error("Codex shell sandbox requires macOS or Linux; no unsandboxed fallback.");
   let webUrl;
+  let commandHosts;
+  let gitNetwork;
+  if (argv[0] === "--git-network") {
+    if (!argv[1] || Buffer.byteLength(argv[1]) > 1024) throw new Error("Invalid Git network request");
+    gitNetwork = JSON.parse(argv[1]);
+    if (!gitNetwork || typeof gitNetwork !== "object" || Array.isArray(gitNetwork) || Object.keys(gitNetwork).sort().join(",") !== "host,privateNetwork" || typeof gitNetwork.privateNetwork !== "boolean") throw new Error("Expected exact Git host and privateNetwork boolean");
+    gitNetwork.host = normalizeHost(gitNetwork.host);
+    argv = argv.slice(2);
+    if (argv[0] !== "--write-roots") throw new Error("Git network requires operation-specific metadata roots");
+  }
+  if (argv[0] === "--network-hosts") {
+    if (!argv[1] || Buffer.byteLength(argv[1]) > 4096) throw new Error("Invalid one-command network request");
+    commandHosts = JSON.parse(argv[1]);
+    if (!Array.isArray(commandHosts) || !commandHosts.length || commandHosts.length > 10) throw new Error("Expected 1–10 one-command hosts");
+    commandHosts = [...new Set(commandHosts.map(normalizeHost))].sort();
+    argv = argv.slice(2);
+    if (argv.length !== 2 || argv[0] !== "-c") throw new Error("One-command network access cannot combine capabilities");
+  }
   if (argv[0] === "--web-url") {
     if (argv.length !== 2) throw new Error("Exact web read expects only --web-url <url>");
     webUrl = publicWebUrl(argv[1]);
@@ -137,6 +155,11 @@ export function launch(argv = process.argv.slice(2)) {
   if (typeof process.execve !== "function") throw new Error("Codex shell requires Node with process.execve (Node >=22.19).");
   const cwd = realpathSync(process.cwd());
   const runtime = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
+  if (gitNetwork) {
+    const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+    const fixed = [process.execPath, join(runtime, "scripts/git-operation.mjs")].map(quote).join(" ");
+    if (argv[1] !== fixed || service || metalDigest || commandHosts || webUrl) throw new Error("Git network only accepts the fixed Git worker");
+  }
   const agentDir = realpathSync(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"));
   const metal = metalDigest ? metalBackend(agentDir) : undefined;
   if (metal && metal.sha256 !== metalDigest) throw new Error("Metal backend changed after approval");
@@ -151,7 +174,7 @@ export function launch(argv = process.argv.slice(2)) {
     }
   }
   const config = join(cache, "config");
-  const scratch = join(cache, createHash("sha256").update(cwd).digest("hex"), "tmp");
+  const scratch = join(cache, createHash("sha256").update(cwd).digest("hex").slice(0, 32), "tmp");
   mkdirSync(config, { recursive: true, mode: 0o700 });
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
@@ -160,14 +183,22 @@ export function launch(argv = process.argv.slice(2)) {
   env.TMPDIR = scratch; // A private per-project temp root, not all of /tmp.
   delete env.BASH_ENV;
   delete env.ENV;
+  delete env.PI_GIT_NETWORK_HOST;
+  delete env.PI_GIT_PRIVATE_NETWORK;
   const webHost = webUrl && new URL(webUrl).hostname;
   if (webHost && readNetworkPolicy(agentDir).deny.includes(webHost)) throw new Error("WEB_NETWORK_DENIED: destination explicitly denied by network-policy.json");
   // The fixed reader gets only its exact destination, never the baseline/session hosts.
-  const allowedHosts = webHost ? [webHost] : service ? [] : networkHosts(agentDir, cwd, env.PI_CODEX_NETWORK_GRANTS);
+  if (commandHosts?.some(host => readNetworkPolicy(agentDir).deny.includes(host))) throw new Error("NETWORK_DENIED: destination explicitly denied by network-policy.json");
+  if (gitNetwork && readNetworkPolicy(agentDir).deny.includes(gitNetwork.host)) throw new Error("NETWORK_DENIED: Git destination explicitly denied by network-policy.json");
+  const allowedHosts = gitNetwork ? [gitNetwork.host] : commandHosts ?? (webHost ? [webHost] : service ? [] : networkHosts(agentDir, cwd, env.PI_CODEX_NETWORK_GRANTS));
+  if (gitNetwork) {
+    env.PI_GIT_NETWORK_HOST = gitNetwork.host;
+    env.PI_GIT_PRIVATE_NETWORK = String(gitNetwork.privateNetwork);
+  }
   if (allowedHosts.length) requireNetworkProxyVersion(execFileSync(codex, ["--version"], { env, encoding: "utf8", timeout: 5000, maxBuffer: 65536 }));
   const roots = requestedRoots === undefined ? (service === "notes" ? notesWritableRoots(cwd) : [])
     : commandWritableRoots(requestedRoots, cwd, process.env.PI_CODING_AGENT_DIR ?? agentDir, [codex]);
-  const args = allowedHosts.length ? networkSandboxArgs(argv[1], cwd, scratch, allowedHosts, roots, readOnlyRoots) : sandboxArgs(argv[1], cwd, scratch, roots, readOnlyRoots);
+  const args = allowedHosts.length ? networkSandboxArgs(argv[1], cwd, scratch, allowedHosts, roots, readOnlyRoots, gitNetwork?.privateNetwork ? gitNetwork.host : undefined) : sandboxArgs(argv[1], cwd, scratch, roots, readOnlyRoots);
   delete env.PI_CONFINED; // Only the command inside Codex sets the handoff marker.
   if (metal) args.splice(1, 0, "--allow-metal");
   delete env.PI_CODEX_NETWORK_GRANTS; // Grants are broker state, not a child-controlled channel.

@@ -18,7 +18,7 @@ test("real Codex Git consent grants only Git data; hooks run confined and ordina
   Object.assign(process.env, { HOME: home, PI_CODING_AGENT_DIR: agent, PI_CODEX_SANDBOX_BIN: codex, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }); delete process.env.PI_CODEX_NETWORK_GRANTS;
   const handlers = new Map(); let tool, prompts = 0;
   try {
-    for (const path of ["scripts/codex-shell.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`), "extensions/tool-policy/git-access-core.ts", "lib/process.ts"]) {
+    for (const path of ["scripts/codex-shell.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`), "extensions/tool-policy/git-access-core.ts", "lib/git-command.ts", "lib/process.ts"]) {
       const target = join(agent, path); mkdirSync(dirname(target), { recursive: true }); copyFileSync(new URL(`../${path}`, import.meta.url), target);
     }
     // Only this synthetic repository has raw fixture diagnostics. Production
@@ -31,6 +31,9 @@ test("real Codex Git consent grants only Git data; hooks run confined and ordina
     git("init", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com");
     const config = readFileSync(join(cwd, ".git/config"), "utf8");
     writeFileSync(join(cwd, "file"), "one\n"); writeFileSync(join(root, "outside"), "unchanged");
+    // Checkpoints can leave this blob in the source pool with another encoding.
+    const oid = git("-c", "core.compression=0", "hash-object", "-w", "--", "file").trim();
+    const object = join(cwd, ".git/objects", oid.slice(0, 2), oid.slice(2)), compressed = readFileSync(object);
     const options = { cwd, timeoutMs: 30000, maxBytes: 1024 * 1024 };
     const ordinary = () => runProcess(launcher, ["-c", "/usr/bin/git add -- file"], options);
     await assert.rejects(ordinary(), /denied|not permitted|read-only/i);
@@ -38,6 +41,7 @@ test("real Codex Git consent grants only Git data; hooks run confined and ordina
     registerGitAccess({ on: (name, handler) => handlers.set(name, handler), registerCommand() {}, registerTool: definition => { tool = definition; }, getActiveTools: () => ["git_access"] }, agent, () => {});
     const request = input => tool.execute("test", { reason: "isolated fixture only", ...input }, undefined, undefined, ctx);
     await request({ operation: "stage", paths: ["file"] });
+    assert.deepEqual(readFileSync(object), compressed, "staging must preserve an equivalent existing object");
     writeFileSync(join(cwd, "hook.mjs"), `import assert from 'node:assert/strict'; import fs from 'node:fs';
 for (const path of ${JSON.stringify([join(root, "outside"), join(agent, "settings.json"), join(cwd, ".git/config"), join(cwd, ".git/hooks/blocked")])}) assert.throws(() => fs.writeFileSync(path, 'bad'), /EPERM|EACCES|EROFS/);
 if (process.env.GIT_COMMON_DIR) {

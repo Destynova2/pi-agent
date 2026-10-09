@@ -63,6 +63,18 @@ test("native proxy profile requires the feature, preserves filesystem restrictio
   for (const version of ["codex-cli 0.146.0", "codex-cli 0.155.0", "unknown", "codex-cli 0.155.1-beta"]) assert.throws(() => requireNetworkProxyVersion(version));
 });
 
+test("private Git proxy scope must contain exactly the reviewed hostname", () => {
+  for (const hosts of [[], ["other.example.com"], ["git.example.com", "github.com"]]) assert.throws(() => networkSandboxArgs("worker", "/work", "/private/tmp", hosts, [], [], "git.example.com"), /exactly its reviewed host/);
+  const privateArgs = () => networkSandboxArgs("fixed-worker", "/work", "/private/tmp", ["git.example.com"], [], [], "git.example.com");
+  if (process.platform !== "linux") {
+    assert.throws(privateArgs, /PRIVATE_GIT_NETWORK_UNAVAILABLE/);
+  } else {
+    const profile = privateArgs().find(value => value.startsWith("permissions="));
+    assert.match(profile, /allow_local_binding=true/);
+    assert.match(profile, /domains=\{"git.example.com"="allow"\}/);
+  }
+});
+
 function session(f, confirm = async () => true) {
   const handlers = new Map(); let tool; let calls = 0;
   const ctx = { cwd: f.cwd, hasUI: true, ui: { confirm: (...args) => { calls++; return confirm(...args); } } };

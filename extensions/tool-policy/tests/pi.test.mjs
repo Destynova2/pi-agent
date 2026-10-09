@@ -24,12 +24,12 @@ test("real Pi loader registers confined file tools and fails closed without an a
       const loaded = loader.getExtensions();
       assert.deepEqual(loaded.errors, []);
       const extension = loaded.extensions[0];
-      assert.deepEqual([...extension.tools.keys()].sort(), ["edit", "find", "git_access", "git_worktree_cleanup", "grep", "jj_checkpoint", "ls", "model_catalog", "read", "request_build_access", "request_command_access", "request_host_access", "request_network_access", "request_podman_access", "write"]);
+      assert.deepEqual([...extension.tools.keys()].sort(), ["edit", "find", "git_access", "git_repository_init", "git_worktree_cleanup", "grep", "jj_checkpoint", "ls", "model_catalog", "read", "request_build_access", "request_command_access", "request_host_access", "request_network_access", "request_podman_access", "run_isolated", "write"]);
       const ctx = { cwd, isProjectTrusted: () => false, hasUI: false, ui: {
         confirm() { assert.fail("No approval prompts"); }, select() { assert.fail("No task grants"); },
       } };
       for (const handler of extension.handlers.get("session_start")) await handler({}, ctx);
-      for (const name of ["read", "write", "bash", "bash_process", "subagent", "lsp", "note_add", "web_fetch", "git_worktree_cleanup", "unknown"]) {
+      for (const name of ["read", "write", "bash", "bash_process", "subagent", "lsp", "note_add", "web_fetch", "git_repository_init", "git_worktree_cleanup", "unknown"]) {
         const result = await extension.handlers.get("tool_call")[0]({ toolName: name, input: {} }, ctx);
         assert.equal(result.block, true, name);
         assert.doesNotMatch(result.reason, /requires user confirmation/);

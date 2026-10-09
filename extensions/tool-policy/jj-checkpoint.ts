@@ -1,3 +1,4 @@
+import { hasAutomaticReview } from "../../lib/approval-review.ts";
 import { runtimeRoot } from "../../lib/runtime-paths.mjs";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -42,7 +43,7 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
         const run = async () => {
           const validate = () => {
             owned.throwIfAborted(); verify(ctx);
-            if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("jj_checkpoint")) throw new Error("Checkpoints require the active interactive parent in the same workspace");
+            if ((!ctx.hasUI && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("jj_checkpoint")) throw new Error("Checkpoints require the active interactive parent or a configured automatic parent policy in the same workspace");
           };
           validate();
           const binary = serverIdentity("jj", [], cwd), gitBinary = serverIdentity("/usr/bin/git", [], cwd);
@@ -76,11 +77,11 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
             return ctx.ui.select(title, choices, options);
           } } };
           const ticket = await approvals.authorize(scoped, {
-            resource: "jj-checkpoint", toolCallId: _id, auditOperation: "snapshot", identity: fingerprint([info.identity, binary, gitBinary]), operation: "local-checkpoint-v1", remember: info.initialized, interactiveOnly: true,
+            resource: "jj-checkpoint", toolCallId: _id, auditOperation: "snapshot", identity: fingerprint([info.identity, binary, gitBinary]), operation: "local-checkpoint-v1", remember: info.initialized, interactiveOnly: true, automaticWithoutUI: true,
             title: "Autoriser les points de restauration jj ?",
             detail: `${info.root}\n${reason}\n${info.initialized ? "Consentement session/projet : futurs instantanés locaux." : "Initialise jj/Git et prend un premier instantané, cette fois uniquement."}\nFichiers suivis et nouveaux non ignorés. Aucun push ni restauration. Index et fichiers actuels conservés. Fichiers ignorés et état externe exclus.`,
             revalidate,
-          }, owned);
+          }, owned, ctx);
           ticket();
           const current = await inspect();
           if (fingerprint(current) !== fingerprint(info)) throw new Error("Checkpoint project changed during approval");

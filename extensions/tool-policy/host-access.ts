@@ -1,3 +1,4 @@
+import { hasAutomaticReview } from "../../lib/approval-review.ts";
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { parseEnv } from "node:util";
@@ -99,7 +100,7 @@ export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (
   });
   pi.registerTool({
     name: "request_host_access", label: "Request one host operation", exposure: "model-only", executionMode: "sequential",
-    description: "Ask the human to run ONE host-side Podman, clipboard or process operation, outside Codex. No generic shell, background, remembered or delegated access. podman_list/inspect return limited diagnostics including public origins, never raw environment values. podman_logs reads at most tail (default 100, maximum 500) lines from the last hour of one container; logs may contain application secrets. podman_machine_list reports VM name/state/resources without connection credentials. clipboard_env copies one key from a project dotenv file; clipboard_container_env copies one container environment key without revealing its value. process_info returns PID/PPID/executable, not arguments or environment. podman_command accepts only start/stop/restart or kube play/down; output is withheld, verify effects separately. Clipboard is macOS-only. Each operation defaults to refusal.",
+    description: "Request reviewed execution of ONE host-side Podman, clipboard or process operation, outside Codex. No generic shell, background, remembered or delegated access. podman_list/inspect return limited diagnostics including public origins, never raw environment values. podman_logs reads at most tail (default 100, maximum 500) lines from the last hour of one container; logs may contain application secrets. podman_machine_list reports VM name/state/resources without connection credentials. clipboard_env copies one key from a project dotenv file; clipboard_container_env copies one container environment key without revealing its value. process_info returns PID/PPID/executable, not arguments or environment. podman_command accepts only start/stop/restart or kube play/down; output is withheld, verify effects separately. Clipboard is macOS-only. Without UI, a configured automatic policy and fresh exact review are required. Each operation defaults to refusal.",
     promptGuidelines: ["After a relevant sandbox denial, request the specific host capability instead of repeating Bash or asking for another session. Never put secret values in arguments/reason. Clipboard transfer does not authorize login, form submission or sending a message. Podman can act beyond the workspace: explain the exact effect and preserve authentication/CSRF protections. Verify the configured Podman connection before requesting changes; it may be remote. Never use this bridge to alter Pi/Codex configuration or obtain an arbitrary host shell. The tool cannot approve itself."],
     parameters,
     async execute(_id, input, signal, _update, ctx) {
@@ -123,7 +124,7 @@ export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (
         const cwd = realpathSync(ctx.cwd);
         const validate = () => {
           owned.throwIfAborted(); verify(ctx);
-          if (realpathSync(ctx.cwd) !== cwd || !ctx.hasUI || process.env.PI_SUBAGENT_CHILD || !pi.getActiveTools().includes("request_host_access")) throw new Error("Host access requires the interactive parent in the same workspace");
+          if (realpathSync(ctx.cwd) !== cwd || (!ctx.hasUI && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || !pi.getActiveTools().includes("request_host_access")) throw new Error("Host access requires the interactive parent or a configured automatic parent policy in the same workspace");
         };
         validate();
         // Capture trusted configuration; no workspace PATH entries are used for executable lookup.
@@ -163,7 +164,6 @@ export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (
         const revalidate = () => {
           validate();
           if (Date.now() > expires) throw new Error("Host approval request expired; no operation performed");
-          if (wrapTextWithAnsi(visible, Math.max(20, (process.stdout.columns ?? 80) - 4)).length > Math.max(1, (process.stdout.rows ?? 24) - 8)) throw new Error("Approval does not fit the terminal; shorten the reason/arguments or enlarge the window. No operation performed.");
           if (fingerprint([serverIdentity(executable.command, [], cwd, { PATH: path }), env, sourceIdentity, manifestIdentity]) !== identity) throw new Error("Host executable changed during approval");
           if (sourceIdentity && fingerprint(readProjectFile(request.file!, cwd, 65536)) !== sourceIdentity) throw new Error("Clipboard source changed during approval");
           if (manifestIdentity && fingerprint(readProjectFile(args.at(-1)!, cwd, 1024 * 1024)) !== manifestIdentity) throw new Error("Podman manifest changed during approval");
@@ -173,8 +173,11 @@ export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (
         const visible = approvalDisplayText(`${title}\nProjet : ${JSON.stringify(cwd)}\n${detail}`);
         const ticket = await approvals.authorize(ctx, {
           auditOperation: request.operation, toolCallId: _id,
-          resource: "host-access", identity, operation: fingerprint({ ...request, reason: undefined }), remember: false, interactiveOnly: true,
+          resource: "host-access", identity, operation: fingerprint({ ...request, reason: undefined }), remember: false, interactiveOnly: true, automaticWithoutUI: true,
           title, detail, revalidate,
+          beforePrompt: () => {
+            if (wrapTextWithAnsi(visible, Math.max(20, (process.stdout.columns ?? 80) - 4)).length > Math.max(1, (process.stdout.rows ?? 24) - 8)) throw new Error("Approval does not fit the terminal; shorten the reason/arguments or enlarge the window. No operation performed.");
+          },
         }, owned);
         ticket();
         const options = { cwd, signal: AbortSignal.any([owned, AbortSignal.timeout(60_000)]), timeoutMs: 60_000, maxBytes: 1024 * 1024, env: { ...env, PATH: path, BASH_ENV: undefined, ENV: undefined } };

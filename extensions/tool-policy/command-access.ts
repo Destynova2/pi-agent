@@ -51,7 +51,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
   });
 
   pi.on("tool_call", (event, ctx) => {
-    if (event.toolName !== "bash" || event.parentToolCallId || ("background" in event.input && event.input.background) || !ctx.hasUI || !pi.getActiveTools().includes("request_command_access")) return;
+    if (event.toolName !== "bash" || event.parentToolCallId || process.env.PI_SUBAGENT_CHILD || ("background" in event.input && event.input.background) || !pi.getActiveTools().includes("request_command_access")) return;
     const command = event.input.command;
     if (!root || root !== realpathSync(ctx.cwd) || typeof command !== "string" || command.length > 2000 || running.size >= 16) return;
     verify(ctx);
@@ -64,6 +64,9 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
     if (!request || !event.isError || request.command !== event.input.command || root !== request.cwd || realpathSync(ctx.cwd) !== root) return;
     if (failed.size >= 16) failed.delete(failed.keys().next().value!);
     failed.set(event.toolCallId, { ...request, expires: Date.now() + 300_000 });
+    // Keep the failure record, but do not suggest filesystem/GPU escalation for
+    // a diagnosed network failure. The incident handler supplies network guidance.
+    if (event.content.some(block => block.type === "text" && /GIT_PROXY_CONNECT_DENIED|CONNECT tunnel failed, response 403|\bENOTFOUND\b|\bEAI_AGAIN\b|could not resolve (?:host|proxy)|temporary failure in name resolution|name or service not known|dns resolution error|nodename nor servname provided, or not known/i.test(block.text))) return;
     return {
       content: [...event.content, { type: "text" as const, text: `If this failure needs additional filesystem writes or Metal access, use request_command_access with failed_call_id=${JSON.stringify(event.toolCallId)}, only the necessary write_paths and/or gpu="metal", and a reason. Metal requires an operator-installed qualified backend. Approval reruns this entire command once; earlier side effects may repeat. No automatic retry.` }],
       structuredContent: event.structuredContent,
@@ -72,7 +75,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
 
   pi.registerTool({
     name: "request_command_access", label: "Request one-command access",
-    description: "After a failed foreground Bash call, request approval to rerun that exact command once with additional filesystem write paths and/or Metal GPU access. Metal requires a separately reviewed, installed and natively qualified backend; it never grants file or network access. GPU-only requests offer once/session/project consent bound to that backend; /command-access permissions revokes it. Additional filesystem writes still require exact one-shot approval. The stored command and cwd cannot be replaced. Runtime/configuration paths (including Pi locks) and workspace ancestors cannot be granted. Codex confinement and existing network policy remain active. Directories grant their subtree. No background, headless, delegated or unsandboxed execution. Requests expire after five minutes and are consumed once, including refusal. Execution is limited to 60 seconds and the command tree is canceled on session changes.",
+    description: "After a failed foreground Bash call, request approval to rerun that exact command once with additional filesystem write paths and/or Metal GPU access. Metal requires a separately reviewed, installed and natively qualified backend; it never grants file or network access. GPU-only requests offer once/session/project consent bound to that backend; /command-access permissions revokes it. Additional filesystem writes still require exact one-shot approval. The stored command and cwd cannot be replaced. Runtime/configuration paths (including Pi locks) and workspace ancestors cannot be granted. Codex confinement and existing network policy remain active. Directories grant their subtree. With a configured automatic policy, fresh review also works without UI and never reuses remembered human grants. No background, delegated or unsandboxed execution. Requests expire after five minutes and are consumed once, including refusal. Execution is limited to 60 seconds and the command tree is canceled on session changes.",
     promptGuidelines: [
       "KVM is not a filesystem write grant. For an authorized Packer/Ansible image build needing /dev/kvm, use request_build_access after inspecting the project sources; do not request /dev or /dev/kvm in write_paths.",
       "Only request the write paths or Metal capability necessary for the reported failure. Inspect partial effects before proposing a retry. Never use another executor to bypass a sandbox denial.",
@@ -109,7 +112,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
                 audit.finish("cancelled", "unavailable", "once");
                 throw new Error("Command approval expired after five minutes; no operation performed. This failed_call_id is consumed. Inspect current state and partial effects before a new attempt.");
               }
-              if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || !pi.getActiveTools().includes("request_command_access")) {
+              if (process.env.PI_SUBAGENT_CHILD || !pi.getActiveTools().includes("request_command_access")) {
                 audit.finish("denied", "unavailable");
                 throw new Error("Command access requires interactive parent confirmation or automatic review");
               }
@@ -124,13 +127,13 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
               const authorized = await approvals.authorize(ctx, {
                 resource: "command-access", auditOperation: "retry-metal", toolCallId: _id,
                 identity: fingerprint([backend.sha256, "metal-only-v1"]), operation: "metal-only",
-                title: "Autoriser Metal pour les commandes confinées ?", remember: true, interactiveOnly: true, expiresAt: request.expires,
+                title: "Autoriser Metal pour les commandes confinées ?", remember: true, interactiveOnly: true, automaticWithoutUI: true, expiresAt: request.expires,
                 detail: `Cette fois : la commande exacte ci-dessous sera relancée une fois, avec ses éventuels effets partiels. Session/projet : autoriser aussi les autres commandes éligibles de ce projet avec le même backend Metal. GPU seul ; aucun droit supplémentaire aux fichiers ou au réseau. Bash ordinaire reste sans GPU. Chaque commande garde sa durée limite et son identifiant d'échec à usage unique. Deadline: 60 seconds. Révocation : /command-access permissions.\n${display}`,
                 revalidate() {
                   validate();
                   if (metalBackend(agentDir).sha256 !== backend.sha256) throw new Error("Metal backend changed during approval; nothing executed");
                 },
-              }, owned, audit);
+              }, owned, ctx, audit);
               authorized();
             } else {
               const review = await reviewApproval(agentDir, ctx, { resource: "command-access", operation: gpu ? "retry-metal" : "retry", detail: display }, audit, owned);
@@ -145,6 +148,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
                 if (review.decision === "allow") approved = true;
                 else {
                   validate();
+                  if (!ctx.hasUI) { audit.finish("denied", "unavailable"); throw new Error("Command access needs an automatic review policy or interactive confirmation"); }
                   audit.prompted();
                   approved = await Promise.race([
                     audit.run(() => ctx.ui.confirm("Retry once with additional command access?", `The ENTIRE failed command will run again; earlier effects may repeat. Directories include their contents, but Codex may still forbid deleting or renaming the granted directory itself. ${gpu ? "Metal grants the command tree access to the GPU driver and shader compiler. " : ""}Workspace/temp permissions and network policy stay unchanged. No permanent grant, no execution outside Codex. Deadline: 60 seconds.\n${display}`, { signal: owned, timeout: Math.max(1, request.expires - Date.now()) })),

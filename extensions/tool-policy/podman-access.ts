@@ -1,3 +1,4 @@
+import { hasAutomaticReview } from "../../lib/approval-review.ts";
 import { realpathSync } from "node:fs";
 import { localPodman } from "../../lib/podman-connection.ts";
 import { Type, type Static } from "typebox";
@@ -92,7 +93,7 @@ export function registerPodmanAccess(pi: ExtensionAPI, agentDir: string, verify:
   });
   pi.registerTool({
     name: "request_podman_access", label: "Podman engine", exposure: "model-only", executionMode: "sequential", parameters,
-    description: "Run one approved Podman engine command from this workspace through the host CLI. Generic build/run/exec, containers, images, pods, networks, volumes and kube play/down; no W4re dependency. Supply argv without podman, shell syntax or global flags. Uses the configured default local Unix/loopback SSH connection, pinned for the call. Default 300 seconds, maximum 1800. Bounded stdout/stderr are returned, including errors, and may contain secrets. For create, env_from_container privately copies an existing container's environment over stdin and verifies it; only the created ID and equality result are returned. No arbitrary stdin/TTY, host shell, compose, machine SSH, connection changes or client output files. Every call uses /approvals policy or human approval unless the user explicitly saved engine-wide project access at a repeated prompt. That grant skips further confirmations and automatic review for this project/connection; revoke with /podman-access permissions. Never delegated.",
+    description: "Run one approved Podman engine command from this workspace through the host CLI. Generic build/run/exec, containers, images, pods, networks, volumes and kube play/down; no W4re dependency. Supply argv without podman, shell syntax or global flags. Uses the configured default local Unix/loopback SSH connection, pinned for the call. Default 300 seconds, maximum 1800. Bounded stdout/stderr are returned, including errors, and may contain secrets. For create, env_from_container privately copies an existing container's environment over stdin and verifies it; only the created ID and equality result are returned. No arbitrary stdin/TTY, host shell, compose, machine SSH, connection changes or client output files. Every call uses /approvals policy or human approval unless the user explicitly saved engine-wide project access at a repeated prompt. In interactive sessions that grant skips further confirmations and automatic review for this project/connection; without UI a configured automatic policy and fresh exact review are required; revoke with /podman-access permissions. Never delegated.",
     promptGuidelines: ["Use this tool directly for authorized Podman work, including image builds blocked in Bash. It does not grant Podman access to Bash or cargo xtask. Specify each native Podman operation explicitly. Inspect effects before a retry. Commands can change the engine, publish images, send build contexts and affect host-mounted data: explain exact targets, mounts and network destinations. Do not pass secret values or display raw env/secret output. Prefer request_host_access podman_inspect for sanitized diagnostics. Never use containers or mounts to change Pi/Codex permissions, runtime or host credentials. A successful CLI exit does not prove application health."],
     async execute(id, input, signal, update, ctx) {
       const request = validateRequest(input);
@@ -100,7 +101,7 @@ export function registerPodmanAccess(pi: ExtensionAPI, agentDir: string, verify:
         const cwd = realpathSync(ctx.cwd);
         const validate = () => {
           owned.throwIfAborted(); verify(ctx);
-          if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("request_podman_access")) throw new Error("Podman requires the interactive parent in the same workspace");
+          if ((!ctx.hasUI && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("request_podman_access")) throw new Error("Podman requires the interactive parent or a configured automatic parent policy in the same workspace");
         };
         validate();
         const connection = await localPodman(cwd, agentDir, owned, execute);
@@ -119,7 +120,7 @@ export function registerPodmanAccess(pi: ExtensionAPI, agentDir: string, verify:
         };
         const ticket = await approvals.authorize(ctx, {
           resource: "podman-access", auditOperation: request.args.slice(0, groups[request.args[0]] ? 2 : 1).join(" "), toolCallId: id,
-          identity: connection.identity, operation: fingerprint([cwd, argv, timeoutMs, request.env_from_container]), remember: false, interactiveOnly: true,
+          identity: connection.identity, operation: fingerprint([cwd, argv, timeoutMs, request.env_from_container]), remember: false, interactiveOnly: true, automaticWithoutUI: true,
           projectAccess: {
             operation: "podman-engine-v1", label: PODMAN_PROJECT_CHOICE,
             detail: "Option permanente : toutes les opérations du pont sur ce moteur local, avec d'autres arguments, sans confirmation ni revue automatique. Inclut suppressions de conteneurs/volumes, publications et montages hôte ; ressources non limitées au projet. Liée au projet, à la connexion et au client affichés ci-dessus. Révocation : /podman-access permissions.",

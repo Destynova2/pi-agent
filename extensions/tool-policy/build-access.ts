@@ -1,3 +1,4 @@
+import { hasAutomaticReview } from "../../lib/approval-review.ts";
 import { closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +30,7 @@ export function registerBuildAccess(pi: ExtensionAPI, agentDir: string, verify: 
   });
   pi.registerTool({
     name: "request_build_access", label: "Request KVM image build", executionMode: "sequential",
-    description: "Ask the human to run ansible-playbook -i localhost, ansible/build.yml once in the current Linux project. Dedicated Bubblewrap sandbox: only .cache/, output/ and private temporary storage are writable, /dev/kvm is exposed, and the FULL host network is available (local services, TCP/UDP and Unix sockets), without the ordinary public-host proxy restrictions. Project build code and dependencies can use that network; inspect them first. Default duration 120 minutes, maximum 240. Requires host KVM permissions, /usr/bin/bwrap, /usr/bin/python3 and installed ansible-playbook. Foreground and supervised: cancel or /build-access reset stops the process tree. Never use for arbitrary commands, harness changes, delegated/headless execution or repeated unchanged failures. Logs may contain secrets and are stored privately; a successful exit still requires artifact validation.",
+    description: "Request reviewed execution of ansible-playbook -i localhost, ansible/build.yml once in the current Linux project. Dedicated Bubblewrap sandbox: only .cache/, output/ and private temporary storage are writable, /dev/kvm is exposed, and the FULL host network is available (local services, TCP/UDP and Unix sockets), without the ordinary public-host proxy restrictions. Project build code and dependencies can use that network; inspect them first. Default duration 120 minutes, maximum 240. Supports the headless parent with a configured automatic review policy. Requires host KVM permissions, /usr/bin/bwrap, /usr/bin/python3 and installed ansible-playbook. Foreground and supervised: cancel or /build-access reset stops the process tree. Never use for arbitrary commands, harness changes, delegated execution or repeated unchanged failures. Logs may contain secrets and are stored privately; a successful exit still requires artifact validation.",
     promptGuidelines: [
       "When an authorized Packer/Ansible image build needs /dev/kvm, use this capability after inspecting ansible/build.yml, packer/, config/ and ansible.cfg. No fabricated Bash failure is required. Ordinary Bash, write_paths and public network grants cannot provide this capability.",
       "Keep the task open until completion and verify artifacts. Inspect private logs carefully on failure without exposing credentials. Approval never proves KVM works: the worker must create a VM inside the sandbox before starting Ansible.",
@@ -50,7 +51,7 @@ export function registerBuildAccess(pi: ExtensionAPI, agentDir: string, verify: 
           const cwd = realpathSync(ctx.cwd);
           const validate = () => {
             owned.throwIfAborted(); verify(ctx);
-            if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("request_build_access")) throw new Error("Build access requires the interactive parent in the same workspace");
+            if ((!ctx.hasUI && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("request_build_access")) throw new Error("Build access requires the interactive parent or a configured automatic parent policy in the same workspace");
             const kvm = dependencies.inspectKvm();
             if (!kvm.available) throw new Error(`KVM_UNAVAILABLE on host: ${kvm.reason}. Check /dev/kvm and the user's existing access on the host; no automatic chmod, module load or retry.`);
           };
@@ -58,18 +59,19 @@ export function registerBuildAccess(pi: ExtensionAPI, agentDir: string, verify: 
           const plan = prepareBuild(cwd, agentDir), identity = fingerprint(plan), expires = Date.now() + 300_000;
           const title = "Autoriser ce build KVM ?";
           const detail = `Une fois, ${minutes} min. /dev/kvm ; réseau COMPLET de l’hôte (TCP/UDP, sockets, services locaux) accessible au code et aux dépendances du build.\nÉcritures : .cache/, output/, temporaire privé. Autres fichiers en lecture seule.\nCommande : ${JSON.stringify([plan.executable.command, "-i", "localhost,", "ansible/build.yml"])}\nSources : ${plan.sourceSha256.slice(0, 16)}\nMotif : ${reason}`;
+          const visible = approvalDisplayText(`${title}\nProjet : ${JSON.stringify(cwd)}\n${detail}`);
           const revalidate = () => {
             validate();
             if (Date.now() > expires) throw new Error("Build approval expired");
-            const visible = approvalDisplayText(`${title}\nProjet : ${JSON.stringify(cwd)}\n${detail}`);
-            if (wrapTextWithAnsi(visible, Math.max(20, (process.stdout.columns ?? 80) - 4)).length > Math.max(1, (process.stdout.rows ?? 24) - 8)) throw new Error("Build approval does not fit the terminal; shorten the reason or enlarge the window so the full operation and both choices are visible");
             if (fingerprint(prepareBuild(cwd, agentDir)) !== identity) throw new Error("Build sources, executable or worker changed during approval");
           };
           const ticket = await approvals.authorize(ctx, {
             resource: "build-access", auditOperation: "kvm-build", toolCallId: id, identity,
-            operation: fingerprint({ cwd, minutes }), remember: false, interactiveOnly: true,
+            operation: fingerprint({ cwd, minutes }), remember: false, interactiveOnly: true, automaticWithoutUI: true,
             title, detail,
-            revalidate,
+            revalidate, beforePrompt: () => {
+              if (wrapTextWithAnsi(visible, Math.max(20, (process.stdout.columns ?? 80) - 4)).length > Math.max(1, (process.stdout.rows ?? 24) - 8)) throw new Error("Build approval does not fit the terminal; shorten the reason or enlarge the window so the full operation and both choices are visible");
+            },
           }, owned);
           ticket();
           for (const name of [".cache", "output"]) {

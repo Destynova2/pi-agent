@@ -17,7 +17,7 @@ export { PACKAGE_DIRECTORY };
 
 export const MANAGED_DIRS = ["agents", "extensions", "lib", "gates"];
 export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "scripts/codex-tool.mjs", "scripts/codex-network.mjs", "scripts/metal-backend.mjs", "scripts/build-worker.mjs", "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs",
-  "scripts/git-operation.mjs", "scripts/git-worktree.mjs", "scripts/git-hook-guard.mjs", "scripts/web-read-worker.mjs", "scripts/jj-checkpoint.mjs", "scripts/audit-report.mjs",
+  "scripts/git-operation.mjs", "scripts/git-init.mjs", "scripts/git-worktree.mjs", "scripts/git-hook-guard.mjs", "scripts/web-read-worker.mjs", "scripts/jj-checkpoint.mjs", "scripts/audit-report.mjs",
   ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`),
 ];
 const RETIRED_FILES = ["extensions/model-fallback/index.ts", "tool-policy.json", "extensions/tool-policy/core.ts", "extensions/tool-policy/task.ts", "extensions/tool-policy/tests/policy.test.ts", "extensions/tool-policy/tests/task.test.ts", "extensions/tool-policy/tests/skills.test.ts"];

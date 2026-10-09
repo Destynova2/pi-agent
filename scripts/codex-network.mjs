@@ -90,11 +90,16 @@ export function confinedCommand(command) {
   return ["--", "/usr/bin/env", "PI_CONFINED=1", "/bin/bash", "--noprofile", "--norc", "-c", command];
 }
 
-export function networkSandboxArgs(command, cwd, scratch, allowedHosts, writableRoots = [], readOnlyRoots = []) {
+export function networkSandboxArgs(command, cwd, scratch, allowedHosts, writableRoots = [], readOnlyRoots = [], privateHost) {
   const allowed = hosts(allowedHosts);
+  // This exception belongs to a reviewed Git operation, never a baseline/session grant.
+  if (privateHost !== undefined && (allowed.length !== 1 || allowed[0] !== normalizeHost(privateHost))) throw new Error("Private Git networking requires exactly its reviewed host");
+  // On macOS allow_local_binding also opens direct host-loopback sockets and
+  // DNS, outside the proxy's domain filter. Linux retains a private namespace.
+  if (privateHost !== undefined && process.platform !== "linux") throw new Error("PRIVATE_GIT_NETWORK_UNAVAILABLE: private Git access requires Linux network isolation; this platform cannot confine it to the reviewed host. No command executed; no unconfined fallback.");
   const domains = allowed.map(host => `${JSON.stringify(host)}="allow"`).join(",");
   const filesystem = sandboxFilesystem(scratch, writableRoots, readOnlyRoots);
-  const network = `network={enabled=true,proxy_url="http://127.0.0.1:0",enable_socks5=false,enable_socks5_udp=false,allow_upstream_proxy=false,allow_local_binding=false,dangerously_allow_non_loopback_proxy=false,dangerously_allow_all_unix_sockets=false,mode="full",domains={${domains}}}`;
+  const network = `network={enabled=true,proxy_url="http://127.0.0.1:0",enable_socks5=false,enable_socks5_udp=false,allow_upstream_proxy=false,allow_local_binding=${privateHost !== undefined},dangerously_allow_non_loopback_proxy=false,dangerously_allow_all_unix_sockets=false,mode="full",domains={${domains}}}`;
   return ["sandbox", "-C", cwd, "-P", "pi", "--include-managed-config",
     "-c", 'features.network_proxy=true',
     "-c", `permissions={pi={extends=":workspace",${filesystem},${network}}}`,
