@@ -300,7 +300,7 @@ function installPackages(packages, target, env) {
     let res;
     try {
       res = spawnSync("pi", ["install", source, "--no-approve"], {
-        env: { ...env, PI_CODING_AGENT_DIR: target },
+        env: { ...env, PI_CODING_AGENT_DIR: target, npm_config_save_exact: "true", npm_config_ignore_scripts: "true" },
         stdio: ["ignore", fd, fd],
       });
     } finally { closeSync(fd); }
