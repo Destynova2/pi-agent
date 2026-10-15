@@ -57,6 +57,14 @@ To install to pi's default target (`$PI_CODING_AGENT_DIR` or `~/.pi/agent`):
 node scripts/install.mjs
 ```
 
+## Model transport through Grob
+
+`extensions/grob` registers one Pi provider, `grob`, that speaks the Anthropic Messages API to the local [Grob](https://github.com/azerozero/grob) proxy (`GROB_URL`, default `http://127.0.0.1:13456`). Its model list starts with Grob's logical tiers and is refreshed from Grob's `/v1/models`, so routing, fallback and budgets are configured in `~/.grob/config.toml`, not in this repo. The default session model is `grob/default-model`; the bundled agents use `grob/default-model` (worker), `grob/think-model` (reviewer) and `grob/background-model` (scout), so Grob's router picks the upstream provider and complexity tier. Explicit upstream names such as `grob/claude-fable-5-1` remain selectable for a single-provider run.
+
+Grob must be running before Pi starts: `grob start -d` (or `grob status`). Pi does not read the `ANTHROPIC_BASE_URL` variables that `grob exec` sets; the extension supplies the endpoint. Grob runs with `[auth] mode = "none"` on loopback and injects its own upstream OAuth tokens; the extension's dummy key only satisfies Pi's credential check. A session start with the proxy down shows a warning; `node scripts/doctor.mjs --installed` reports the same `/health` probe as an optional check.
+
+To see what went through the proxy and why: `grob watch` (live), `tail -f ~/.grob/grob.log` (route decisions such as `[think :stream] default-model -> chatgpt-codex/gpt-6-astra`), `grob spend` (budget) and `grob logs` (encrypted traces). The `web_search` tool still uses the Claude login directly, not Grob.
+
 ## Validate before activating
 
 Run this from a host terminal capable of starting Codex's sandbox, not from inside the agent's restricted shell. If `pi` is a wrapper, first set `PI_PACKAGE_JSON` to its installed SDK manifest as described above. The live target is not touched until the full staged gate passes:

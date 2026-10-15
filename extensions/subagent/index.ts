@@ -351,9 +351,14 @@ export default function (pi: ExtensionAPI) {
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 
+			const hasSingle = Boolean(params.agent && params.task);
+			// Routed models tend to echo the single task into tasks/chain; a one-item duplicate is not a second mode.
+			const echoesSingle = (items?: { agent: string; task: string }[]) =>
+				hasSingle && items?.length === 1 && items[0].agent === params.agent && items[0].task === params.task;
+			if (echoesSingle(params.tasks)) params.tasks = undefined;
+			if (echoesSingle(params.chain)) params.chain = undefined;
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
-			const hasSingle = Boolean(params.agent && params.task);
 			const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
 
 			const makeDetails =
@@ -372,7 +377,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}`,
+							text: `Invalid parameters. Provide exactly one mode: {agent, task} for one child, or tasks[] for parallel, or chain[] for sequential; never two of them.\nAvailable agents: ${available}`,
 						},
 					],
 					details: makeDetails("single")([]),

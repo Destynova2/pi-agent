@@ -82,7 +82,17 @@ async function checkBundledTool(target, relPath) {
   }
 }
 
-async function checkInstalledRuntime(target) {
+/** Reports whether the Grob proxy used by extensions/grob answers /health; never sends credentials. */
+async function checkGrobProxy(env) {
+  const name = "Grob proxy";
+  const baseUrl = (env.GROB_URL ?? "http://127.0.0.1:13456").replace(/\/+$/, "");
+  try {
+    const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000) });
+    return { name, required: false, ok: response.ok, detail: `${baseUrl} -> HTTP ${response.status}` };
+  } catch (error) { return { name, required: false, ok: false, detail: `${baseUrl} unreachable (${error.message}); run \`grob start -d\`` }; }
+}
+
+async function checkInstalledRuntime(target, env) {
   const results = [];
   for (const file of CONFINED_RUNTIME_FILES) {
     try {
@@ -105,6 +115,7 @@ async function checkInstalledRuntime(target) {
       results.push({ name: `${name}@${version}`, required: true, ok: actual === version, detail: actual ?? "not installed" });
     }
     results.push({ name: "MCP configuration file", required: false, ok: await access(join(target, "mcp.json")).then(() => true, () => false), detail: "presence only; local stdio servers still require runtime validation" });
+    results.push(await checkGrobProxy(env));
   } catch (error) { results.push({ name: "installed settings", required: true, ok: false, detail: error.message }); }
   return results;
 }
@@ -129,7 +140,7 @@ export async function runDoctor({ target, strict = false, installed = false, env
     results.push(await checkBundledTool(resolvedTarget, tool));
   }
 
-  if (installed) results.push(...await checkInstalledRuntime(resolvedTarget));
+  if (installed) results.push(...await checkInstalledRuntime(resolvedTarget, env));
 
   const missingRequired = results.filter((r) => r.required && !r.ok);
   const missingOptional = results.filter((r) => !r.required && !r.ok);

@@ -24,7 +24,8 @@
       "./extensions/web/index.ts",
       "./extensions/mcp/index.ts",
       "./extensions/confined-lsp/index.ts",
-      "./extensions/dunst/index.ts"
+      "./extensions/dunst/index.ts",
+      "./extensions/grob/index.ts"
     ],
     "skills": [],
     "prompts": [],

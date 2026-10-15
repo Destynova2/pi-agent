@@ -87,6 +87,7 @@ extensions/          explicit entry points in package.json → pi.extensions
   mcp/               configured local MCP stdio servers
   dunst/             host application control (denied by the strict dispatcher)
   ci-watch/          ci_watch tool
+  grob/              grob provider: model traffic through the local Grob proxy
   graphify/          project_graph tool
   web/               web_fetch, web_search
   anthropic-docs-compat/  pi doc paths in the prompt
