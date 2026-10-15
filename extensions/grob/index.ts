@@ -27,7 +27,12 @@ export interface GrobModel {
 	maxTokens: number;
 }
 
-/** Pi metadata for one Grob model id. Logical tiers use Grob's default 128k guard; upstream names get their family's limits. */
+/**
+ * Pi metadata for one Grob model id. Logical tiers use Grob's default 128k guard; upstream names get their family's limits.
+ * Only `think-model` and explicit upstream names advertise reasoning: a `thinking` block makes Grob take its think route,
+ * which would send `default-model`/`background-model` to the think tier instead of their own mappings. Upstream effort
+ * for the non-thinking tiers stays Grob's provider default.
+ */
 export function grobModel(id: string): GrobModel {
 	const claude = id.startsWith("claude-");
 	return {
@@ -35,7 +40,7 @@ export function grobModel(id: string): GrobModel {
 		name: `${id} (Grob)`,
 		input: claude ? ["text", "image"] : ["text"],
 		cost: ZERO_COST, // Subscription traffic; `grob spend` is the accounting surface.
-		reasoning: true,
+		reasoning: !TIER_IDS.includes(id) || id === "think-model",
 		contextWindow: claude ? (/haiku/.test(id) ? 200_000 : 1_000_000) : id.startsWith("gpt-") ? 272_000 : 128_000,
 		maxTokens: claude || id.startsWith("gpt-") ? 128_000 : 32_000,
 	};

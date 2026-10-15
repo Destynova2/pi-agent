@@ -22,6 +22,11 @@ test("model metadata follows the id family", () => {
   assert.equal(grobModel("claude-haiku-4-5").contextWindow, 200_000);
   assert.equal(grobModel("gpt-6-astra").contextWindow, 272_000);
   assert.equal(grobModel("think-model").cost.output, 0);
+  // Only the think tier and upstream names send a thinking block; otherwise Grob's think route hijacks the tier.
+  assert.equal(grobModel("think-model").reasoning, true);
+  assert.equal(grobModel("default-model").reasoning, false);
+  assert.equal(grobModel("background-model").reasoning, false);
+  assert.equal(grobModel("gpt-6-astra").reasoning, true);
 });
 
 test("discovery keeps the logical tiers and adds what Grob advertises", async () => {
