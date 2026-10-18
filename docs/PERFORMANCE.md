@@ -59,7 +59,7 @@ The advertised 671-token Jcode core excludes tool schemas and other context. Com
 
 ## Always-on budget (2026-10-18)
 
-`tests/prompt-budget.test.mjs` loads every extension through Pi's own loader, fires `before_agent_start` as the first call would, and sums this package's always-on text: prompt sections plus the descriptions and guidelines of the tools active at that point (dormant tools excluded). The suite fails above `ALWAYS_ON_MAX` (30,000 characters), so new prose has to be paid for by cutting prose, as in harness2's `always_on_max`. Measured on 2026-10-18 after the review fixes: 16,091 characters of sections and 13,708 of tool text for 21 active tools, 29,799 in total (the test prints the current figure). The figure excludes Pi's own prompt, tool parameter schemas and skill lines, which the token measurements above include.
+`tests/prompt-budget.test.mjs` loads every extension through Pi's own loader, fires `before_agent_start` as the first call would, and sums this package's always-on text: prompt sections plus the descriptions and guidelines of the tools active at that point (dormant tools excluded). The suite fails above `ALWAYS_ON_MAX` (30,000 characters), so new prose has to be paid for by cutting prose, as in harness2's `always_on_max`. Measured on 2026-10-18 after the review fixes: 16,081 characters of sections and 13,918 of tool text for 22 active tools, 29,999 in total (the test prints the current figure). The figure excludes Pi's own prompt, tool parameter schemas and skill lines, which the token measurements above include.
 
 ## On-demand loading (2026-10-17)
 
@@ -69,7 +69,7 @@ Measured on the first model call of a `pi -p` session through Grob (Codex tokeni
 |---|---|
 | Baseline | 25 762 |
 | Skill catalogue: first sentence + "Use when…" hint, 240 chars max (`extensions/lean-prompt`) | 20 468 |
-| Rare parent-only tools (eight then, nine with `harness_update`) dormant until `load_tools`; Pi drops their declarations, guidelines and sections | 18 452 |
+| Rare parent-only tools (eight then; `harness_update` added, `ci_watch` returned to subagents) dormant until `load_tools`; Pi drops their declarations, guidelines and sections | 18 452 |
 | `confined_tools` section rewritten (7 103 → 4 881 chars), tool-specific rules moved into the tools' own guidelines | 18 241 |
 | Copies removed (jj rules kept once in `jj_workflow`, task rules once in `task_completion`); project notes injected as a 12-line index instead of 20 full notes | 17 764 |
 

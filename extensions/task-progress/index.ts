@@ -54,7 +54,8 @@ export default function register(pi: ExtensionAPI) {
   pi.on("agent_end", (event, ctx) => {
     if (!rounds) return;
     const last = event.messages?.at(-1);
-    const next = last?.role === "assistant" && last.stopReason === "aborted" ? { stop: "the turn was interrupted" } : nextRound(rounds, restore(ctx));
+    // agent_end also fires after an interrupted or failed turn; a queued round would land in the user's next prompt.
+    const next = last?.role === "assistant" && (last.stopReason === "aborted" || last.stopReason === "error") ? { stop: `the turn ${last.stopReason === "aborted" ? "was interrupted" : "ended with an error"}` } : nextRound(rounds, restore(ctx));
     if (next.message) return pi.sendUserMessage(next.message, { deliverAs: "followUp" });
     disarm();
     ctx.ui.notify(`Automatic continuation stopped: ${next.stop}.`, "info");

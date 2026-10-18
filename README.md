@@ -21,7 +21,7 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Adapt delegation automatically | Ask normally: work starts direct and splits when useful; `/orchestrate <request>` remains optional |
 | Delegate or resume a subtask | `subagent` with `agent: scout\|worker\|reviewer`; reuse the returned `resume` ID for a follow-up |
 | Inspect tool confinement | `/confined-tools`: available executors and approval boundaries |
-| Use a rarely needed capability | `load_tools` with the tool names (build, Podman, host, repository init, worktree cleanup, model catalog, CI watch, isolated runs, harness update); declared with their rules from the next call |
+| Use a rarely needed capability | `load_tools` with the tool names (build, Podman, host, repository init, worktree cleanup, model catalog, isolated runs, harness update); declared with their rules from the next call |
 | Run a long command | `bash_background` starts it; `bash_process` inspects or stops it; completion arrives automatically. Foreground `bash` stays native. |
 | Review permissions automatically | `/approvals auto <scope>` for this project; `/approvals auto-deny <scope>` refuses uncertainty without prompting; `/approvals global auto <scope>` sets the default for projects without their own policy; [automatic review](docs/AUTO-APPROVALS.md) |
 | Improve the harness itself | Patch the source repository, then `harness_update` (via `load_tools`): the human confirms the host-side `npm run verify` before it runs, then the install of the exact verified tree (installer with backup); restart Pi to activate. Keeping it unchanged is a valid outcome; always-on prose is capped by `tests/prompt-budget.test.mjs` |

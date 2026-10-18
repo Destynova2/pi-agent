@@ -23,7 +23,7 @@ hook.deregister();
 
 // harness2's always_on_max, as a gate: this package's always-on prompt text (sections, plus the
 // descriptions and guidelines of the tools active on the first call) may not grow past this many
-// characters. Adding prose means cutting prose. Measured 29,799 on 2026-10-18 (docs/PERFORMANCE.md);
+// characters. Adding prose means cutting prose. Measured 29,999 on 2026-10-18 (docs/PERFORMANCE.md);
 // raise the cap only with a new measurement there.
 export const ALWAYS_ON_MAX = 30_000;
 

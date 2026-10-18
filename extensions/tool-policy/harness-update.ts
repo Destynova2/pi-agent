@@ -47,8 +47,8 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
           try { manifest = JSON.parse(readFileSync(join(source, "package.json"), "utf8")); } catch { /* reported below */ }
           if (manifest.name !== "pi-agent-config" || !existsSync(join(source, "scripts/install.mjs"))) throw new Error(`${source} is not a pi-agent-config source repository`);
           const git = async (args: string[], env?: Record<string, string>) => (await execute("git", ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd: source, signal: owned, timeoutMs: 60_000, maxBytes: 1 << 20, env })).trim();
-          // Content identity of the working tree (tracked and untracked, ignores respected) through a
-          // throwaway index: the approval and the install are bound to exactly what verify saw.
+          // Content identity of the working tree (tracked and untracked, ignored files excluded) through a
+          // throwaway index: the approval and the install are bound to what verify saw, up to gitignored files.
           const treeDigest = async () => {
             const index = join(tmpdir(), `pi-harness-index-${process.pid}-${randomUUID()}`);
             try { await git(["add", "-A", "--", "."], { GIT_INDEX_FILE: index }); return await git(["write-tree"], { GIT_INDEX_FILE: index }); }

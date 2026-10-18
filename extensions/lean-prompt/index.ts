@@ -21,7 +21,6 @@ export const DEFERRED_TOOLS: Record<string, string> = {
 	git_repository_init: "initialize a separate repository with empty main, develop and one HTTPS remote",
 	git_worktree_cleanup: "inspect, remove or prune Git worktrees with archived files and preserved branches",
 	model_catalog: "cached Pi model registry snapshot without credential or quota probes",
-	ci_watch: "watch a PR or CI run with host-side timers",
 	run_isolated: "run a command on explicit source copies in a disposable offline Linux job",
 	harness_update: "verify a pi-agent-config source on the host and install it after human confirmation",
 };
