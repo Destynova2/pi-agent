@@ -13,7 +13,11 @@ import { metalBackend } from "../../scripts/metal-backend.mjs";
 
 interface FailedCommand { command: string; cwd: string; expires: number }
 
+/** True only with a reviewed, natively qualified Metal backend installed in the agent directory. */
+export function hasMetalBackend(agentDir: string): boolean { try { metalBackend(agentDir); return true; } catch { return false; } }
+
 export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
+  const metal = hasMetalBackend(agentDir);
   let root: string | undefined;
   let tasks = new SessionTasks();
   let tail: Promise<unknown> = Promise.resolve();
@@ -75,12 +79,13 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
 
   pi.registerTool({
     name: "request_command_access", label: "Request one-command access",
-    description: "After a failed foreground Bash call, request approval to rerun that exact command once with additional filesystem write paths and/or Metal GPU access. Metal requires a separately reviewed, installed and natively qualified backend; it never grants file or network access. GPU-only requests offer once/session/project consent bound to that backend; /command-access permissions revokes it. Additional filesystem writes still require exact one-shot approval. The stored command and cwd cannot be replaced. Runtime/configuration paths (including Pi locks) and workspace ancestors cannot be granted. Codex confinement and existing network policy remain active. Directories grant their subtree. With a configured automatic policy, fresh review also works without UI and never reuses remembered human grants. No background, delegated or unsandboxed execution. Requests expire after five minutes and are consumed once, including refusal. Execution is limited to 60 seconds and the command tree is canceled on session changes.",
-    promptGuidelines: [
-      "KVM is not a filesystem write grant. For an authorized Packer/Ansible image build needing /dev/kvm, use request_build_access after inspecting the project sources; do not request /dev or /dev/kvm in write_paths.",
-      "Only request the write paths or Metal capability necessary for the reported failure. Inspect partial effects before proposing a retry. Never use another executor to bypass a sandbox denial.",
+    description: `After a failed foreground Bash call, request approval to rerun that exact command once with additional filesystem write paths${metal ? " and/or Metal GPU access (gpu=metal): a separately reviewed, installed and natively qualified backend that never grants file or network access; GPU-only requests offer once/session/project consent bound to that backend, revoked by /command-access permissions" : ""}. Additional filesystem writes require exact one-shot approval. The stored command and cwd cannot be replaced. Runtime/configuration paths (including Pi locks) and workspace ancestors cannot be granted. Codex confinement and existing network policy remain active. Directories grant their subtree. With a configured automatic policy, fresh review also works without UI and never reuses remembered human grants. No background, delegated or unsandboxed execution. Requests expire after five minutes and are consumed once, including refusal. Execution is limited to 60 seconds and the command tree is canceled on session changes.`,
+    promptGuidelines: [...(metal ? [
       "Ordinary Bash has no Metal access, even after installation or restart. A nil Metal device there does not test the optional backend. After an eligible failure, use this tool with gpu=metal and the captured failed_call_id; report the approved rerun result.",
       "Keep the GPU command in native foreground bash with an explicit timeout. Preserve its real failure status: use set -o pipefail for pipelines, do not append echo or otherwise swallow an error, and make a Metal probe exit nonzero when no device is available. A successful shell result cannot request access. Never manufacture an unrelated failure to obtain a grant.",
+    ] : []),
+      "KVM is not a filesystem write grant. For an authorized Packer/Ansible image build needing /dev/kvm, use request_build_access after inspecting the project sources; do not request /dev or /dev/kvm in write_paths.",
+      "Only request the write paths or Metal capability necessary for the reported failure. Inspect partial effects before proposing a retry. Never use another executor to bypass a sandbox denial.",
     ],
     parameters: Type.Object({
       failed_call_id: Type.String({ minLength: 1, maxLength: 256 }),
