@@ -67,5 +67,5 @@ IFS= read -r answer
 [[ "$answer" == DEPLOY ]] || { printf 'Cancelled; live installation unchanged.\n'; exit 0; }
 run live-install node scripts/install.mjs --target "$target"
 run live-doctor node scripts/doctor.mjs --target "$target" --installed
-printf '\nDeployment checked. Backup path: see %s/live-install.log\nActivate in open sessions with /reload, or start pi normally (project code stays untrusted)\n' "$stage"
+printf '\nDeployment checked. Backup path: see %s/live-install.log\nActivate in open sessions with /reload (restart if .mjs modules changed), or start pi through the managed launcher\n' "$stage"
 printf 'Provider authentication, personal MCP servers and physical clipboard are not validated by this gate.\n'
