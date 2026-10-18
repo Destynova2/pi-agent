@@ -105,8 +105,8 @@ or `/jj-checkpoint permissions`; use `/command-access permissions` for Metal and
 engine grant and its first-use marker. Legacy human-approved network grants last
 until the Pi session ends. New automatic network requests must include `command`
 and never save session grants. The exact host set lasts only for that supervised
-command and its descendants; it includes uploads and all ports. Restart Pi to
-discard old session grants.
+command and its descendants; it includes uploads and all ports. `/reload` or a
+restart discards old session grants.
 
 ## Audit and verification
 
@@ -130,6 +130,6 @@ node --import ./tests/resolve-pi.mjs --test --test-timeout=15000 \
 
 Tests use a fake model and disposable executors. They make no provider calls and
 do not operate real containers. Install with the normal backup-producing installer
-and restart Pi before using the new command. Installation preserves explicit project policies. Legacy capabilities remain
+and `/reload` before using the new command. Installation preserves explicit project policies. Legacy capabilities remain
 manual until project opt-in; the no-dialog capabilities above qualify the current
 user task unless a saved policy overrides that default.

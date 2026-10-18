@@ -34,7 +34,7 @@ The package targets Pi **1.x, minimum 1.0.4**. The updater requires the native i
 
 No installed Pi or background-Bash package files are patched. Integration uses public extension, tool, widget and session APIs:
 
-- Startup uses native `--no-approve`, supplied automatically by the managed launcher. This declines project resources; it does not disable tool approvals or the OS sandbox.
+- Startup uses native `--no-approve`, supplied automatically by the managed launcher: Pi trusts a project without protected resources unless that flag is given, so an upstream launcher must pass it. The installer also sets `defaultProjectTrust: "never"` so a project with protected resources never prompts. Neither disables tool approvals or the OS sandbox.
 - The `terminal-paste` extension refreshes bracketed-paste mode through the public TUI terminal while Pi owns a raw TTY. Its widget lifecycle and session shutdown release the timer. This does not validate the physical clipboard.
 - Foreground `bash` is Pi's native tool. Long-running commands use `bash_background`; `bash_process` and completion notifications come from the public `backgroundBash` factory. Automatic foreground-to-background handoff is no longer used.
 - The task widget reads native session checkpoints and tracks active delegation calls. RPC and print execution do not require a widget.
@@ -98,7 +98,7 @@ node scripts/doctor.mjs --installed
 
 `PI_PACKAGE_JSON` selects the SDK of the runtime you will use. No separate old-runtime fixture or paste patch is required.
 
-Keep the stage and failure output if a gate fails; do not continue to the live install. Successful installation prints the backup location. Restart Pi with `--no-approve`; an already-running session keeps its old executors. MCP server definitions and provider logins are user-owned and are not invented or copied into the stage. This gate checks fixture-backed services and OS boundaries, not authenticated search or a live PR subscription.
+Keep the stage and failure output if a gate fails; do not continue to the live install. Successful installation prints the backup location. Run `/reload` in open sessions (TypeScript extensions, settings and launchers reload in place); start new ones with plain `pi` through the managed launcher. Restart instead when Pi itself or an installed `.mjs` module changed (Node caches those past `/reload`; `harness_update` says which case applies), and `pi -c` continues the previous session. MCP server definitions and provider logins are user-owned and are not invented or copied into the stage. This gate checks fixture-backed services and OS boundaries, not authenticated search or a live PR subscription.
 
 The installer pins `typescript@7.0.2` through Pi's package manager and configures its native LSP entry point by absolute path. No global `tsc`, project dependency or network download on first LSP use is needed. Routing includes TS/TSX and JS/JSX/MJS/CJS with package/Git root markers. The exact old shipped TypeScript definition is migrated; custom servers, other LSP settings and disabled-server preferences remain unchanged. `--no-packages` does not install this server: `doctor --installed` reports it missing.
 
@@ -148,7 +148,7 @@ The host needs accessible KVM, `/usr/bin/bwrap` with `--disable-userns`, `/usr/b
 
 Use `pi --no-approve` with an upstream launcher. Pi's native option keeps the project untrusted even when no protected project resources exist or a previous trust entry is present. Our `project_trust` handler remains a second integration point; tool guards still refuse a trusted session.
 
-The managed launcher inserts `--no-approve` before a prompt delimiter and rejects `--approve`/`-a`. It does not rewrite the SDK, edit the trust store, or widen tool permissions. Existing processes need a restart: `/reload` cannot undo code loaded earlier in a trusted session.
+The managed launcher inserts `--no-approve` before a prompt delimiter and rejects `--approve`/`-a`. It does not rewrite the SDK, edit the trust store, or widen tool permissions. A session started trusted needs a restart: `/reload` cannot undo code loaded earlier in a trusted session.
 
 `pi mcp add`, `pi mcp remove` and MCP help use the native configuration-only parser, which rejects session trust flags. The launcher forwards those arguments unchanged, including the server command after `--`; they do not launch a server. For discovery or calls, use the confined `mcp` tool inside Pi. Native `pi mcp list` connects servers outside this bridge and is not part of this exception.
 

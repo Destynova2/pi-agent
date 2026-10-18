@@ -58,6 +58,7 @@ test("settings activation failure preserves the configured legacy runtime", asyn
     }), /activation interruption/);
     const settings = await readJson(join(target, "settings.json"));
     assert.equal(settings.shellPath, committed ? join(target, PACKAGE_DIRECTORY, "scripts/codex-shell.mjs") : shell);
+    if (committed) assert.equal(settings.defaultProjectTrust, "never", "project code is untrusted without --no-approve");
     assert.equal(await readFile(shell, "utf8"), "// working legacy shell\n");
     assert.ok(!(await readdir(target)).some(name => name.endsWith(".tmp")));
     if (committed) assert.ok(settings.extensions.includes("-extensions/demo/index.ts"));

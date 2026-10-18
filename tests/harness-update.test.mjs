@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { registerHarnessUpdate } from "../extensions/tool-policy/harness-update.ts";
 
 // Every host process is injected: the test proves what runs, in which order, and what never runs.
-function fixture({ confirms, trees = ["tree-a", "tree-a", "tree-a"], verifyFails = false }) {
+function fixture({ confirms, trees = ["tree-a", "tree-a", "tree-a"], verifyFails = false, installChanges = false }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-harness-update-")));
   const agent = join(root, "agent"), source = join(root, "source"), cwd = join(root, "project");
   for (const dir of [agent, join(source, "scripts"), cwd]) mkdirSync(dir, { recursive: true });
@@ -18,13 +18,14 @@ function fixture({ confirms, trees = ["tree-a", "tree-a", "tree-a"], verifyFails
     calls.push([program, ...args]);
     if (program === "git") return args.includes("write-tree") ? trees.shift() : args.includes("rev-parse") ? "abc1234" : "";
     if (program === "npm") { if (verifyFails) throw new Error("exit 1"); return ""; }
+    if (installChanges) { mkdirSync(join(agent, "scripts"), { recursive: true }); writeFileSync(join(agent, "scripts/helper.mjs"), "export const v = 2;\n"); }
     return "install: done";
   };
   registerHarnessUpdate({
     on: (name, fn) => handlers.set(name, fn), registerTool: value => { tool = value; },
     getActiveTools: () => ["harness_update"], appendEntry: (type, data) => entries.push({ type, data }),
   }, agent, () => {}, execute);
-  const ctx = { cwd, hasUI: true, isProjectTrusted: () => false, ui: { confirm: async () => { assert.ok(confirms.length, "unexpected dialog"); return confirms.shift(); } } };
+  const ctx = { cwd, hasUI: true, isProjectTrusted: () => false, ui: { confirm: async () => { assert.ok(confirms.length, "unexpected dialog"); return confirms.shift(); }, notify() {} } };
   const run = (input = { source, reason: "test" }) => tool.execute("call-1", input, undefined, undefined, ctx);
   const commands = () => calls.map(call => call[0] === "git" ? `git ${call.at(-1)}` : call[0] === "npm" ? "npm verify" : "install");
   return { run, commands, entries, source, calls, cleanup: () => rmSync(root, { recursive: true, force: true }) };
@@ -62,11 +63,19 @@ test("the install is bound to the tree verify saw", async () => {
   const ok = fixture({ confirms: [true, true] });
   try {
     const result = await ok.run();
-    assert.match(result.content[0].text, /Installed .* Restart Pi/);
+    assert.match(result.content[0].text, /Installed .* Run \/reload/);
+    assert.equal(ok.entries[0].data.restart, false);
     // verify, then the digest is checked before and after the second dialog, then the install.
     assert.deepEqual(ok.commands().slice(4), ["npm verify", "git .", "git write-tree", "git .", "git write-tree", "install"]);
     assert.equal(ok.entries[0].data.tree, "tree-a");
   } finally { ok.cleanup(); }
+  // Node caches .mjs modules imported in-process past /reload: an install that changes one asks for a restart instead.
+  const modules = fixture({ confirms: [true, true], installChanges: true });
+  try {
+    const result = await modules.run();
+    assert.match(result.content[0].text, /Installed .* Restart Pi to activate it \(`pi -c`/);
+    assert.equal(modules.entries[0].data.restart, true);
+  } finally { modules.cleanup(); }
 });
 
 test("one update at a time, and only from the interactive parent", async () => {

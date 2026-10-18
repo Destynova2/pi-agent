@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
     return value ? resolve(value.replace(/^~\//, `${homedir()}/`)) : undefined;
   };
   const verify = (ctx: ExtensionContext) => {
-    if (ctx.isProjectTrusted()) throw new Error("Strict sandbox requires a fresh untrusted runtime. Restart Pi with --no-approve (the managed launcher adds it); /reload cannot undo previously loaded project extensions.");
+    if (ctx.isProjectTrusted()) throw new Error("Strict sandbox requires an untrusted runtime. Restart Pi through the managed launcher (it adds --no-approve; Pi trusts a project without protected resources otherwise); /reload cannot undo project extensions loaded in a trusted session.");
     if (!root || realpathSync(ctx.cwd) !== root || loadedShell !== launcher || shell(ctx) !== launcher) {
       throw new Error("Strict sandbox not loaded or shellPath/cwd changed. Install the Codex adapter and restart Pi. No unrestricted fallback.");
     }

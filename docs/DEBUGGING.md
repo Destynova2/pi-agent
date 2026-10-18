@@ -153,7 +153,7 @@ failed call is recorded. This is not a human refusal.
 
 The package now keeps foreground `bash` native, so Pi's structured failure result is preserved. `bash_background` uses the package's public factory with background execution forced; its completion notification already checks the process exit code. No installed files are rewritten.
 
-Reinstall this configuration and restart Pi after validating the migration. The upstream background package must remain installed with `extensions: []`; otherwise its old foreground replacement can load alongside the adapter. Inspect `doctor --installed` for both package registration and filtering. A command that exits successfully while printing an error-like sentence must still remain a success.
+Reinstall this configuration and `/reload` after validating the migration. The upstream background package must remain installed with `extensions: []`; otherwise its old foreground replacement can load alongside the adapter. Inspect `doctor --installed` for both package registration and filtering. A command that exits successfully while printing an error-like sentence must still remain a success.
 
 ## Avoid opaque waits, not security boundaries
 

@@ -123,8 +123,8 @@ submitted to the engine may remain. Always inspect before retrying.
 ## Installation and validation
 
 The normal `scripts/install.mjs --no-packages` installer copies the bridge with
-the other adapters and backs up the existing installation. Restart Pi afterward;
-with an unpatched Pi runtime, start `pi --no-approve` to keep project code untrusted.
+the other adapters and backs up the existing installation. Run `/reload` afterward (restart when installed `.mjs` modules changed);
+with an upstream launcher, start `pi --no-approve` to keep project code untrusted.
 `scripts/doctor.mjs --installed` checks the deployed bridge and reviewer files.
 
 ```bash
