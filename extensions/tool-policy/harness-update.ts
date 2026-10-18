@@ -37,12 +37,13 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
   }
   pi.registerTool({
     name: "harness_update", label: "Install a verified harness source", executionMode: "sequential", exposure: "model-only",
-    description: "After the human agrees, run the pi-agent-config source repository's `npm run verify` on the host; after a second human confirmation, install the verified tree into the agent directory with its own installer (backup kept). Never automatic, never remembered. The running session keeps the old runtime until /reload (or a restart when installed .mjs modules changed; the result says which).",
+    description: "After the human agrees, run the pi-agent-config source repository's `npm run verify` on the host; after a second human confirmation, install the verified tree into the agent directory with its own installer (backup kept). With package instead of source, install one pi package (npm:… or git:…) after one human confirmation. Never automatic, never remembered. The running session keeps the old runtime until /reload (or a restart when installed .mjs modules changed; the result says which).",
     promptGuidelines: [
       "To improve the harness: patch the pi-agent-config source (normally the current workspace), run its tests with confined tools, then call harness_update with that source path and the reason. The human confirms the host verify and then the install; a red verify, a refusal or a source changed meanwhile installs nothing. Never edit the installed agent directory directly, and never present an install as active before the /reload or restart it names ran. Keeping the harness unchanged is a valid outcome when the evidence does not argue for a change. Prefer, in order: an on-demand skill, a script, a subagent, a tool_call guard; always-on prompt text last, paid for by cutting equal text (tests/prompt-budget pins the total).",
     ],
     parameters: Type.Object({
-      source: Type.String({ minLength: 1, maxLength: 1024, description: "Absolute path of the pi-agent-config source repository" }),
+      source: Type.Optional(Type.String({ minLength: 1, maxLength: 1024, description: "Absolute path of the pi-agent-config source repository" })),
+      package: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "A pinned pi package to install into the runtime instead: npm:<name>@<exact version> or git:<host>/<owner>/<repo>@<commit sha>" })),
       reason: Type.String({ minLength: 1, maxLength: 500 }),
     }, { additionalProperties: false }),
     async execute(id, input, signal, onUpdate, ctx) {
@@ -50,12 +51,31 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
       busy = true;
       try {
         return await tasks.run(async owned => {
+          // A pi package runs with Pi's own rights: the human confirms, nothing is remembered, /reload activates it.
+          const installPackage = async (name: string, reason: string) => {
+            // Pi stores the source string as given, so only an exact version or commit keeps the dialog's "frozen version" true.
+            if (!/^npm:(@[a-z0-9._-]+\/)?[a-z0-9._-]+@\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(name) && !/^git:[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)+@[0-9a-f]{40}$/.test(name)) throw new Error("package must be pinned: npm:<name>@<exact version> or git:<host>/<owner>/<repo>@<40-hex commit>; resolve the version first (ask_user if the user must choose)");
+            const audit = new PermissionAudit(agentDir, ctx, { resource: "harness-update", operation: "install-package", toolCallId: id, payload: { package: name, reason } });
+            try {
+              if (!await ctx.ui.confirm("Installer ce paquet dans le runtime Pi ?", `Paquet : ${name}\nRaison : ${reason}\nIl s'exécutera avec les droits de Pi (scripts d'installation désactivés, version figée). Cible : ${agentDir}.`, { signal: owned })) {
+                audit.finish("denied", "human"); throw new Error("Package install refused by the user; nothing installed");
+              }
+              validate();
+              audit.finish("granted", "human", "once");
+            } catch (error) { audit.finish("cancelled"); throw error; }
+            const output = await execute("pi", ["install", name, "--no-approve"], { cwd: agentDir, signal: owned, timeoutMs: 10 * 60_000, maxBytes: 8 << 20, env: { PI_CODING_AGENT_DIR: agentDir, npm_config_save_exact: "true", npm_config_ignore_scripts: "true" } });
+            pi.appendEntry("harness_update", { package: name, agentDir, at: new Date().toISOString() });
+            ctx.ui.notify("Paquet installé : tape /reload pour l'activer.", "info");
+            return { content: [{ type: "text" as const, text: `Installed ${name} into ${agentDir}. Run /reload to activate it; this session runs without it until then.\n${output.trim().split("\n").slice(-6).join("\n")}` }], details: undefined };
+          };
           const validate = () => {
             owned.throwIfAborted(); verify(ctx);
             if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD || !pi.getActiveTools().includes("harness_update")) throw new Error("harness_update needs the interactive parent: a human confirms every install");
           };
           validate();
-          const source = realpathSync(input.source);
+          if (!!input.source === !!input.package) throw new Error("Give exactly one of source (a pi-agent-config repository) or package (a pi package)");
+          if (input.package) return installPackage(input.package, input.reason);
+          const source = realpathSync(input.source!);
           let manifest: { name?: string } = {};
           try { manifest = JSON.parse(readFileSync(join(source, "package.json"), "utf8")); } catch { /* reported below */ }
           if (manifest.name !== "pi-agent-config" || !existsSync(join(source, "scripts/install.mjs"))) throw new Error(`${source} is not a pi-agent-config source repository`);
