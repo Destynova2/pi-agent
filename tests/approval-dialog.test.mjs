@@ -17,9 +17,10 @@ test("all pages are displayed before any approval choice, with no truncated file
 
 test("escape, premature approval and cancellation never authorize a partial review", async () => {
   const text = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n"), choices = ["Refuser", "Autoriser cette fois"];
-  for (const reply of [undefined, "Refuser", "Autoriser cette fois"]) {
+  for (const reply of [undefined, "Autoriser cette fois"]) {
     assert.equal(await approvalDialog({ ui: { select: async () => reply } }, text, choices), undefined);
   }
+  assert.equal(await approvalDialog({ ui: { select: async () => "Refuser" } }, text, choices), "Refuser", "an explicit refusal is distinct from closing the dialog, even on the first page");
   const controller = new AbortController();
   await assert.rejects(approvalDialog({ ui: { select: async () => { controller.abort(); return "Lire la page suivante"; } } }, text, choices, { signal: controller.signal }), /abort/i);
 });

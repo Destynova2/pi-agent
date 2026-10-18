@@ -3,8 +3,8 @@
   "theme": "light",
   "followUpMode": "all",
   "extensions": ["-builtin:mcp"],
-  "defaultProvider": "anthropic",
-  "defaultModel": "claude-fable-5-1",
+  "defaultProvider": "grob",
+  "defaultModel": "default-model",
   "packages": [
     "npm:pi-simplify@0.2.3",
     "git:github.com/DietrichGebert/ponytail@e3ba2aa6f1e6f0bc4d69eb09c9f0d0a93af56156",

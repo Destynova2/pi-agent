@@ -16,7 +16,7 @@ import { StringDecoder } from "node:string_decoder";
 import { runProcess } from "../../lib/process.ts";
 import { CONFINED_TOOLS } from "../../lib/confined-tools.ts";
 import { openRun } from "./runs.ts";
-import { getFinalOutput, getResultOutput, isFailedResult, type SingleResult, type SubagentDetails } from "./results.ts";
+import { getFinalOutput, getPartialOutput, getResultOutput, isFailedResult, type SingleResult, type SubagentDetails } from "./results.ts";
 import { subagentRenderer } from "./render.ts";
 import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
@@ -173,6 +173,8 @@ async function runSingleAgent(
 		const runDir = run.attemptDir;
 		currentResult.resumeId = run.id;
 		currentResult.sessionPath = run.sessionPath;
+		currentResult.cwd = cwd;
+		currentResult.timeoutSeconds = dispatchDefaults.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
 		args.push("--session", run.sessionPath, "--session-dir", path.dirname(run.sessionPath));
 		if (run.tools.length) args.push("--tools", run.tools.join(",")); else args.push("--no-tools");
 		const taskPath = path.join(runDir, "task.md");
@@ -247,7 +249,8 @@ async function runSingleAgent(
 			if (currentResult.reportPath) {
 				const status = isFailedResult(currentResult) ? `FAILED: ${currentResult.errorMessage || currentResult.stopReason}\n\nPartial output:\n` : "";
 				try {
-					fs.writeFileSync(currentResult.reportPath, status + (getFinalOutput(currentResult.messages) || "(no output)"), { mode: 0o600 });
+					const output = isFailedResult(currentResult) ? getPartialOutput(currentResult.messages) : getFinalOutput(currentResult.messages);
+					fs.writeFileSync(currentResult.reportPath, status + (output || "(no intermediate text; inspect trace.jsonl for tool activity)"), { mode: 0o600 });
 				} catch (error) {
 					currentResult.exitCode = 1;
 					currentResult.errorMessage = `${currentResult.errorMessage || ""}\nCannot save report: ${String(error)}`.trim();
@@ -329,6 +332,7 @@ export default function (pi: ExtensionAPI) {
 			"Delegate tasks to specialized subagents. Fresh children have isolated context; resume continues an owned native Pi session.",
 			"Modes: single (agent + task), parallel (independent tasks only), chain (dependent steps with {previous} handoff; stops on failure).",
 			"Default execution deadline: 300 seconds per child. Use a scoped acceptance check; inspect returned reports and current changes before any further delegation.",
+			"On interruption, partial text and resume parameters are returned. Inspect that evidence, then continue the same owned session for remaining authorized work; do not restart completed work or treat partial findings as a final review.",
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
@@ -347,9 +351,15 @@ export default function (pi: ExtensionAPI) {
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 
+			const hasSingle = Boolean(params.agent && params.task);
+			// Routed models tend to echo the single task into tasks/chain; a one-item duplicate is not a second mode.
+			// Every execution-affecting option must match too, otherwise the item is a conflicting second mode and is rejected below.
+			const echoesSingle = (items?: Record<string, unknown>[]) =>
+				hasSingle && items?.length === 1 && ["agent", "task", "cwd", "model", "resume"].every(key => items[0][key] === (params as Record<string, unknown>)[key]);
+			if (echoesSingle(params.tasks)) params.tasks = undefined;
+			if (echoesSingle(params.chain)) params.chain = undefined;
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
-			const hasSingle = Boolean(params.agent && params.task);
 			const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
 
 			const makeDetails =
@@ -368,7 +378,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}`,
+							text: `Invalid parameters. Provide exactly one mode: {agent, task} for one child, or tasks[] for parallel, or chain[] for sequential; never two of them.\nAvailable agents: ${available}`,
 						},
 					],
 					details: makeDetails("single")([]),

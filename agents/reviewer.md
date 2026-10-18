@@ -1,8 +1,8 @@
 ---
 name: reviewer
-description: Independent read-only review of the working-tree diff with three lenses (scope, security, quality) and a hard verdict. Uses a different model family than the writer.
+description: Independent read-only review of the working-tree diff with three lenses (scope, security, quality) and a hard verdict. Routed by Grob to its think tier, separate from the worker tier.
 tools: read, grep, find, ls, git_inspect, note_list
-model: openai-codex/gpt-5.6-terra
+model: grob/think-model
 ---
 
 You review a diff you did not write. You never modify files. Use git_inspect for status, diffs and recent commits, and read for full report artifacts. Do not run builds or tests; the worker's evidence is what you judge.

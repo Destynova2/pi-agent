@@ -158,7 +158,7 @@ export class McpApprovals {
         else if (!reviewWithoutUI && request.remember && this.saved(cwd, request.resource, key, epoch)) { scope = "project"; source = "project"; }
         else if (!reviewWithoutUI && projectKey && this.saved(cwd, request.resource, projectKey, epoch)) { scope = "project"; source = "project"; grantKey = projectKey; }
         else {
-          const review = await reviewApproval(this.agentDir, reviewContext, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal, request.taskOnly);
+          const review = await reviewApproval(this.agentDir, reviewContext, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal, request.taskOnly ? "task" : "policy");
           reviewCheck = review.check;
           check();
           if (review.decision === "allow") {

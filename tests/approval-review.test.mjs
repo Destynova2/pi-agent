@@ -239,7 +239,7 @@ test("automatic command and network grants pass exact requests through existing 
   } finally { handlers.get("session_shutdown")(); }
 });
 
-test("one-command network review uses current user intent by default, never prompts and never saves grants", async t => {
+test("one-command network review uses current intent without UI and manual mode asks once when interactive", async t => {
   const f = fixture(t), tools = new Map(), handlers = new Map(), executions = [];
   f.ctx.hasUI = false;
   registerNetworkAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: tool => tools.set(tool.name, tool) }, f.agent, () => {}, async (_program, args) => { executions.push(args); });
@@ -259,7 +259,82 @@ test("one-command network review uses current user intent by default, never prom
   f.messages.push({ type: "message", message: { role: "user", content: "Download the exact archive from packages.example.com for the demo." } });
   await call(); assert.equal(executions.length, 3);
   f.ctx.hasUI = true; await f.activate("manual");
-  await assert.rejects(call(), /manual policy/); assert.equal(f.prompts, 0);
+  f.ctx.ui.select = async (_title, choices) => choices.includes("Lire la page suivante") ? "Lire la page suivante" : APPROVAL_CHOICES[1];
+  await call(); assert.equal(executions.length, 4); assert.equal(f.calls.length, calls + 1);
+  const manual = f.query("permission_requests").at(-1);
+  assert.equal(manual.source, "human"); assert.equal(manual.scope, "once"); assert.ok(manual.prompted_at);
+  assert.equal(readdirSync(f.agent).includes("network-grants"), false);
+});
+
+test("uncertain network review opens a bounded one-time decision and audits the human answer", async t => {
+  const f = fixture(t), handlers = new Map(), prompts = []; let tool, executions = 0;
+  f.verdict = { decision: "ask", category: "insufficient_context" };
+  f.ctx.ui.select = async (title, choices) => {
+    prompts.push({ title, choices });
+    return choices.includes("Lire la page suivante") ? "Lire la page suivante" : APPROVAL_CHOICES[1];
+  };
+  registerNetworkAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: value => { tool = value; } }, f.agent, () => {}, async () => { executions++; });
+  handlers.get("session_start")({}, f.ctx); t.after(() => handlers.get("session_shutdown")());
+  const call = () => tool.execute("network", { command: "cargo run --offline --example probe", hosts: ["www.seloger.com"], reason: "Test explicitly requested public pages" }, undefined, undefined, f.ctx);
+  await call(); await call();
+  assert.equal(executions, 2); assert.equal(f.calls.length, 2);
+  assert.match(prompts.map(row => row.title).join("\n"), /www.seloger.com[\s\S]*cargo run[\s\S]*120 s[\s\S]*envois/);
+  assert.ok(prompts.every(row => !row.choices.some(choice => /session|projet/.test(choice))));
+  assert.ok(f.query("permission_reviews").every(row => row.decision === "ask"));
+  assert.ok(f.query("permission_requests").every(row => row.source === "human" && row.scope === "once" && row.status === "granted" && row.prompted_at && row.decision === "allow"));
+  for (const directory of ["network-grants", "approval-policies", "mcp-approvals"]) assert.equal(readdirSync(f.agent).includes(directory), false);
+});
+
+test("network human fallback preserves denial, cancellation, expiry and changed context", async t => {
+  for (const mode of ["refuse", "cancel", "abort", "expire", "session", "policy", "deny-host", "user", "manual-user"]) await t.test(mode, async t => {
+    const f = fixture(t), handlers = new Map(); let tool, executions = 0, selections = 0;
+    const controller = new AbortController();
+    f.verdict = { decision: "ask", category: "insufficient_context" };
+    if (mode === "manual-user") await f.activate("manual");
+    registerNetworkAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: value => { tool = value; } }, f.agent, () => {}, async () => { executions++; });
+    handlers.get("session_start")({}, f.ctx); t.after(() => handlers.get("session_shutdown")());
+    f.ctx.ui.select = async (_title, choices) => {
+      selections++;
+      if (choices.includes("Lire la page suivante")) return "Lire la page suivante";
+      if (mode === "refuse") return APPROVAL_CHOICES[0];
+      if (mode === "cancel") return undefined;
+      if (mode === "abort") controller.abort();
+      if (mode === "expire") { const later = Date.now() + 300_001; t.mock.method(Date, "now", () => later); }
+      if (mode === "session") void handlers.get("session_before_tree")();
+      if (mode === "policy") await f.activate("auto-deny No network access");
+      if (mode === "deny-host") writeFileSync(join(f.agent, "network-policy.json"), '{"allow":[],"deny":["www.seloger.com"]}');
+      if (mode === "user" || mode === "manual-user") f.messages.push({ type: "message", message: { role: "user", content: "Stop" } });
+      return APPROVAL_CHOICES[1];
+    };
+    const call = () => tool.execute("network", { command: "probe", hosts: ["www.seloger.com"], reason: "Public probe" }, controller.signal, undefined, f.ctx);
+    await assert.rejects(call(), /not approved|abort|stale|revoked|expired|denied/i);
+    assert.equal(executions, 0); assert.notEqual(f.query("permission_requests").at(-1).status, "granted");
+    if (mode === "refuse") {
+      const before = selections;
+      await assert.rejects(call(), /refused earlier/);
+      assert.equal(selections, before); assert.equal(f.calls.length, 1);
+    }
+  });
+});
+
+test("network fallback never replaces explicit denial or auto-deny, and absence of UI is recoverable", async t => {
+  for (const mode of ["deny", "auto-deny", "headless", "unavailable"]) await t.test(mode, async t => {
+    const f = fixture(t), handlers = new Map(); let tool, executions = 0, selections = 0;
+    f.verdict = { decision: mode === "deny" ? "deny" : "ask", category: "insufficient_context" };
+    if (mode === "auto-deny") await f.activate("auto-deny Public probes");
+    if (mode === "headless" || mode === "deny") f.ctx.hasUI = false;
+    if (mode === "unavailable") f.run = () => { throw new Error("provider unavailable"); };
+    f.ctx.ui.select = async (_title, choices) => { selections++; return choices.includes("Lire la page suivante") ? "Lire la page suivante" : APPROVAL_CHOICES[1]; };
+    registerNetworkAccess({ on: (name, fn) => handlers.set(name, fn), registerTool: value => { tool = value; } }, f.agent, () => {}, async () => { executions++; });
+    handlers.get("session_start")({}, f.ctx); t.after(() => handlers.get("session_shutdown")());
+    const call = () => tool.execute("network", { command: "probe", hosts: ["www.seloger.com"], reason: "Public probe" }, undefined, undefined, f.ctx);
+    if (mode === "unavailable") { await call(); assert.equal(executions, 1); assert.ok(selections); return; }
+    await assert.rejects(call(), /insufficient_context/);
+    assert.equal(executions, 0); assert.equal(selections, 0);
+    f.ctx.hasUI = true;
+    if (mode === "headless") { await call(); assert.equal(executions, 1); assert.ok(selections); }
+    else { await assert.rejects(call(), /previously refused/); assert.equal(executions, 0); assert.equal(selections, 0); }
+  });
 });
 
 test("Metal project consent and headless exact review share one audit per request", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async t => {

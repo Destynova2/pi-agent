@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -82,10 +83,22 @@ test("completion guidance covers ordinary, explicit and child turns without dele
       sendUserMessage: (message: string) => sent.push(message),
     } as unknown as ExtensionAPI);
     const event = { prompt: "fix this bug", systemPromptOptions: { sections: { existing: "kept" } as Record<string, string> } };
-    const before = events.get("before_agent_start")!;
+    const rawBefore = events.get("before_agent_start")!;
+    // The installation paragraph is paid for only where jj is missing: this test reads the full guidance (no jj on PATH).
+    const path = process.env.PATH;
+    const before = (value: typeof event) => { process.env.PATH = ""; try { rawBefore(value); } finally { process.env.PATH = path; } };
     before(event);
     const jj = event.systemPromptOptions.sections.jj_workflow;
     assert.ok(jj.length < 2500, "Keep jj preparation guidance bounded");
+    const withJj = mkdtempSync(join(tmpdir(), "pi-jj-path-"));
+    try {
+      writeFileSync(join(withJj, "jj"), "");
+      process.env.PATH = withJj;
+      const installed = { prompt: "x", systemPromptOptions: { sections: {} as Record<string, string> } };
+      try { rawBefore(installed); } finally { process.env.PATH = path; }
+      assert.match(installed.systemPromptOptions.sections.jj_workflow, /jj is installed on this host/);
+      assert.doesNotMatch(installed.systemPromptOptions.sections.jj_workflow, /propose the exact install command/);
+    } finally { rmSync(withJj, { recursive: true, force: true }); }
     for (const requirement of [
       "prefer jj when available and initialized", "once per repository/session",
       "A missing .jj directory does not mean jj needs installing", "Check parent roots",

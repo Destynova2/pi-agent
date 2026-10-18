@@ -296,7 +296,7 @@ export default function (pi: ExtensionAPI, ciImpl: CiFn = defaultCi) {
 		name: "ci_watch",
 		label: "CI watch",
 		description:
-			"Watch a GitHub PR or GitLab MR in the background and receive a follow-up message when checks turn green or red, the PR is merged or closed, a review decision changes, or a conflict appears. Defaults to the PR of the current branch. Use action 'status' for a one-shot snapshot without watching.",
+			"Watch a GitHub PR or GitLab MR in the background; a follow-up message arrives when checks turn green or red, the PR is merged or closed, a review decision changes or a conflict appears. Defaults to the current branch's PR. Action 'status' gives a one-shot snapshot.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("start"), Type.Literal("status"), Type.Literal("stop"), Type.Literal("list")]),
 			pr: Type.Optional(Type.Number({ description: "PR/MR number. Default: the one for the current branch." })),

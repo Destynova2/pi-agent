@@ -41,4 +41,8 @@ test("bounded result preserves complete UTF-8 and artifact pointers on failure",
   assert.ok(!output.includes("�"));
   assert.match(output, /Output truncated[\s\S]*Resume: owned-run[\s\S]*Report: \/report[\s\S]*Trace: \/trace/);
   assert.doesNotMatch(getResultOutput(result({ exitCode: -1, reportPath: "/unfinished" })), /Report:/);
+  // A project-local agent's resume request names its scope; the dispatcher would otherwise look for a user agent.
+  const project = getResultOutput(result({ exitCode: 7, resumeId: "owned-run", cwd: "/p", agentSource: "project" }));
+  assert.match(project, /"agentScope":"project"/);
+  assert.doesNotMatch(getResultOutput(result({ exitCode: 7, resumeId: "owned-run", cwd: "/p", agentSource: "user" })), /agentScope/);
 });

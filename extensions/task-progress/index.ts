@@ -31,8 +31,47 @@ function restore(ctx: ExtensionContext): Checkpoint | undefined {
   }
 }
 
+/** Bounded automatic continuation, armed only by a human (`/task-rounds`); process-local, never persisted. */
+type Rounds = { max: number; used: number; last?: string };
+export const MAX_ROUNDS = 10;
+const open = (state: Checkpoint) => state.items.filter(item => item.status === "pending" || item.status === "in_progress");
+
+/** Decides the next round after a turn: a user message to queue, a reason to stop, or nothing. */
+export function nextRound(rounds: Rounds, state: Checkpoint | undefined): { message?: string; stop?: string } {
+  const remaining = state ? open(state) : [];
+  if (!state || !remaining.length) return { stop: "every checkpoint item is done, blocked or deferred" };
+  const digest = JSON.stringify(state.items);
+  if (rounds.last !== undefined && digest === rounds.last) return { stop: "the last round changed no checkpoint item" };
+  if (rounds.used >= rounds.max) return { stop: `the ${rounds.max}-round budget is used up` };
+  rounds.used++; rounds.last = digest;
+  return { message: `Automatic continuation round ${rounds.used}/${rounds.max}, armed by the user with /task-rounds; it is not new authorization or scope. Open checkpoint items: ${remaining.map(item => `${item.id} (${item.status})`).join(", ")}. Continue the authorized work and update task_checkpoint with evidence. If an item is genuinely blocked or needs the user, mark it blocked/deferred with its reason and stop.` };
+}
+
 export default function register(pi: ExtensionAPI) {
   const subagents = new Set<string>();
+  let rounds: Rounds | undefined;
+  const disarm = () => { rounds = undefined; };
+  pi.on("agent_end", (event, ctx) => {
+    if (!rounds) return;
+    const last = event.messages?.at(-1);
+    // agent_end also fires after an interrupted or failed turn; a queued round would land in the user's next prompt.
+    const next = last?.role === "assistant" && (last.stopReason === "aborted" || last.stopReason === "error") ? { stop: `the turn ${last.stopReason === "aborted" ? "was interrupted" : "ended with an error"}` } : nextRound(rounds, restore(ctx));
+    if (next.message) return pi.sendUserMessage(next.message, { deliverAs: "followUp" });
+    disarm();
+    ctx.ui.notify(`Automatic continuation stopped: ${next.stop}.`, "info");
+  });
+  pi.registerCommand("task-rounds", {
+    description: `/task-rounds <1-${MAX_ROUNDS}> | off: let the agent continue open checkpoint items for at most N extra turns; stops on no progress`,
+    handler: async (args, ctx) => {
+      if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD) throw new Error("Only the human in the interactive parent can arm continuation rounds");
+      const value = args.trim();
+      if (value === "off") { disarm(); return ctx.ui.notify("Automatic continuation disarmed.", "info"); }
+      const max = Number(value);
+      if (!Number.isInteger(max) || max < 1 || max > MAX_ROUNDS) throw new Error(`Usage: /task-rounds <1-${MAX_ROUNDS}> | off`);
+      rounds = { max, used: 0 };
+      ctx.ui.notify(`Up to ${max} automatic continuation round(s) armed for this session's checkpoint. Each round is a queued user turn; a round with no checkpoint change stops it. /task-rounds off disarms.`, "info");
+    },
+  });
   const refresh = (ctx: ExtensionContext) => {
     if (ctx.mode !== "tui") return;
     const state = restore(ctx);
@@ -45,8 +84,8 @@ export default function register(pi: ExtensionAPI) {
     if (subagents.size) lines.push(`Delegations running: ${subagents.size}`);
     ctx.ui.setWidget("task-progress", lines.length ? lines : undefined);
   };
-  pi.on("session_start", (_event, ctx) => { subagents.clear(); refresh(ctx); });
-  pi.on("session_tree", (_event, ctx) => refresh(ctx));
+  pi.on("session_start", (_event, ctx) => { subagents.clear(); disarm(); refresh(ctx); });
+  pi.on("session_tree", (_event, ctx) => { disarm(); refresh(ctx); });
   pi.on("session_compact", (_event, ctx) => refresh(ctx));
   pi.on("tool_execution_start", (event, ctx) => {
     if (event.toolName === "subagent") { subagents.add(event.toolCallId); refresh(ctx); }
@@ -55,7 +94,7 @@ export default function register(pi: ExtensionAPI) {
     if (subagents.delete(event.toolCallId)) refresh(ctx);
   });
   pi.on("session_shutdown", (_event, ctx) => {
-    subagents.clear();
+    subagents.clear(); disarm();
     if (ctx.mode === "tui") ctx.ui.setWidget("task-progress", undefined);
   });
   pi.registerTool({
@@ -99,7 +138,7 @@ export default function register(pi: ExtensionAPI) {
   });
   pi.on("before_agent_start", event => {
     if (!pi.getActiveTools().includes("task_checkpoint")) return;
-    event.systemPromptOptions.sections.task_progress = "For multi-part implementation work, use task_checkpoint at the start to capture EVERY requested outcome and its acceptance check. Update after meaningful verification or a blocker. A follow-up question steers the existing task unless the user explicitly replaces it. Continue authorized work without asking whether to proceed. Authorization already given persists; routine fixes, dependencies and tests needed for that scope do not require a new conversational confirmation. Actual capability approval gates still apply. Before finishing, reconcile every checkpoint item with evidence, including install, activation and application checks when requested. Blocked items stay open while independent work continues. Use supersedes only for an explicit user replacement/cancellation. Record verified reusable lessons in note_add; do not self-edit the installed runtime or permission policy as an automatic response to failures.";
+    event.systemPromptOptions.sections.task_progress = "For multi-part implementation work, use task_checkpoint at the start to capture EVERY requested outcome and its acceptance check. Update after meaningful verification or a blocker. Authorization already given persists; routine fixes, dependencies and tests needed for that scope do not require a new conversational confirmation. Actual capability approval gates still apply. Before finishing, reconcile every checkpoint item with evidence, including install, activation and application checks when requested. Blocked items stay open while independent work continues. Use supersedes only for an explicit user replacement/cancellation. Record verified reusable lessons in note_add; do not self-edit the installed runtime or permission policy as an automatic response to failures.";
   });
   // Read the current branch every time: reload, compaction, forks and tree navigation
   // cannot accidentally keep a different branch's completed/unfinished state in RAM.

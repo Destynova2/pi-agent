@@ -41,6 +41,9 @@ export function openRun(request: RunRequest) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   if (fs.lstatSync(root).isSymbolicLink()) throw new Error("Run storage must not be a symlink");
   if (request.resume && !/^run-[A-Za-z0-9]{6}$/.test(request.resume)) throw new Error("Invalid resume ID; use the returned run-XXXXXX ID, not a path");
+  if (request.resume && !fs.existsSync(path.join(root, request.resume))) {
+    throw new Error(`Unknown run ${request.resume}: no child to resume; omit "resume" to start a new child`);
+  }
   const dir = request.resume ? path.join(root, request.resume) : fs.mkdtempSync(path.join(root, "run-"));
   if (!fs.lstatSync(dir).isDirectory() || fs.realpathSync(dir) !== path.join(fs.realpathSync(root), path.basename(dir))) {
     throw new Error("Run directory must be a real child of run storage");

@@ -19,7 +19,7 @@ try {
     : service === "git" ? await gitInspect(process.cwd(), input, lifetime.signal)
     : service === "web" && typeof input.url === "string" ? await curlFetch(input.url, lifetime.signal)
     : service === "ci" ? await executeCi({ ...input, cwd: process.cwd() }, lifetime.signal)
-    : service === "search" && typeof input.query === "string" ? await webSearch(input.query, lifetime.signal)
+    : service === "search" && typeof input.query === "string" ? await webSearch(input.query, lifetime.signal, input.executable, input.oauthToken)
     : (() => { throw new Error("Unsupported confined service"); })();
   process.stdout.write(JSON.stringify(result));
 } catch (error) {

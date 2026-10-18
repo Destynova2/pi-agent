@@ -22,6 +22,7 @@ export async function approvalDialog(ctx: ExtensionContext, title: string, choic
     if ((process.stdout.columns ?? 80) !== columns || (process.stdout.rows ?? 24) !== rows) return approvalDialog(ctx, title, choices, options);
     if (page && reply === previous) { page--; continue; }
     if (!last && reply === next) { page++; continue; }
+    if (reply === choices[0]) return reply;
     return last && reply && choices.includes(reply) ? reply : undefined;
   }
 }

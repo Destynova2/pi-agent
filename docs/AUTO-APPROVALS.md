@@ -1,10 +1,16 @@
 # Automatic approval review
 
-Legacy permission requests use manual confirmation by default. `run_isolated`,
-`request_network_access` with `command`, and `git_access` push with
-`private_network: true` instead use automatic, per-task review
-without dialogs or persistent policy changes. An explicitly saved manual policy
-disables these no-dialog operations. See [private IPC](PRIVATE-IPC.md) and
+Legacy permission requests use manual confirmation by default.
+`request_network_access` with `command` reviews the current task automatically.
+An uncertain or unavailable review opens a one-time human validation in an
+interactive session; a saved manual policy requests that validation directly.
+The complete command, project, hosts and scope are shown before approval.
+`auto-deny`, explicit denials and missing UI still prevent execution. No grant
+is saved and no refused command is automatically retried.
+
+`run_isolated` and `git_access` push with `private_network: true` use per-task
+review without dialogs. An explicitly saved manual policy disables these
+no-dialog operations. See [private IPC](PRIVATE-IPC.md) and
 [private Git push scope](ORCHESTRATION.md#git-operation-consent). An interactive parent can
 delegate their evaluation to a separate, tool-free model call for one project:
 
@@ -22,7 +28,11 @@ the request in either mode. Other extension dialogs are outside this setting.
 The command itself is the user's opt-in. It stores the scope under
 `<agent-dir>/approval-policies/`, outside the writable project. The policy is
 private, canonical-path-specific and survives restart. Subprojects do not inherit
-it. The current provider/model is pinned when the command runs; changing the main
+it. `/approvals global auto <scope>`, `global auto-deny <scope>` and `global manual`
+write `approval-policies/default.json` (cwd `*`), the default for every project
+without its own file, headless runs included; a project file always wins, and
+`/approvals global status` shows the default itself. `harness_update` never uses
+this review: only a human dialog can confirm it. The current provider/model is pinned when the command runs; changing the main
 model does not silently change the reviewer. Run the command again to change its
 model, scope or uncertainty handling. Requests use the pinned model's configured
 authentication, quota and billing, with a 30-second deadline.
@@ -63,7 +73,9 @@ refusals retain precedence over auto review.
 Explicit model refusals and uncertainty refusals are also cached for the same
 session, user context, policy and action (bounded to 512 entries). A changed task,
 policy or action is reviewed afresh. Provider unavailability is not a standing
-refusal. The cache never grants access or becomes reviewer training/context.
+refusal. A network request refused only because no UI was available can be
+reviewed again when the parent becomes interactive. Explicit denials remain
+binding. The cache never grants access or becomes reviewer training/context.
 
 GPU-only Metal requests and tools in the configured isolated Playwright container
 offer once/session/project consent. Metal consent covers eligible commands with

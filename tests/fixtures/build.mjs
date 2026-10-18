@@ -35,12 +35,13 @@ export async function buildFixtureSource(overrides = {}) {
  * that puts it first. Logs every `install <source>` to FAKE_PI_LOG.
  * `failSource`, if given, makes that specific source fail with exit code 1.
  */
-export async function makeFakePi({ failSource, rewriteSettings = false } = {}) {
+export async function makeFakePi({ failSource, rewriteSettings = false, requireSafeNpm = false } = {}) {
   const binDir = await makeTmpDir("pi-agent-fakebin-");
   const script = `#!/usr/bin/env node
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (args[0] === "install") {
+  if (${JSON.stringify(requireSafeNpm)} && (process.env.npm_config_save_exact !== "true" || process.env.npm_config_ignore_scripts !== "true")) process.exit(2);
   const source = args[1];
   const logPath = process.env.FAKE_PI_LOG;
   if (logPath) appendFileSync(logPath, \`install \${source} \${process.env.PI_CODING_AGENT_DIR}\\n\`);

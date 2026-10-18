@@ -359,6 +359,23 @@ test("a pi install failure for one source reports the failure without blocking r
   }
 });
 
+test("package installs preserve exact npm versions and disable lifecycle scripts despite inherited preferences", async t => {
+  const source = await buildFixtureSource({ settings: { packages: ["npm:first@1.2.3", "npm:second@4.5.6"] } });
+  const root = await makeTmpDir("pi-safe-package-install-"), target = join(root, "agent");
+  const fakePi = await makeFakePi({ requireSafeNpm: true });
+  t.after(async () => {
+    await rm(source, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+    await rm(fakePi.binDir, { recursive: true, force: true });
+  });
+  const env = { ...fakePi.env, npm_config_save_exact: "false", npm_config_ignore_scripts: "false" };
+  const result = await runInstall({ sourceRoot: source, target, env });
+  assert.deepEqual(result.packageFailures, []);
+  assert.deepEqual(result.installedPackages, ["npm:first@1.2.3", "npm:second@4.5.6"]);
+  assert.equal(env.npm_config_save_exact, "false");
+  assert.equal(env.npm_config_ignore_scripts, "false");
+});
+
 test("default target resolution respects a provided env, never the process's real HOME", async () => {
   const source = await buildFixtureSource();
   const isolatedHome = await makeTmpDir("pi-agent-fake-home-");

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import register from "../index.ts";
@@ -30,6 +30,7 @@ if (task.includes('SIGNAL')) {
   const child = spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});require('fs').writeFileSync('child-ready',String(process.pid));setInterval(()=>{},1000)"],{stdio:'ignore'});
   fs.writeFileSync('parent-pid',String(process.pid));
   emit('working', 'toolUse');
+  console.log(JSON.stringify({type:'message_end', message:{role:'assistant',content:[{type:'toolCall',id:'pending',name:'read',arguments:{path:'remaining.txt'}}],stopReason:'toolUse'}}));
   setInterval(()=>{},1000);
 } else if (task.includes('BIG')) {
   emit('é'.repeat(600000));
@@ -190,6 +191,16 @@ for (const mode of ["timeout", "abort"]) {
           assert.match(status, /State:\s+Z/);
         } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
         assert.match(await readFile(result.details.results[0].reportPath, "utf8"), /working/);
+        assert.match(result.content[0].text, /Partial output \(not a final verdict\):\nworking/);
+        assert.match(result.content[0].text, /No automatic retry was started/);
+        assert.equal((await readFile(join(root, "started"), "utf8")).length, 1);
+        const resume = JSON.parse(result.content[0].text.match(/continue the owned session with subagent: (.+)/)[1]);
+        assert.equal(resume.resume, result.details.results[0].resumeId);
+        assert.equal(resume.agent, "fixture"); assert.equal(resume.cwd, await realpath(root));
+        const continued = await execute(resume);
+        assert.equal(continued.isError, undefined);
+        assert.equal(continued.details.results[0].sessionPath, result.details.results[0].sessionPath);
+        assert.equal((await readFile(join(root, "started"), "utf8")).length, 2);
       } finally { controller.abort(); await job; }
     });
   });

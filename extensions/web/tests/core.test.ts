@@ -32,3 +32,36 @@ test("fetch rejects unsupported protocols and credentials before any network req
   await assert.rejects(curlFetch("file:///etc/passwd"), /HTTP/);
   await assert.rejects(curlFetch("https://user:password@example.com"), /credentials/);
 });
+
+test("search failures preserve masked stdout diagnostics and remove scratch state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-web-error-"));
+  const oldPath = process.env.PATH;
+  try {
+    for (const [message, code] of [
+      ["Not logged in. Please run /login. api_key=do-not-print-this-value", "AUTH_REQUIRED"],
+      ["429 rate limit exceeded", "RATE_LIMITED"],
+      ["unknown option --safe-mode", "CLI_INCOMPATIBLE"],
+      ["EPERM: operation not permitted", "SANDBOX_DENIED"],
+      ["unexpected startup failure", "FAILED"],
+    ]) {
+      await writeFile(join(dir, "claude"), `#!${process.execPath}\nconsole.log(${JSON.stringify(message)}); console.error('startup diagnostic'); process.exitCode=1;\n`, { mode: 0o700 });
+      process.env.PATH = `${dir}:${oldPath}`;
+      await assert.rejects(webSearch("offline error fixture"), error => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, new RegExp(`WEB_SEARCH_${code}`));
+        assert.match(error.message, /startup diagnostic/);
+        assert.match(error.message, /stdout:/);
+        assert.doesNotMatch(error.message, /do-not-print-this-value/);
+        if (code === "AUTH_REQUIRED") assert.match(error.message, /Not logged in/);
+        return true;
+      });
+    }
+    await writeFile(join(dir, "claude"), `#!${process.execPath}\nconsole.log('api_key='+ 's'.repeat(20000)); process.exitCode=1;\n`, { mode: 0o700 });
+    await assert.rejects(webSearch("bounded error"), error => {
+      assert.ok(error instanceof Error);
+      assert.ok(error.message.length < 2000); assert.doesNotMatch(error.message, /ssss/); return true;
+    });
+    process.env.PATH = dir + "/missing";
+    await assert.rejects(webSearch("missing executable"), /WEB_SEARCH_UNAVAILABLE/);
+  } finally { process.env.PATH = oldPath; await rm(dir, { recursive: true, force: true }); }
+});
