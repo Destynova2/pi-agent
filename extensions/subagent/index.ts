@@ -353,8 +353,9 @@ export default function (pi: ExtensionAPI) {
 
 			const hasSingle = Boolean(params.agent && params.task);
 			// Routed models tend to echo the single task into tasks/chain; a one-item duplicate is not a second mode.
-			const echoesSingle = (items?: { agent: string; task: string }[]) =>
-				hasSingle && items?.length === 1 && items[0].agent === params.agent && items[0].task === params.task;
+			// Every execution-affecting option must match too, otherwise the item is a conflicting second mode and is rejected below.
+			const echoesSingle = (items?: Record<string, unknown>[]) =>
+				hasSingle && items?.length === 1 && ["agent", "task", "cwd", "model", "resume"].every(key => items[0][key] === (params as Record<string, unknown>)[key]);
 			if (echoesSingle(params.tasks)) params.tasks = undefined;
 			if (echoesSingle(params.chain)) params.chain = undefined;
 			const hasChain = (params.chain?.length ?? 0) > 0;

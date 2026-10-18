@@ -58,7 +58,7 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
           const audit = new PermissionAudit(agentDir, ctx, { resource: "harness-update", operation: "install", toolCallId: id, payload: { source, reason: input.reason } });
           let tree = "";
           try {
-            if (!await ctx.ui.confirm("Lancer npm run verify de cette source sur l'hôte ?", `Source : ${source}\nRaison : ${input.reason}\nverify exécute les scripts de ce dépôt hors sandbox. Rien n'est installé à cette étape ; l'installation sera confirmée séparément.`)) {
+            if (!await ctx.ui.confirm("Lancer npm run verify de cette source sur l'hôte ?", `Source : ${source}\nRaison : ${input.reason}\nverify exécute les scripts de ce dépôt hors sandbox. Rien n'est installé à cette étape ; l'installation sera confirmée séparément.`, { signal: owned })) {
               audit.finish("denied", "human"); throw new Error("Host verify refused by the user; nothing executed");
             }
             validate();
@@ -77,7 +77,7 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
             const unchanged = async () => { validate(); if (await treeDigest() !== tree) throw new Error("The source changed since verify started; nothing installed. Call harness_update again."); };
             await unchanged();
             // Human only: an automatic review policy never substitutes for this confirmation.
-            if (!await ctx.ui.confirm("Installer cette source du harness dans le runtime Pi ?", `Source : ${label}\nVerify : ${summary || "ok"}\nRaison : ${input.reason}\nCible : ${agentDir} (sauvegarde automatique). La session en cours garde l'ancien runtime jusqu'au redémarrage de Pi.`)) {
+            if (!await ctx.ui.confirm("Installer cette source du harness dans le runtime Pi ?", `Source : ${label}\nVerify : ${summary || "ok"}\nRaison : ${input.reason}\nCible : ${agentDir} (sauvegarde automatique). La session en cours garde l'ancien runtime jusqu'au redémarrage de Pi.`, { signal: owned })) {
               audit.finish("denied", "human"); throw new Error("Install refused by the user; nothing installed");
             }
             await unchanged();

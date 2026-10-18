@@ -77,7 +77,7 @@ export function getResultOutput(result: SingleResult): string {
 		result.sessionPath && `Session: ${result.sessionPath}`,
 		result.reportPath && `Report: ${result.reportPath}`,
 		result.tracePath && `Trace: ${result.tracePath}`,
-		failed && result.resumeId && result.cwd && `After inspecting the report, trace and current changes, continue the owned session with subagent: ${JSON.stringify({ agent: result.agent, resume: result.resumeId, cwd: result.cwd, ...(result.model ? { model: result.model } : {}), timeoutSeconds: result.timeoutSeconds, task: "Continue the original task from the saved session. Inspect current files and partial work, finish the remaining checks and return the final result. Do not repeat completed operations." })}\nNo automatic retry was started. Partial work does not satisfy a required final review.`,
+		failed && result.resumeId && result.cwd && `After inspecting the report, trace and current changes, continue the owned session with subagent: ${JSON.stringify({ agent: result.agent, ...(result.agentSource === "project" ? { agentScope: "project" } : {}), resume: result.resumeId, cwd: result.cwd, ...(result.model ? { model: result.model } : {}), timeoutSeconds: result.timeoutSeconds, task: "Continue the original task from the saved session. Inspect current files and partial work, finish the remaining checks and return the final result. Do not repeat completed operations." })}\nNo automatic retry was started. Partial work does not satisfy a required final review.`,
 	].filter(Boolean).join("\n");
 	return text + (artifacts ? `\n\n${artifacts}` : "");
 }
