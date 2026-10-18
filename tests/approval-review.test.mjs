@@ -70,6 +70,18 @@ test("manual remains the default; explicit project opt-in pins the reviewer and 
   await f.authorize(); assert.equal(f.prompts, 2);
 });
 
+test("humanOnly requests never consult the reviewer, even with an automatic policy", async t => {
+  const f = fixture(t);
+  await f.activate();
+  const calls = f.calls.length, prompts = f.prompts;
+  (await f.authorize(undefined, { humanOnly: true }))();
+  assert.equal(f.calls.length, calls, "no reviewer call");
+  assert.equal(f.prompts, prompts + 1, "the human decided");
+  f.ctx.hasUI = false;
+  await assert.rejects(f.authorize(undefined, { humanOnly: true, interactiveOnly: true, automaticWithoutUI: true }), /interactive parent confirmation/);
+  f.ctx.hasUI = true;
+});
+
 test("task-only broker approvals cannot remember, prompt, or override an explicit manual policy", async t => {
   const f = fixture(t);
   const request = { taskOnly: true, remember: false, interactiveOnly: true, automaticWithoutUI: true };

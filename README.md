@@ -53,7 +53,7 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Watch a PR | `ci_watch` or `/watch`: jailed queries, host-side timers |
 | Use language servers | `lsp` and `/lsp`: jailed servers, previews, edits and diagnostics |
 | Use local MCP servers | `mcp`: confined stdio servers with [once/session/project consent](docs/ORCHESTRATION.md#mcp-and-desktop-consent) |
-| Control Mac applications | `dunst` is host automation, not a confined capability; denied by this jail |
+| Control Mac applications | `dunst` (via `load_tools`): host automation with your real apps and logins; interactive parent only, observation consent remembered, every action confirmed in a dialog, never an automatic policy |
 | Revoke MCP or desktop consent | `/mcp permissions [server]` or `/dunst permissions` |
 
 Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts. The first turn injects an index of the last 12 project notes (one line each, cut to 160 characters, 12,000 characters in all), even without note tools; `note_list` returns full bodies. Prompt excerpts are not full history: consult native Pi sessions for complete requirements and previous answers. No separate memory model call is made.
@@ -91,7 +91,7 @@ extensions/          explicit entry points in package.json → pi.extensions
   notes.ts, notes/   SQLite memory, /btw, ctrl+r, inter-agent inbox (worker.ts, incidents.ts)
   confined-lsp/      jailed upstream LSP lifecycle and guarded edits
   mcp/               configured local MCP stdio servers
-  dunst/             host application control (denied by the strict dispatcher)
+  dunst/             host application control (parent-only, human-confirmed, dormant until load_tools)
   ci-watch/          ci_watch tool
   grob/              grob provider: model traffic through the local Grob proxy
   lean-prompt/       one routing line per skill; rare parent-only tools dormant until `load_tools` declares them

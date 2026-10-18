@@ -42,6 +42,8 @@ interface Approval {
   automaticWithoutUI?: boolean;
   /** One-use capability qualified against the user task by default, with no human fallback. */
   taskOnly?: boolean;
+  /** Only a human dialog can grant this: no automatic review policy, with or without UI. */
+  humanOnly?: boolean;
   revalidate: () => void;
   beforePrompt?: (prompt: string, choices: string[]) => void;
 }
@@ -151,14 +153,14 @@ export class McpApprovals {
           if (scope === "project" && !this.saved(cwd, request.resource, grantKey, epoch)) throw new Error("MCP project approval revoked");
         };
         check();
-        const reviewWithoutUI = !!request.interactiveOnly && !ctx.hasUI && (!!request.taskOnly || !!request.automaticWithoutUI && hasAutomaticReview(this.agentDir, reviewContext));
+        const reviewWithoutUI = !request.humanOnly && !!request.interactiveOnly && !ctx.hasUI && (!!request.taskOnly || !!request.automaticWithoutUI && hasAutomaticReview(this.agentDir, reviewContext));
         if (request.interactiveOnly && !ctx.hasUI && !reviewWithoutUI) { audit.finish("denied", "unavailable"); throw new Error("This capability requires interactive parent confirmation or a supported automatic review policy, including remembered approvals"); }
         if (this.refused.has(key)) { audit.finish("denied", "refusal_cache"); throw new Error(`Operation refused earlier; use ${request.resource === "host-access" ? "/host-access reset" : "the permissions command"} to reconsider`); }
         if (!reviewWithoutUI && request.remember && this.session.get(key) === epoch) { scope = "session"; source = "session"; }
         else if (!reviewWithoutUI && request.remember && this.saved(cwd, request.resource, key, epoch)) { scope = "project"; source = "project"; }
         else if (!reviewWithoutUI && projectKey && this.saved(cwd, request.resource, projectKey, epoch)) { scope = "project"; source = "project"; grantKey = projectKey; }
         else {
-          const review = await reviewApproval(this.agentDir, reviewContext, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal, request.taskOnly ? "task" : "policy");
+          const review = request.humanOnly ? { decision: "manual" as const, check: () => {} } : await reviewApproval(this.agentDir, reviewContext, { resource: request.resource, operation: request.auditOperation ?? "authorize", detail: request.detail }, audit, signal, request.taskOnly ? "task" : "policy");
           reviewCheck = review.check;
           check();
           if (review.decision === "allow") {
