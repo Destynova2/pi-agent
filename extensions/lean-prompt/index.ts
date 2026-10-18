@@ -23,7 +23,8 @@ export const DEFERRED_TOOLS: Record<string, string> = {
 	model_catalog: "cached Pi model registry snapshot without credential or quota probes",
 	run_isolated: "run a command on explicit source copies in a disposable offline Linux job",
 	dunst: "Mac desktop automation on the host, your real apps and logins; observation consent remembered, every action confirmed by the human",
-	harness_update: "verify a pi-agent-config source on the host and install it after human confirmation",
+	harness_update: "verify a pi-agent-config source on the host and install it, or install one pi package, after human confirmation",
+	request_host_command: "one exact command on the host outside every sandbox (real browser, long-lived service), confirmed by the human each time",
 };
 /** Prompt sections that only describe deferred tools; returned by load_tools instead of sitting in every request. */
 export const DEFERRED_SECTIONS: Record<string, string> = { podman_bridge: "request_podman_access", git_initialization: "git_repository_init", worktree_cleanup: "git_worktree_cleanup" };

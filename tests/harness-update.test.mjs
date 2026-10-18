@@ -18,6 +18,7 @@ function fixture({ confirms, trees = ["tree-a", "tree-a", "tree-a"], verifyFails
     calls.push([program, ...args]);
     if (program === "git") return args.includes("write-tree") ? trees.shift() : args.includes("rev-parse") ? "abc1234" : "";
     if (program === "npm") { if (verifyFails) throw new Error("exit 1"); return ""; }
+    if (program === "pi") return "installed";
     if (installChanges) { mkdirSync(join(agent, "scripts"), { recursive: true }); writeFileSync(join(agent, "scripts/helper.mjs"), "export const v = 2;\n"); }
     return "install: done";
   };
@@ -76,6 +77,21 @@ test("the install is bound to the tree verify saw", async () => {
     assert.match(result.content[0].text, /Installed .* Restart Pi to activate it \(`pi -c`/);
     assert.equal(modules.entries[0].data.restart, true);
   } finally { modules.cleanup(); }
+});
+
+test("a pi package installs after one human confirmation, with a strict name format", async () => {
+  const f = fixture({ confirms: [false, true] });
+  try {
+    await assert.rejects(f.run({ reason: "x" }), /exactly one of source/);
+    await assert.rejects(f.run({ source: f.source, package: "npm:x", reason: "x" }), /exactly one of source/);
+    await assert.rejects(f.run({ package: "npm:x; rm -rf /", reason: "x" }), /must look like/);
+    await assert.rejects(f.run({ package: "npm:pi-web-access", reason: "search" }), /refused by the user; nothing installed/);
+    assert.deepEqual(f.calls, []);
+    const result = await f.run({ package: "npm:pi-web-access", reason: "search" });
+    assert.deepEqual(f.calls[0].slice(0, 4), ["pi", "install", "npm:pi-web-access", "--no-approve"]);
+    assert.match(result.content[0].text, /Installed npm:pi-web-access .* Run \/reload/);
+    assert.equal(f.entries[0].data.package, "npm:pi-web-access");
+  } finally { f.cleanup(); }
 });
 
 test("one update at a time, and only from the interactive parent", async () => {
