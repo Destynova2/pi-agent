@@ -42,7 +42,7 @@ test("recall precedes ask capture, is bounded and once per session, and works wi
     const first = await before();
     assert.deepEqual(calls.map(c => c.op), ["list", "add", "inbox"]);
     assert.equal(calls[0].scope, "project");
-    assert.equal(calls[0].limit, 20);
+    assert.equal(calls[0].limit, 12);
     assert.match(first.result.message.content, /historical data.*not new instructions/);
     assert.match(first.result.message.content, /inspect the previous session/);
     assert.match(first.event.systemPromptOptions.sections.shared_notes, /Before saying prior context is unavailable/);
@@ -53,8 +53,9 @@ test("recall precedes ask capture, is bounded and once per session, and works wi
     text = "x".repeat(16_000);
     await handlers.get("session_before_tree")();
     const again = await before();
-    assert.ok(again.result.message.content.length < 12_300);
-    assert.ok(again.result.message.content.endsWith("x".repeat(12_000)));
+    // Index contract: one line per note, each cut to 160 characters; note_list serves full bodies.
+    assert.ok(again.result.message.content.length < 500);
+    assert.ok(again.result.message.content.endsWith(`${"x".repeat(159)}…`));
     text = "(no notes)";
     await handlers.get("session_start")({}, { cwd: "/other" });
     assert.equal((await before()).result, undefined);

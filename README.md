@@ -21,9 +21,14 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Adapt delegation automatically | Ask normally: work starts direct and splits when useful; `/orchestrate <request>` remains optional |
 | Delegate or resume a subtask | `subagent` with `agent: scout\|worker\|reviewer`; reuse the returned `resume` ID for a follow-up |
 | Inspect tool confinement | `/confined-tools`: available executors and approval boundaries |
+| Use a rarely needed capability | `load_tools` with the tool names (build, Podman, host, repository init, worktree cleanup, model catalog, CI watch, isolated runs, harness update); declared with their rules from the next call |
 | Run a long command | `bash_background` starts it; `bash_process` inspects or stops it; completion arrives automatically. Foreground `bash` stays native. |
-| Review permissions automatically | `/approvals auto <scope>` for this project; `/approvals auto-deny <scope>` refuses uncertainty without prompting; [automatic review](docs/AUTO-APPROVALS.md) |
+| Review permissions automatically | `/approvals auto <scope>` for this project; `/approvals auto-deny <scope>` refuses uncertainty without prompting; `/approvals global auto <scope>` sets the default for projects without their own policy; [automatic review](docs/AUTO-APPROVALS.md) |
+| Improve the harness itself | Patch the source repository, then `harness_update` (via `load_tools`): the human confirms the host-side `npm run verify` before it runs, then the install of the exact verified tree (installer with backup); restart Pi to activate. Keeping it unchanged is a valid outcome; always-on prose is capped by `tests/prompt-budget.test.mjs` |
+| Record a lesson | `note_add kind=lesson` requires `cue: … \| lesson: … \| evidence: …`; the cue is what the first-turn memory index shows |
 | Audit dialogs and failures | `/audit` or `/audit session`; `npm run audit -- --json --events 100` for the correlated timeline; [audit coverage](docs/AUDIT.md) |
+| Let the agent keep going on open items | `/task-rounds <1-10>`: at most N extra queued turns on the open checkpoint items, stopped by a round without checkpoint change, by exhaustion, by an interrupted turn or by `/task-rounds off`; human-armed only, never persisted |
+| Edit safely | `edit` is blocked until a `read` (or `write`) of the same file succeeded in this session: a guard, not a prompt rule |
 | Preserve all parts of a request | `task_checkpoint` records requirements and verification evidence in the session; `/task-status` shows them after reload, compaction or restart; a terminal widget shows counts and active delegations |
 | Validate providers or tests needing Unix sockets | [`run_isolated`: private offline IPC and disposable inputs](docs/PRIVATE-IPC.md) |
 | Download with temporary network access | [`request_network_access` with `command`: automatic review, no session grant](docs/PRIVATE-IPC.md) |
@@ -51,7 +56,7 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Control Mac applications | `dunst` is host automation, not a confined capability; denied by this jail |
 | Revoke MCP or desktop consent | `/mcp permissions [server]` or `/dunst permissions` |
 
-Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts. The first turn loads the last 20 project notes (at most 12,000 characters), even without note tools. Prompt excerpts are not full history: consult native Pi sessions for complete requirements and previous answers. No separate memory model call is made.
+Notes live in `<repo>/.agent/notes.db` (never committed) and are mirrored to `~/workspace/notes.db`, except raw prompts. The first turn injects an index of the last 12 project notes (one line each, cut to 160 characters, 12,000 characters in all), even without note tools; `note_list` returns full bodies. Prompt excerpts are not full history: consult native Pi sessions for complete requirements and previous answers. No separate memory model call is made.
 
 The private SQLite audit at `<agent-dir>/permission-audit/requests.sqlite` (normally `~/.pi/agent/permission-audit/requests.sqlite`) records permission requests, prompts/messages, public extension dialogs and responses, notifications, and tool results. Known secrets are masked before writing; unidentified secrets can remain, so treat the database as private session content. Restart Pi after installation to enable capture. Old dialogs are not reconstructed.
 
@@ -76,18 +81,20 @@ agents/              scout, worker, reviewer (sub-agent prompts)
 extensions/          explicit entry points in package.json → pi.extensions
   audit/             private SQLite event capture and /audit report
   background-bash/   public background factory; native foreground Bash
+  codex-sandbox/     Codex OS sandbox for ordinary Bash and its /codex-sandbox command
   terminal-paste/    TUI paste keepalive with session cleanup
   task-progress/     session checkpoints and progress widget
   orchestrate/       /orchestrate and the chef prompt; gates via gates/pi-prek
   subagent/          bounded single/parallel/chain delegation and native session resume
   tool-policy/       confined-executor dispatcher, /confined-tools (no legacy policy)
   git-inspect/       fixed-argument Git inspection
-  notes.ts           SQLite memory, /btw, ctrl+r, inter-agent inbox
+  notes.ts, notes/   SQLite memory, /btw, ctrl+r, inter-agent inbox (worker.ts, incidents.ts)
   confined-lsp/      jailed upstream LSP lifecycle and guarded edits
   mcp/               configured local MCP stdio servers
   dunst/             host application control (denied by the strict dispatcher)
   ci-watch/          ci_watch tool
   grob/              grob provider: model traffic through the local Grob proxy
+  lean-prompt/       one routing line per skill; rare parent-only tools dormant until `load_tools` declares them
   graphify/          project_graph tool
   web/               web_fetch, web_search
   anthropic-docs-compat/  pi doc paths in the prompt

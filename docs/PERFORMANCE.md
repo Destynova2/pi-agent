@@ -57,6 +57,24 @@ The advertised 671-token Jcode core excludes tool schemas and other context. Com
 2. Adaptive and explicit orchestration guidance: batch independent investigations/read-only checks, work on a different slice while children run, request source ranges rather than full file dumps, stop discovery when the next change/check is clear, and resume checkpoints after compaction instead of repeating completed scans. This is model guidance, not an enforced scheduling or speed guarantee.
 3. Notes guidance: `ask` is a project-only first-line excerpt. It is absent from the central mirror and cannot reconstruct the full request. Use the checkpoint's original-request/task-artifact pointer or session history, not repeated SQL searches in the wrong database.
 
+## Always-on budget (2026-10-18)
+
+`tests/prompt-budget.test.mjs` loads every extension through Pi's own loader, fires `before_agent_start` as the first call would, and sums this package's always-on text: prompt sections plus the descriptions and guidelines of the tools active at that point (dormant tools excluded). The suite fails above `ALWAYS_ON_MAX` (30,000 characters), so new prose has to be paid for by cutting prose, as in harness2's `always_on_max`. Measured on 2026-10-18 after the review fixes: 16,091 characters of sections and 13,708 of tool text for 21 active tools, 29,799 in total (the test prints the current figure). The figure excludes Pi's own prompt, tool parameter schemas and skill lines, which the token measurements above include.
+
+## On-demand loading (2026-10-17)
+
+Measured on the first model call of a `pi -p` session through Grob (Codex tokenizer, 31 tools, 53 skills), same prompt each time:
+
+| Step | Input tokens |
+|---|---|
+| Baseline | 25 762 |
+| Skill catalogue: first sentence + "Use when…" hint, 240 chars max (`extensions/lean-prompt`) | 20 468 |
+| Rare parent-only tools (eight then, nine with `harness_update`) dormant until `load_tools`; Pi drops their declarations, guidelines and sections | 18 452 |
+| `confined_tools` section rewritten (7 103 → 4 881 chars), tool-specific rules moved into the tools' own guidelines | 18 241 |
+| Copies removed (jj rules kept once in `jj_workflow`, task rules once in `task_completion`); project notes injected as a 12-line index instead of 20 full notes | 17 764 |
+
+Exposure is unchanged (`model-only` tools never become callable by other tools); only the active set changes. `load_tools` returns the matching prompt section so the rules arrive with the declaration. The loaded set is in-memory: a resumed session calls `load_tools` again.
+
 ## Next priorities and limits
 
 - For a large configuration comparison, independent SSH/accounts, PAM/passwords, audit, and boot/network analyses may run together. Keep shared profile writes and final integration under one owner. Run checks concurrently only when they do not mutate the same state.
