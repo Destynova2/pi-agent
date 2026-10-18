@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerHostCommand } from "../extensions/tool-policy/host-command.ts";
+import { detachProcess, registerHostCommand } from "../extensions/tool-policy/host-command.ts";
 
 function fixture(confirms) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-host-command-")));
@@ -12,10 +12,10 @@ function fixture(confirms) {
   const calls = [], detached = [];
   let tool;
   const execute = async (program, args, options) => { calls.push([program, args, options.cwd]); options.onStdout?.(Buffer.from("hello\n")); if (args[1].includes("false")) throw new Error("exit 1"); return ""; };
-  const detach = (command, dir, log) => { detached.push([command, dir, log]); return 4242; };
+  const detach = async (command, dir, log) => { detached.push([command, dir, log]); return 4242; };
   registerHostCommand({ registerTool: value => { tool = value; } }, agent, () => {}, execute, detach);
   const ctx = { cwd, hasUI: true, ui: { confirm: async (title, detail) => { assert.ok(confirms.length, "unexpected dialog"); assert.match(detail, /Accès complet/); return confirms.shift(); } } };
-  return { run: input => tool.execute("call-1", { cwd, reason: "test", ...input }, undefined, undefined, ctx), ctx, calls, detached, agent, cwd, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { run: (input, signal) => tool.execute("call-1", { cwd, reason: "test", ...input }, signal, undefined, ctx), ctx, calls, detached, agent, cwd, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
 test("a refused or headless host command runs nothing", async () => {
@@ -46,5 +46,22 @@ test("a confirmed command runs verbatim through /bin/sh with its output logged; 
     assert.match(bg.content[0].text, /pid 4242.*detached/);
     assert.equal(f.detached[0][0], "./collector --watch"); assert.equal(f.detached[0][1], f.cwd);
     assert.ok(existsSync(f.detached[0][2]) || f.detached[0][2].includes("host-commands"));
+  } finally { f.cleanup(); }
+});
+
+test("a launch failure is a tool error and a cancellation before launch starts nothing", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-host-detach-")));
+  try {
+    await assert.rejects(detachProcess("true", join(root, "gone"), join(root, "log")), /ENOENT/, "vanished cwd rejects instead of crashing the process");
+    const pid = await detachProcess("exit 0", root, join(root, "log"));
+    assert.ok(pid > 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  const f = fixture([true]);
+  try {
+    const controller = new AbortController();
+    f.ctx.ui.confirm = async () => { controller.abort(); return true; };
+    const tool = { execute: (input, signal) => f.run(input, signal) };
+    await assert.rejects(tool.execute({ command: "./daemon", background: true }, controller.signal), /abort/i);
+    assert.deepEqual(f.detached, []);
   } finally { f.cleanup(); }
 });

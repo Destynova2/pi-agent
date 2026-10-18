@@ -13,16 +13,17 @@ import { runProcess } from "../../lib/process.ts";
  */
 export const MAX_FOREGROUND_SECONDS = 3600;
 
-export function detachProcess(command: string, cwd: string, log: string): number | undefined {
+/** Resolves once the process exists; a launch failure (vanished cwd, no shell) is a tool error, never an unhandled event. */
+export function detachProcess(command: string, cwd: string, log: string): Promise<number> {
   const fd = openSync(log, "a", 0o600);
-  try {
+  return new Promise<number>((resolve, reject) => {
     const child = spawn("/bin/sh", ["-c", command], { cwd, detached: true, stdio: ["ignore", fd, fd], env: process.env });
-    child.unref();
-    return child.pid;
-  } finally { closeSync(fd); }
+    child.once("error", error => { closeSync(fd); reject(error); });
+    child.once("spawn", () => { closeSync(fd); child.unref(); resolve(child.pid!); });
+  });
 }
 
-export function registerHostCommand(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess, detach = detachProcess) {
+export function registerHostCommand(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess, detach: (command: string, cwd: string, log: string) => Promise<number> = detachProcess) {
   const logDir = join(agentDir, "host-commands");
   pi.registerTool({
     name: "request_host_command", label: "Run one command on the host", executionMode: "sequential", exposure: "model-only",
@@ -52,12 +53,15 @@ export function registerHostCommand(pi: ExtensionAPI, agentDir: string, verify: 
         const confirmed = await ctx.ui.confirm(background ? "Lancer ce service sur l'hôte, hors sandbox ?" : "Exécuter cette commande sur l'hôte, hors sandbox ?",
           `Commande : ${input.command}\nDossier : ${cwd}\nRaison : ${input.reason}\n${background ? "Le processus est détaché : il survit à cette session jusqu'à ce que tu l'arrêtes." : `Durée maximale : ${timeoutMs / 1000} s.`}\nAccès complet à la machine : fichiers, réseau, sessions ouvertes. Journal : ${log}`, { signal });
         if (!confirmed) { audit.finish("denied", "human"); throw new Error("Host command refused by the user; nothing executed"); }
+        // A cancellation that lands as the dialog resolves must not create a process, least of all one that outlives the session.
+        signal?.throwIfAborted();
         verify(ctx);
         audit.finish("granted", "human", "once");
       } catch (error) { audit.finish("cancelled"); throw error; }
       if (background) {
-        const pid = detach(input.command, cwd, log);
-        return { content: [{ type: "text" as const, text: `Started on the host (pid ${pid ?? "unknown"}), detached from this session. Log: ${log}. Stop it yourself when done; the harness does not track it.` }], details: undefined };
+        signal?.throwIfAborted();
+        const pid = await detach(input.command, cwd, log);
+        return { content: [{ type: "text" as const, text: `Started on the host (pid ${pid}), detached from this session. Log: ${log}. Stop it yourself when done; the harness does not track it.` }], details: undefined };
       }
       let output = "";
       const fd = openSync(log, "a", 0o600);

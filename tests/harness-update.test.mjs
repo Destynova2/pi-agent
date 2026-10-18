@@ -80,17 +80,18 @@ test("the install is bound to the tree verify saw", async () => {
 });
 
 test("a pi package installs after one human confirmation, with a strict name format", async () => {
-  const f = fixture({ confirms: [false, true] });
+  const f = fixture({ confirms: [false, true, true] });
   try {
     await assert.rejects(f.run({ reason: "x" }), /exactly one of source/);
     await assert.rejects(f.run({ source: f.source, package: "npm:x", reason: "x" }), /exactly one of source/);
-    await assert.rejects(f.run({ package: "npm:x; rm -rf /", reason: "x" }), /must look like/);
-    await assert.rejects(f.run({ package: "npm:pi-web-access", reason: "search" }), /refused by the user; nothing installed/);
+    for (const floating of ["npm:x; rm -rf /", "npm:pi-web-access", "npm:pi-web-access@^1.0.0", "git:github.com/org/repo", "git:github.com/org/repo@main"]) await assert.rejects(f.run({ package: floating, reason: "x" }), /must be pinned/, floating);
+    await assert.rejects(f.run({ package: "npm:pi-web-access@1.2.3", reason: "search" }), /refused by the user; nothing installed/);
     assert.deepEqual(f.calls, []);
-    const result = await f.run({ package: "npm:pi-web-access", reason: "search" });
-    assert.deepEqual(f.calls[0].slice(0, 4), ["pi", "install", "npm:pi-web-access", "--no-approve"]);
-    assert.match(result.content[0].text, /Installed npm:pi-web-access .* Run \/reload/);
-    assert.equal(f.entries[0].data.package, "npm:pi-web-access");
+    const result = await f.run({ package: "npm:pi-web-access@1.2.3", reason: "search" });
+    assert.deepEqual(f.calls[0].slice(0, 4), ["pi", "install", "npm:pi-web-access@1.2.3", "--no-approve"]);
+    assert.match(result.content[0].text, /Installed npm:pi-web-access@1.2.3 .* Run \/reload/);
+    assert.equal(f.entries[0].data.package, "npm:pi-web-access@1.2.3");
+    await f.run({ package: `git:github.com/org/repo@${"a".repeat(40)}`, reason: "x" }).catch(() => {});
   } finally { f.cleanup(); }
 });
 

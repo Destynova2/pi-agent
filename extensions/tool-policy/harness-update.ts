@@ -43,7 +43,7 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
     ],
     parameters: Type.Object({
       source: Type.Optional(Type.String({ minLength: 1, maxLength: 1024, description: "Absolute path of the pi-agent-config source repository" })),
-      package: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "A pi package to install into the runtime instead, e.g. npm:pi-web-access or git:github.com/org/repo@sha" })),
+      package: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "A pinned pi package to install into the runtime instead: npm:<name>@<exact version> or git:<host>/<owner>/<repo>@<commit sha>" })),
       reason: Type.String({ minLength: 1, maxLength: 500 }),
     }, { additionalProperties: false }),
     async execute(id, input, signal, onUpdate, ctx) {
@@ -53,7 +53,8 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
         return await tasks.run(async owned => {
           // A pi package runs with Pi's own rights: the human confirms, nothing is remembered, /reload activates it.
           const installPackage = async (name: string, reason: string) => {
-            if (!/^(npm|git):[A-Za-z0-9@._\/-]+$/.test(name)) throw new Error("package must look like npm:<name>[@version] or git:<host>/<owner>/<repo>[@ref]");
+            // Pi stores the source string as given, so only an exact version or commit keeps the dialog's "frozen version" true.
+            if (!/^npm:(@[a-z0-9._-]+\/)?[a-z0-9._-]+@\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(name) && !/^git:[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)+@[0-9a-f]{40}$/.test(name)) throw new Error("package must be pinned: npm:<name>@<exact version> or git:<host>/<owner>/<repo>@<40-hex commit>; resolve the version first (ask_user if the user must choose)");
             const audit = new PermissionAudit(agentDir, ctx, { resource: "harness-update", operation: "install-package", toolCallId: id, payload: { package: name, reason } });
             try {
               if (!await ctx.ui.confirm("Installer ce paquet dans le runtime Pi ?", `Paquet : ${name}\nRaison : ${reason}\nIl s'exécutera avec les droits de Pi (scripts d'installation désactivés, version figée). Cible : ${agentDir}.`, { signal: owned })) {
