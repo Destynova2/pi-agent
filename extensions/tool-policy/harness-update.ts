@@ -15,7 +15,7 @@ const VERIFY_TIMEOUT_MS = 15 * 60_000;
  * human agrees, this capability runs that source's verify gate on the host and, after a second
  * explicit human confirmation (ctx.ui.confirm only: never an automatic policy, never a remembered
  * grant), installs the exact tree verify saw into the agent directory. The installer keeps its own
- * backup; the running session keeps the old runtime until restart.
+ * backup; the running session keeps the old runtime until /reload.
  */
 export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
   let tasks = new SessionTasks(), busy = false;
@@ -24,9 +24,9 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
   }
   pi.registerTool({
     name: "harness_update", label: "Install a verified harness source", executionMode: "sequential", exposure: "model-only",
-    description: "After the human agrees, run the pi-agent-config source repository's `npm run verify` on the host; after a second human confirmation, install the verified tree into the agent directory with its own installer (backup kept). Never automatic, never remembered. The running session keeps the old runtime until Pi restarts.",
+    description: "After the human agrees, run the pi-agent-config source repository's `npm run verify` on the host; after a second human confirmation, install the verified tree into the agent directory with its own installer (backup kept). Never automatic, never remembered. The running session keeps the old runtime until /reload.",
     promptGuidelines: [
-      "To improve the harness: patch the pi-agent-config source (normally the current workspace), run its tests with confined tools, then call harness_update with that source path and the reason. The human confirms the host verify and then the install; a red verify, a refusal or a source changed meanwhile installs nothing. Never edit the installed agent directory directly, and never present an install as active before the user restarts Pi. Keeping the harness unchanged is a valid outcome when the evidence does not argue for a change. Prefer, in order: an on-demand skill, a script, a subagent, a tool_call guard; always-on prompt text last, paid for by cutting equal text (tests/prompt-budget pins the total).",
+      "To improve the harness: patch the pi-agent-config source (normally the current workspace), run its tests with confined tools, then call harness_update with that source path and the reason. The human confirms the host verify and then the install; a red verify, a refusal or a source changed meanwhile installs nothing. Never edit the installed agent directory directly, and never present an install as active before /reload ran. Keeping the harness unchanged is a valid outcome when the evidence does not argue for a change. Prefer, in order: an on-demand skill, a script, a subagent, a tool_call guard; always-on prompt text last, paid for by cutting equal text (tests/prompt-budget pins the total).",
     ],
     parameters: Type.Object({
       source: Type.String({ minLength: 1, maxLength: 1024, description: "Absolute path of the pi-agent-config source repository" }),
@@ -77,7 +77,7 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
             const unchanged = async () => { validate(); if (await treeDigest() !== tree) throw new Error("The source changed since verify started; nothing installed. Call harness_update again."); };
             await unchanged();
             // Human only: an automatic review policy never substitutes for this confirmation.
-            if (!await ctx.ui.confirm("Installer cette source du harness dans le runtime Pi ?", `Source : ${label}\nVerify : ${summary || "ok"}\nRaison : ${input.reason}\nCible : ${agentDir} (sauvegarde automatique). La session en cours garde l'ancien runtime jusqu'au redémarrage de Pi.`, { signal: owned })) {
+            if (!await ctx.ui.confirm("Installer cette source du harness dans le runtime Pi ?", `Source : ${label}\nVerify : ${summary || "ok"}\nRaison : ${input.reason}\nCible : ${agentDir} (sauvegarde automatique). La session en cours garde l'ancien runtime jusqu'à /reload.`, { signal: owned })) {
               audit.finish("denied", "human"); throw new Error("Install refused by the user; nothing installed");
             }
             await unchanged();
@@ -85,7 +85,8 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
           } catch (error) { audit.finish("cancelled"); throw error; }
           const output = await execute(process.execPath, [join(source, "scripts/install.mjs"), "--target", agentDir], { cwd: source, signal: owned, timeoutMs: 10 * 60_000, maxBytes: 8 << 20 });
           pi.appendEntry("harness_update", { source, tree, agentDir, at: new Date().toISOString() });
-          return { content: [{ type: "text" as const, text: `Installed ${source} (tree ${tree.slice(0, 12)}) into ${agentDir}. Restart Pi to activate it; this session still runs the previous runtime.\n${output.trim().split("\n").slice(-6).join("\n")}` }], details: undefined };
+          ctx.ui.notify("Harness installé : tape /reload pour l'activer, sans redémarrage.", "info");
+          return { content: [{ type: "text" as const, text: `Installed ${source} (tree ${tree.slice(0, 12)}) into ${agentDir}. Run /reload to activate it (extensions, settings and launchers reload in place, no restart); this session runs the previous runtime until then.\n${output.trim().split("\n").slice(-6).join("\n")}` }], details: undefined };
         }, signal);
       } finally { busy = false; }
     },

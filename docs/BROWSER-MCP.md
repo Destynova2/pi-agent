@@ -55,7 +55,7 @@ with a final `--headless`, and no custom environment or browser flags. Omit
 `localhostPorts` when it is unnecessary. At most 16 distinct ports between 1024
 and 65535 can be relayed. Set `network: false` without relays for offline pages.
 Definitions are re-read on each MCP call; changes close the affected connection.
-Restart Pi after installing changed extension code.
+Run `/reload` after installing changed extension code.
 
 ## Permission and isolation
 

@@ -364,6 +364,8 @@ export async function runInstall({
     (typeof entry === "string" ? entry : entry.source) !== packageRoot)];
   // Strict tool execution has no unrestricted-shell mode.
   mergedSettings.shellPath = join(packageRoot, "scripts/codex-shell.mjs");
+  // Project code stays untrusted without a prompt or a flag; --no-approve from the launcher is then redundant.
+  mergedSettings.defaultProjectTrust = "never";
   const typescript = mergedSettings.lsp?.servers?.typescript;
   if (typescript?.command === "tsc" && isDeepStrictEqual(typescript, sourceSettings.lsp?.servers?.typescript)) {
     // Resolve the pinned server from the protected installation, never project PATH/npx.

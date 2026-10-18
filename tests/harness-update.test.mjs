@@ -24,7 +24,7 @@ function fixture({ confirms, trees = ["tree-a", "tree-a", "tree-a"], verifyFails
     on: (name, fn) => handlers.set(name, fn), registerTool: value => { tool = value; },
     getActiveTools: () => ["harness_update"], appendEntry: (type, data) => entries.push({ type, data }),
   }, agent, () => {}, execute);
-  const ctx = { cwd, hasUI: true, isProjectTrusted: () => false, ui: { confirm: async () => { assert.ok(confirms.length, "unexpected dialog"); return confirms.shift(); } } };
+  const ctx = { cwd, hasUI: true, isProjectTrusted: () => false, ui: { confirm: async () => { assert.ok(confirms.length, "unexpected dialog"); return confirms.shift(); }, notify() {} } };
   const run = (input = { source, reason: "test" }) => tool.execute("call-1", input, undefined, undefined, ctx);
   const commands = () => calls.map(call => call[0] === "git" ? `git ${call.at(-1)}` : call[0] === "npm" ? "npm verify" : "install");
   return { run, commands, entries, source, calls, cleanup: () => rmSync(root, { recursive: true, force: true }) };
@@ -62,7 +62,7 @@ test("the install is bound to the tree verify saw", async () => {
   const ok = fixture({ confirms: [true, true] });
   try {
     const result = await ok.run();
-    assert.match(result.content[0].text, /Installed .* Restart Pi/);
+    assert.match(result.content[0].text, /Installed .* Run \/reload/);
     // verify, then the digest is checked before and after the second dialog, then the install.
     assert.deepEqual(ok.commands().slice(4), ["npm verify", "git .", "git write-tree", "git .", "git write-tree", "install"]);
     assert.equal(ok.entries[0].data.tree, "tree-a");

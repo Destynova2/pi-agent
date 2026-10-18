@@ -1,6 +1,6 @@
 # Dialog and permission audit
 
-Restart Pi after installing this package. New sessions record their observable
+Run `/reload` (or restart Pi) after installing this package. New sessions record their observable
 events in `<agent-dir>/permission-audit/requests.sqlite`. The default location is
 `~/.pi/agent/permission-audit/requests.sqlite`. Existing requests stay intact;
 earlier dialogs and error causes are not reconstructed.
