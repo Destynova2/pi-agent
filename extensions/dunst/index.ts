@@ -44,7 +44,7 @@ export default function dunstExtension(pi: ExtensionAPI) {
       const epoch = generation, cwd = realpathSync(ctx.cwd);
       const owned = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
       owned.throwIfAborted();
-      if (!ctx.hasUI) throw new Error("Dunst host automation requires interactive human confirmation");
+      if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD) throw new Error("Dunst host automation requires the interactive parent: a human confirms it");
       const serialized = JSON.stringify({ tool: params.tool, args: params.args ?? {} });
       if (Buffer.byteLength(serialized) > 65536) throw new Error("Dunst request exceeds 64 KiB");
       const request = JSON.parse(serialized) as { tool: string; args: Record<string, unknown> };
@@ -66,7 +66,7 @@ export default function dunstExtension(pi: ExtensionAPI) {
           detail: observe
             ? `Observer les fenêtres, le texte, l'état et les captures ; choisir la fenêtre ciblée. Toutes les applications, même privées ou hors projet.\nServeur : ${JSON.stringify(executable.command)} (démarrage compris).\nAucun clic, saisie, lancement d'application ou accord de risque mémorisé.\nRévocation : /dunst permissions.`
             : `Exécutable : ${JSON.stringify(executable.command)}\nCette action peut modifier des fichiers ou envoyer des données.\nRequête exacte : ${serialized}`,
-          remember: observe, interactiveOnly: true, revalidate: verify,
+          remember: observe, interactiveOnly: true, humanOnly: true, revalidate: verify,
         }, owned);
       }
       authorized();
