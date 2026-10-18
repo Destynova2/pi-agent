@@ -38,7 +38,14 @@ test("checkpoint preserves omitted outcomes and requires evidence without approv
   assert.match(messages[0].content, /not new authorization/);
   await f.commands.get("task-status").handler("", f.ctx);
   assert.match(f.sent[0], /blocked.*activation/);
-  assert.equal(f.events.has("agent_end"), false);
+  // Without /task-rounds, the end of a turn queues nothing (the fixture fails on any sendUserMessage).
+  await f.events.get("agent_end")({ messages: [] }, f.ctx);
+  // Armed, an interrupted turn disarms instead of queuing the next round.
+  f.ctx.hasUI = true;
+  await f.commands.get("task-rounds").handler("3", f.ctx);
+  await f.events.get("agent_end")({ messages: [{ role: "assistant", stopReason: "aborted" }] }, f.ctx);
+  assert.match(f.sent.at(-1), /stopped: the turn was interrupted/);
+  await f.events.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] }, f.ctx);
 });
 
 test("restart, compaction and branch navigation recover only the active branch without duplicating context", async () => {

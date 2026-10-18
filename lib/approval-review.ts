@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { PermissionAudit } from "./permission-audit.ts";
 
@@ -46,8 +46,16 @@ function policyPath(agentDir: string, cwd: string, create = false): string | und
   return join(directory, `${hash(project)}.json`);
 }
 
+/** Project policy first; otherwise the global default written by `/approvals global …` (cwd "*"). */
 function readPolicy(agentDir: string, cwd: string): ReviewPolicy | undefined {
-  const path = policyPath(agentDir, cwd);
+  return readPolicyFile(cwd, policyPath(agentDir, cwd)) ?? readGlobalPolicy(agentDir, cwd);
+}
+function readGlobalPolicy(agentDir: string, cwd: string): ReviewPolicy | undefined {
+  const projectPath = policyPath(agentDir, cwd);
+  return readPolicyFile("*", projectPath && join(dirname(projectPath), "default.json"));
+}
+
+function readPolicyFile(cwd: string, path: string | undefined): ReviewPolicy | undefined {
   if (!path) return undefined;
   let fd;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
@@ -58,7 +66,7 @@ function readPolicy(agentDir: string, cwd: string): ReviewPolicy | undefined {
     const value: unknown = JSON.parse(readFileSync(fd, "utf8"));
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid approval policy");
     const p = value as Record<string, unknown>;
-    if (p.version !== 1 || p.cwd !== realpathSync(cwd) || !["manual", "auto"].includes(String(p.mode)) || !["ask", "deny"].includes(String(p.fallback)) ||
+    if (p.version !== 1 || p.cwd !== (cwd === "*" ? "*" : realpathSync(cwd)) || !["manual", "auto"].includes(String(p.mode)) || !["ask", "deny"].includes(String(p.fallback)) ||
         typeof p.revision !== "string" || !/^[a-f0-9-]{36}$/.test(p.revision) || typeof p.scope !== "string" || p.scope.length > 4000 ||
         typeof p.provider !== "string" || typeof p.model !== "string" || (p.mode === "auto" && (!p.scope.trim() || !p.provider || !p.model)) ||
         Object.keys(p).some(key => !["version", "revision", "cwd", "mode", "fallback", "scope", "provider", "model"].includes(key))) throw new Error("Invalid approval policy");
@@ -206,26 +214,30 @@ export async function reviewApproval(agentDir: string, ctx: ExtensionContext, re
 /** A user command, never a model tool. Policy is private, project-specific and revocable. */
 export function registerApprovalReview(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void) {
   pi.registerCommand("approvals", {
-    description: "/approvals status | manual | auto <scope> | auto-deny <scope>. Auto-deny refuses uncertainty without prompting.",
+    description: "/approvals [global] status | manual | auto <scope> | auto-deny <scope>. `global` sets the default for projects without their own policy. Auto-deny refuses uncertainty without prompting.",
     async handler(args, ctx) {
       verify(ctx);
       if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD) throw new Error("Approval settings require the interactive parent");
-      const [command = "status", ...words] = args.trim().split(/\s+/), scope = words.join(" ");
+      let [command = "status", ...words] = args.trim().split(/\s+/);
+      const global = command === "global";
+      if (global) [command = "status", ...words] = words;
+      const scope = words.join(" ");
       if (!command || command === "status") {
-        const policy = readPolicy(agentDir, ctx.cwd);
+        const policy = global ? readGlobalPolicy(agentDir, ctx.cwd) : readPolicy(agentDir, ctx.cwd);
         const retryAt = policy ? retryTimes.get(ctx.modelRegistry)?.get(hash(JSON.stringify(policy))) ?? 0 : 0;
         ctx.ui.notify(policy?.mode === "auto" ? `Auto review: ${policy.provider}/${policy.model}; uncertainty: ${policy.fallback}; project: ${policy.cwd}\nScope: ${policy.scope}${retryAt > Date.now() ? `\nReviewer rate-limited; next model attempt in ${Math.ceil((retryAt - Date.now()) / 1000)}s. Requests use the configured uncertainty policy meanwhile.` : ""}` : "Manual approval. No automatic review policy for this project.", "info");
         return;
       }
-      if (!["manual", "auto", "auto-deny"].includes(command) || command !== "manual" && (!scope || scope.length > 4000 || !ctx.model)) throw new Error("Usage: /approvals manual | auto <explicit project scope> | auto-deny <explicit project scope>");
-      const policy: ReviewPolicy = { version: 1, revision: randomUUID(), cwd: realpathSync(ctx.cwd), mode: command === "manual" ? "manual" : "auto",
+      if (!["manual", "auto", "auto-deny"].includes(command) || command !== "manual" && (!scope || scope.length > 4000 || !ctx.model)) throw new Error("Usage: /approvals [global] manual | auto <explicit project scope> | auto-deny <explicit project scope>");
+      const policy: ReviewPolicy = { version: 1, revision: randomUUID(), cwd: global ? "*" : realpathSync(ctx.cwd), mode: command === "manual" ? "manual" : "auto",
         fallback: command === "auto-deny" ? "deny" : "ask", scope, provider: ctx.model?.provider ?? "", model: ctx.model?.id ?? "" };
-      const path = policyPath(agentDir, ctx.cwd, true)!;
+      const projectPath = policyPath(agentDir, ctx.cwd, true)!;
+      const path = global ? join(dirname(projectPath), "default.json") : projectPath;
       readPolicy(agentDir, ctx.cwd); // Reject unsafe existing storage before replacement.
       const temporary = `${path}.${randomUUID()}.tmp`;
       try { writeFileSync(temporary, `${JSON.stringify(policy)}\n`, { flag: "wx", mode: 0o600 }); renameSync(temporary, path); }
       finally { rmSync(temporary, { force: true }); }
-      ctx.ui.notify(policy.mode === "auto" ? `Auto review enabled for ${policy.cwd}. Reviewer: ${policy.provider}/${policy.model}. Model calls use its configured quota. Uncertainty: ${policy.fallback}.\nScope: ${scope}\nAutomatic decisions never become permanent grants. /approvals manual stops new reviews and invalidates pending review tickets.` : "Automatic review disabled for this project. Existing remembered human grants and already-issued network grants are unchanged.", "info");
+      ctx.ui.notify(policy.mode === "auto" ? `Auto review enabled for ${global ? "every project without its own policy" : policy.cwd}. Reviewer: ${policy.provider}/${policy.model}. Model calls use its configured quota. Uncertainty: ${policy.fallback}.\nScope: ${scope}\nAutomatic decisions never become permanent grants. /approvals manual stops new reviews and invalidates pending review tickets.` : `Automatic review disabled ${global ? "by default for projects without their own policy" : "for this project"}. Existing remembered human grants and already-issued network grants are unchanged.`, "info");
     },
   });
 }

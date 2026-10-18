@@ -28,7 +28,11 @@ the request in either mode. Other extension dialogs are outside this setting.
 The command itself is the user's opt-in. It stores the scope under
 `<agent-dir>/approval-policies/`, outside the writable project. The policy is
 private, canonical-path-specific and survives restart. Subprojects do not inherit
-it. The current provider/model is pinned when the command runs; changing the main
+it. `/approvals global auto <scope>`, `global auto-deny <scope>` and `global manual`
+write `approval-policies/default.json` (cwd `*`), the default for every project
+without its own file, headless runs included; a project file always wins, and
+`/approvals global status` shows the default itself. `harness_update` never uses
+this review: only a human dialog can confirm it. The current provider/model is pinned when the command runs; changing the main
 model does not silently change the reviewer. Run the command again to change its
 model, scope or uncertainty handling. Requests use the pinned model's configured
 authentication, quota and billing, with a 30-second deadline.
