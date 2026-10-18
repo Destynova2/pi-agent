@@ -20,10 +20,14 @@ test("the strict dispatcher passes dunst only in the interactive parent", async 
     const loader = new DefaultResourceLoader({
       cwd, agentDir: agent, settingsManager: SettingsManager.inMemory({}),
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      additionalExtensionPaths: [new URL("../extensions/tool-policy/index.ts", import.meta.url).pathname],
+      additionalExtensionPaths: ["tool-policy/index.ts", "lean-prompt/index.ts"].map(path => new URL(`../extensions/${path}`, import.meta.url).pathname),
     });
     await loader.reload();
-    const extension = loader.getExtensions().extensions[0];
+    const loaded = loader.getExtensions();
+    const [extension, lean] = loaded.extensions;
+    let active = [...extension.tools.keys(), ...lean.tools.keys(), "dunst"];
+    loaded.runtime.getActiveTools = () => [...active];
+    loaded.runtime.setActiveTools = names => { active = [...names]; };
     const ctx = { cwd, hasUI: true, isProjectTrusted: () => false, ui: { notify() {}, confirm() { assert.fail("no prompts"); }, select() { assert.fail("no prompts"); } } };
     for (const handler of extension.handlers.get("session_start")) await handler({}, ctx);
     const call = () => extension.handlers.get("tool_call")[0]({ toolName: "dunst", input: { tool: "screenshot" } }, ctx);
@@ -34,6 +38,17 @@ test("the strict dispatcher passes dunst only in the interactive parent", async 
     process.env.PI_SUBAGENT_CHILD = "1";
     assert.match((await call()).reason, /no confined executor/, "child: denied");
     assert.match((await extension.handlers.get("tool_call")[0]({ toolName: "unknown", input: {} }, ctx)).reason, /no confined executor/);
+    // Across turns: dormant until load_tools, then kept active by both handlers in the parent, dropped headless.
+    delete process.env.PI_SUBAGENT_CHILD;
+    const turn = async () => { for (const e of [extension, lean]) for (const handler of e.handlers.get("before_agent_start") ?? []) await handler({ prompt: "", systemPromptOptions: { sections: {}, skills: [] } }, ctx); };
+    await turn();
+    assert.ok(!active.includes("dunst"), "dormant before load_tools");
+    await lean.tools.get("load_tools").definition.execute("1", { tools: ["dunst"] });
+    await turn();
+    assert.ok(active.includes("dunst"), "still active on the next turn");
+    ctx.hasUI = false;
+    await turn();
+    assert.ok(!active.includes("dunst"), "headless turns drop it");
   } finally {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     if (child === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = child;
