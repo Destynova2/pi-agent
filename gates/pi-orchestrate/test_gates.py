@@ -17,6 +17,7 @@ GATES = Path(__file__).with_name('gates.py')
 class GatesTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='pi-gates-test-')
+        self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name).resolve()
         self.repo = self.home / 'repo'
         self.repo.mkdir()
@@ -51,9 +52,6 @@ always_run = true
         self.policy = self.home / '.config/pi-orchestrate/projects' / f'{self.id}.json'
         self.policy.parent.mkdir(parents=True)
         self.set_policy([[sys.executable, '-c', 'assert __import__("pathlib").Path("source.py").exists()']])
-
-    def tearDown(self):
-        self.temp.cleanup()
 
     def cmd(self, *args):
         return subprocess.run(args, cwd=self.repo, env=self.env, text=True, capture_output=True, check=True)

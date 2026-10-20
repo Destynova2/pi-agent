@@ -23,12 +23,14 @@ export async function runVerification({ root = fileURLToPath(new URL("..", impor
     const checkArgs = [join(root, "scripts/check.mjs"), "--evidence", join(directory, "check.json")];
     if (reuseCheck) checkArgs.push("--reuse-evidence", resolve(reuseCheck));
     const phases = [
-      ["check", checkArgs],
-      ["test", [join(root, "scripts/test.mjs"), ...(integration ? ["--integration"] : [])]],
+      ["check", process.execPath, checkArgs],
+      ["types", process.execPath, [join(root, "scripts/typecheck.mjs")]],
+      ["python", "python3", [join(root, "scripts/check-python.py")]],
+      ["test", process.execPath, [join(root, "scripts/test.mjs"), ...(integration ? ["--integration"] : [])]],
     ];
     exitCode = 0;
-    for (const [name, args] of phases) {
-      const phase = { name, command: [process.execPath, ...args], cwd: root, status: "running", log: join(directory, `${name}.log`) };
+    for (const [name, executable, args] of phases) {
+      const phase = { name, command: [executable, ...args], cwd: root, status: "running", log: join(directory, `${name}.log`) };
       report.phases.push(phase);
       save();
       console.log(`verify: ${name}: ${phase.log}`);
@@ -42,7 +44,7 @@ export async function runVerification({ root = fileURLToPath(new URL("..", impor
       process.once("SIGTERM", onTerm);
       try {
         const result = await new Promise(resolveResult => {
-          child = spawn(process.execPath, args, { cwd: root, env, stdio: ["ignore", fd, fd] });
+          child = spawn(executable, args, { cwd: root, env, stdio: ["ignore", fd, fd] });
           child.once("error", error => resolveResult({ exitCode: null, signal: null, error: { code: error.code, message: error.message } }));
           child.once("exit", (code, signal) => resolveResult({ exitCode: code, signal }));
         });

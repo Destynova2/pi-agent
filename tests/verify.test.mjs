@@ -13,19 +13,23 @@ test("verification records commands, tests, failure status, signals and source i
   await writeFile(join(root, "unit.test.mjs"), "// selection fixture\n");
   await writeFile(join(root, "host.integration.test.mjs"), "// selection fixture\n");
   const check = join(root, "scripts/check.mjs"), tests = join(root, "scripts/test.mjs");
+  const types = join(root, "scripts/typecheck.mjs"), python = join(root, "scripts/check-python.py");
   await writeFile(check, "console.log('checked');\n");
+  await writeFile(types, "console.log('types checked');\n");
+  await writeFile(python, "print('python checked')\n");
   await writeFile(tests, "console.log('tested', process.argv.slice(2));\n");
   const success = await runVerification({ root, env });
   assert.equal(success.exitCode, 0);
   assert.equal(success.report.selectedTests.length, 1);
-  assert.deepEqual(success.report.phases.map(p => p.status), ["passed", "passed"]);
+  assert.deepEqual(success.report.phases.map(p => p.name), ["check", "types", "python", "test"]);
+  assert.ok(success.report.phases.every(p => p.status === "passed"));
   await writeFile(tests, "console.log('tested', process.argv.slice(2)); console.error('test: Pi SDK not found. No tests executed.');\n");
   const full = await runVerification({ root, env, integration: true, reuseCheck: join(parent, "old-check.json") });
   assert.equal(full.exitCode, 0);
-  assert.equal(full.report.phases[1].prerequisiteFailure, undefined, "successful fixture output is not a missing prerequisite");
+  assert.equal(full.report.phases.at(-1).prerequisiteFailure, undefined, "successful fixture output is not a missing prerequisite");
   assert.equal(full.report.selectedTests.length, 2);
   assert.ok(full.report.phases[0].command.includes("--reuse-evidence"));
-  assert.match(await readFile(full.report.phases[1].log, "utf8"), /tested.*--integration/);
+  assert.match(await readFile(full.report.phases.at(-1).log, "utf8"), /tested.*--integration/);
   assert.notEqual(success.reportPath, full.reportPath);
   for (const [source, status, signal, missingSdk] of [
     ["console.error('assertion failed'); process.exitCode = 37;\n", 37, null, false],
@@ -38,9 +42,18 @@ test("verification records commands, tests, failure status, signals and source i
     assert.equal(failed.exitCode, status);
     const stored = JSON.parse(await readFile(failed.reportPath, "utf8"));
     assert.equal(stored.status, "failed");
-    assert.equal(stored.phases[1].signal, signal);
-    assert.equal(stored.phases[1].status, "failed");
-    assert.equal(Boolean(stored.phases[1].prerequisiteFailure), missingSdk);
+    assert.equal(stored.phases.at(-1).signal, signal);
+    assert.equal(stored.phases.at(-1).status, "failed");
+    assert.equal(Boolean(stored.phases.at(-1).prerequisiteFailure), missingSdk);
+  }
+  for (const [file, failure, phase] of [[types, "process.exitCode = 23;\n", "types"], [python, "raise SystemExit(23)\n", "python"]]) {
+    const original = await readFile(file, "utf8");
+    await writeFile(file, failure);
+    const failed = await runVerification({ root, env });
+    assert.equal(failed.exitCode, 23);
+    assert.equal(failed.report.phases.at(-1).name, phase);
+    assert.ok(failed.report.phases.every(p => p.name !== "test"), "a static check failure must prevent test execution");
+    await writeFile(file, original);
   }
   await writeFile(tests, "import { writeFileSync } from 'node:fs'; writeFileSync('changed.ts', '// changed\\n');\n");
   const changed = await runVerification({ root, env });
