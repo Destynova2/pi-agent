@@ -26,7 +26,7 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Review permissions automatically | `/approvals auto <scope>` for this project; `/approvals auto-deny <scope>` refuses uncertainty without prompting; `/approvals global auto <scope>` sets the default for projects without their own policy; [automatic review](docs/AUTO-APPROVALS.md) |
 | Ask the user a decision mid-turn | `ask_user`: one bounded question (options or yes/no) in a dialog, the agent continues with the answer; a decision, never a permission; interactive parent only |
 | Run something the sandbox cannot | `request_host_command` (via `load_tools`): one exact shell command on the host, confirmed verbatim by the human each time, output in `<agent-dir>/host-commands/`; `background: true` detaches a service that outlives the session |
-| Improve the harness itself | Patch the source repository, then `harness_update` (via `load_tools`): the human confirms the host-side `npm run verify` before it runs, then the install of the exact verified tree (installer with backup); `/reload` activates it, or a restart when installed `.mjs` modules changed (the result says which). With `package: npm:…` it installs one pi package after one confirmation. Keeping it unchanged is a valid outcome; always-on prose is capped by `tests/prompt-budget.test.mjs` |
+| Improve the harness itself | Patch the source repository, then `harness_update` (via `load_tools`): the human confirms the host-side `npm run verify` before it runs, then the install of the exact verified tree (installer with backup); `/reload` activates the new release, including nested `.mjs` modules. SDK or external dependency changes require a restart. With `package: npm:…` it installs one pi package after one confirmation. Keeping it unchanged is a valid outcome; always-on prose is capped by `tests/prompt-budget.test.mjs` |
 | Record a lesson | `note_add kind=lesson` requires `cue: … \| lesson: … \| evidence: …`; the cue is what the first-turn memory index shows |
 | Audit dialogs and failures | `/audit` or `/audit session`; `npm run audit -- --json --events 100` for the correlated timeline; [audit coverage](docs/AUDIT.md) |
 | Let the agent keep going on open items | `/task-rounds <1-10>`: at most N extra queued turns on the open checkpoint items, stopped by a round without checkpoint change, by exhaustion, by an interrupted turn or by `/task-rounds off`; human-armed only, never persisted |
@@ -114,11 +114,15 @@ Not versioned: `auth.json`, `sessions/`, `models-store.json`, `trust.json`, `npm
 
 ```bash
 npm run check           # .mjs syntax + whitespace hygiene + git diff --check
+npm run check:types     # strict TypeScript against the installed Pi SDK
+npm run check:python    # Python syntax, no execution or checkout bytecode
 npm test                # standard suite (node:test), excluding *.integration.test.*
-npm run verify         # standard completion gate: syntax + standard tests
-npm run verify:integration  # host gate: syntax + full suite + Python gates
+npm run verify          # all static checks + standard tests
+npm run verify:integration  # all static checks + full suite + Python gates
 ```
 
 No versioned `node_modules` or lockfile. Scripts use Node stdlib; extension tests use the installed Pi SDK and pinned external packages. Host SDK packages are optional peers, never bundled duplicates.
+
+The verification gates require Python 3 and the managed TypeScript compiler. See [development conventions](INSTALLATION.md#development-conventions) for SDK selection, compiler discovery, lifecycle rules and the upstream references.
 
 Run `node scripts/doctor.mjs --installed` to detect missing or stale deployed executors and LSP packages. This is a deployment check, not proof that every external service works. See [INSTALLATION.md](INSTALLATION.md#validate-before-activating) for staged validation before activation.

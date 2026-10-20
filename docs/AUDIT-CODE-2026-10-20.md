@@ -4,6 +4,10 @@ Date: 2026-10-20. Scope: the working tree based on `1a4688a`, including the nati
 
 **CQI after corrections: 7.9/10 — good overall.** Remaining findings: Tier 3 (0), Tier 2 (3), Tier 1 (0). The initial score was 7.7/10 with two Tier 3 findings; both are now resolved by reviewed changes and targeted host regressions. The full completion gate also passed for the corrected tree; see the final completion evidence below.
 
+The score and counts above describe the audit snapshot published in `2bcba71`.
+The subsequent maintenance follow-up below resolves CODE-03 and CODE-05, leaving
+CODE-04 open. No new overall score is claimed.
+
 ## Method and limits
 
 The review sampled 20 production files, initially 3,435 lines, plus their callers and relevant tests. Large files were inventoried by function declarations and inspected in focused sections. No production file over 300 lines was loaded whole as the first step.
@@ -77,6 +81,7 @@ The skill's mechanical remaining debt estimate is approximately 1.5 hours (three
 
 ### CODE-03 — doctor and the Grob transport disagree about a valid endpoint
 
+- **Follow-up status:** resolved. Both callers use `lib/grob-url.mjs`; health requests reject redirects and invalid URLs without echoing credentials. See the maintenance evidence below.
 - **Category / pattern:** C4, C5 — Duplicated Validation; divergent policy.
 - **Confidence:** high. Cross-file inspection and an executed network-free comparison with a mocked `fetch`.
 - **Locations:** `scripts/doctor.mjs:87`; `lib/grob.ts:6` and `lib/grob.ts:15`.
@@ -98,6 +103,7 @@ The skill's mechanical remaining debt estimate is approximately 1.5 hours (three
 
 ### CODE-05 — the completion gate does not perform semantic TypeScript checking
 
+- **Follow-up status:** resolved. Both verification gates now require `scripts/typecheck.mjs`, using the selected installed SDK and managed compiler. See the maintenance evidence below.
 - **Category / pattern:** C6, C8 — Missing Feedback Loop at an SDK adapter boundary.
 - **Confidence:** medium. The configured scripts and their callers were inspected; no concrete currently failing type assertion is claimed.
 - **Locations:** `scripts/check.mjs:24`, `scripts/check.mjs:62`, `scripts/test.mjs:109`; `package.json` scripts.
@@ -118,8 +124,8 @@ The skill's mechanical remaining debt estimate is approximately 1.5 hours (three
 
 ## Next steps
 
-1. Align the doctor's Grob validation with the model transport.
-2. Plan focused extraction of the transaction phases and assess SDK-backed semantic checks. These are maintainability work, not a reason for a broad rewrite.
+Consider focused extraction of the transaction phases described in CODE-04 when
+changing those paths. The diagnostic and semantic-check findings are resolved.
 
 Resolved findings retain their original evidence and initial line references for traceability. Current scores and remaining-finding counts include the reviewed repairs.
 
@@ -132,3 +138,24 @@ cover the two macOS-native checks and the optional browser profile. Report:
 `/tmp/pi-verify-qhtJ8J/result.json`, completed 2026-10-20 14:36:06 UTC. This is
 runtime regression evidence, not semantic TypeScript checking or proof of live
 provider authentication.
+
+## Maintenance follow-up
+
+The upstream Pi lifecycle/API documentation, TypeScript compiler documentation
+and Python standard-library guidance were checked against this project; sources
+and supported scope are recorded in [development conventions](../INSTALLATION.md#development-conventions).
+
+The initial strict TypeScript run found 35 diagnostics. Shared typed lifecycle
+registration, a single subagent parameter schema, public SDK tool adaptation and
+correct proxy model options resolve them. The gate checks production TypeScript;
+JavaScript and test fixtures still rely on runtime coverage. Python syntax
+checking uses temporary bytecode outside the checkout, and unittest cleanup is
+registered during setup.
+
+The final `npm run verify:integration` passed with Pi 1.3.0 and TypeScript 7.0.2:
+151 `.mjs` files checked, semantic TypeScript checking passed, 5 Python files
+compiled, 652 Node tests passed, 3 explicitly skipped and 13 Python tests passed.
+Report: `/tmp/pi-verify-9ShtYD/result.json`. Negative regressions prove that an
+unknown Pi event, invalid Python syntax or either failed static-check phase
+prevents a successful verification result. The skipped checks remain the two
+macOS-native checks and the optional browser profile.

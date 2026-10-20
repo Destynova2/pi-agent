@@ -302,12 +302,14 @@ Checks the Node version (against `engines.node` in `package.json`), `node:sqlite
 
 ```bash
 npm run check            # .mjs syntax (node --check) + whitespace hygiene + git diff --check
+npm run check:types      # strict TypeScript against the selected installed SDK
+npm run check:python     # Python syntax without running sources or leaving bytecode
 npm test                 # standard node:test suite, excludes *.integration.test.*
-npm run verify           # syntax + standard suite
-npm run verify:integration # syntax + full suite + python3 -m unittest test_gates
+npm run verify           # all static checks + standard suite
+npm run verify:integration # all static checks + full suite + python3 -m unittest test_gates
 ```
 
-Both `verify` commands print the path to a private `$TMPDIR/pi-verify-*/result.json` and retain each phase's raw log alongside it. The report records the selected test files, exact commands, exit codes or signals, durations, source/SDK fingerprints and any detected missing SDK prerequisite. A failed check prevents test execution; a change to validation inputs during the run fails the gate. Read the raw log for assertion details or sandbox errors: a generic test failure is not classified as a missing prerequisite. An interrupted process may leave a `running` report, which is never evidence of success.
+Both `verify` commands run JavaScript syntax/whitespace checks, TypeScript checking, Python compilation and then tests. They print the path to a private `$TMPDIR/pi-verify-*/result.json` and retain each phase's raw log alongside it. The report records the selected test files, exact commands, exit codes or signals, durations, source/SDK fingerprints and any detected missing SDK prerequisite. A failed check prevents test execution; a change to validation inputs during the run fails the gate. Read the raw log for assertion details or sandbox errors: a generic test failure is not classified as a missing prerequisite. An interrupted process may leave a `running` report, which is never evidence of success.
 
 `npm test` loads `tests/resolve-pi.mjs` via `node --import` for the repo's real suite: this file only redirects the specifiers `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, and `typebox` to the `pi` installation actually found on `PATH` (or `PI_PACKAGE_JSON`), via `node:module.registerHooks` (synchronous hook, same thread — no `data:` URL, no `eval`, no temporary symlink). The found `package.json`'s name is verified (`@earendil-works/pi-coding-agent`) before any use.
 
@@ -316,6 +318,28 @@ Tests that launch the real Codex sandbox (including registered Git inspection an
 In `--integration` mode, each missing external dependency (git, jj, graphify, installed `pi`…) explicitly fails a test rather than silently skipping it (`PI_TEST_INTEGRATION=1`); the number of tests and their status therefore depend on the execution environment — do not hardcode a figure here, read the command's actual output.
 
 `npm run test:integration` also runs `python3 -m unittest test_gates -v` in `gates/pi-orchestrate/` if `python3` and `test_gates.py` are present; otherwise, the absence is explicitly reported (not a silent success).
+
+## Development conventions
+
+These conventions were checked against the upstream documentation on 2026-10-20 and the installed Pi 1.3.0 declarations. Upstream `main` can describe a newer API; the selected installed SDK and its integration tests decide which API this checkout supports.
+
+### Pi extensions
+
+Follow the [Pi extension lifecycle and public API](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md). Register capabilities in the factory; start processes, watchers and timers on session start or on demand. Own their cancellation and cleanup, including session changes and `/reload`. Use public SDK types for events and tool definitions. Shared mutable operations must serialize their complete read/modify/write transaction.
+
+The shared `onSessionReset` helper binds the five session boundaries used by confined operations; handlers with different lifecycle requirements register their events explicitly. Subagent execution and rendering derive their parameter types from one schema. Keep provider-specific compatibility settings out of Grob's protocol adapter.
+
+### TypeScript
+
+`npm run check:types` applies [`strict`](https://www.typescriptlang.org/tsconfig/strict.html), [`noEmit`](https://www.typescriptlang.org/tsconfig/noEmit.html) and [NodeNext module resolution](https://www.typescriptlang.org/docs/handbook/modules/reference.html#node16-node18-nodenext) to production TypeScript in `extensions/` and `lib/`. Test fixtures are exercised by the runtime suite; JavaScript and external declarations are not strictly type-checked. No JavaScript build output is produced.
+
+Run from this checkout. If `pi` is a wrapper, export `PI_PACKAGE_JSON` with the full installed `@earendil-works/pi-coding-agent/package.json` path. The checker reads that SDK's dependency declarations and the managed compiler at `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm/node_modules/typescript`. `PI_TYPESCRIPT_PACKAGE_JSON` can select another existing `typescript/package.json`. Missing prerequisites fail the gate; it never downloads a compiler or installs duplicate SDK packages. The temporary resolver configuration lives under `$TMPDIR` and is removed after the command.
+
+### Python
+
+`npm run check:python` uses the standard library's [`py_compile`](https://docs.python.org/3/library/py_compile.html) to check maintained Python files in `extensions/`, `lib/`, `scripts/`, `gates/` and `tests/`. It executes no source and keeps temporary bytecode outside the checkout. Python 3 is required for both verification gates.
+
+Keep the existing style consistent with [PEP 8's project consistency guidance](https://peps.python.org/pep-0008/#a-foolish-consistency-is-the-hobgoblin-of-little-minds). Register temporary-resource cleanup immediately with [`unittest.TestCase.addCleanup`](https://docs.python.org/3/library/unittest.html#unittest.TestCase.addCleanup), so failed setup also releases it. Process-owning code must preserve exit status, deadlines and cleanup; assertions cover those contracts in the integration suite.
 
 ## Gates (`gates/pi-prek`, `gates/pi-orchestrate/gates.py`)
 
