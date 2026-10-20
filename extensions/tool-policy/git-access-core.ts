@@ -186,7 +186,8 @@ export async function inspectGit(cwd: string, request: GitRequest, signal?: Abor
 export function gitWritePaths(snapshot: GitSnapshot, request: GitRequest): string[] {
   const { gitDir, commonDir } = snapshot;
   const paths = request.operation === "fetch" ? [join(commonDir, "objects"), join(gitDir, "FETCH_HEAD"), join(gitDir, "FETCH_HEAD.lock"), join(commonDir, "refs/remotes"), join(commonDir, "logs/refs/remotes")]
-    : request.operation === "fast_forward" ? [join(gitDir, "index"), join(gitDir, "index.lock"), join(gitDir, "ORIG_HEAD"), join(gitDir, "ORIG_HEAD.lock"), join(commonDir, "refs/heads"), join(commonDir, "logs"), join(gitDir, "logs")]
+    // Git also locks the HEAD symref itself while updating it (macOS has no transaction copy).
+    : request.operation === "fast_forward" ? [join(gitDir, "index"), join(gitDir, "index.lock"), join(gitDir, "HEAD.lock"), join(gitDir, "ORIG_HEAD"), join(gitDir, "ORIG_HEAD.lock"), join(commonDir, "refs/heads"), join(commonDir, "logs"), join(gitDir, "logs")]
     : request.operation === "stage" ? [join(gitDir, "index"), join(gitDir, "index.lock"), join(commonDir, "objects")]
     : request.operation === "commit" ? [join(gitDir, "index"), join(gitDir, "index.lock"), join(gitDir, "HEAD.lock"), join(gitDir, "COMMIT_EDITMSG"), join(commonDir, "objects"), join(commonDir, "refs/heads"), join(commonDir, "logs"), join(gitDir, "logs")]
     : request.operation === "branch" ? [join(gitDir, "HEAD"), join(gitDir, "HEAD.lock"), join(gitDir, "index"), join(gitDir, "index.lock"), join(commonDir, "refs/heads"), join(commonDir, "logs"), join(gitDir, "logs")]

@@ -64,7 +64,7 @@ test("additional paths are canonical and narrow; runtime, links, hardlinks and a
     assert.deepEqual(validate([f.target, f.target]), [f.target]);
     assert.throws(() => validate([join(process.env.HOME, ".cache/pi-codex-sandbox/scratch")]), /runtime\/configuration/);
     for (const name of ["auth.json.lock", "settings.json.lock", "models-store.json.lock"]) assert.throws(() => validate([join(f.agent, name)]), /runtime\/configuration/);
-    for (const paths of [[], Array(9).fill(f.target), ["relative"], [f.cwd], [f.root], ["/"], [f.agent], [join(f.agent, "settings.json")], [join(f.agent, "extensions")], [join(f.agent, "auth.json.lock/child")], [f.target + "/../other"], [f.target + "\n"]]) assert.throws(() => validate(paths), undefined, JSON.stringify(paths));
+    for (const paths of [[], Array(10).fill(f.target), ["relative"], [f.cwd], [f.root], ["/"], [f.agent], [join(f.agent, "settings.json")], [join(f.agent, "extensions")], [join(f.agent, "auth.json.lock/child")], [f.target + "/../other"], [f.target + "\n"]]) assert.throws(() => validate(paths), undefined, JSON.stringify(paths));
     symlinkSync(f.target, join(f.root, "dangling"));
     assert.throws(() => validate([join(f.root, "dangling")]), /links/);
     symlinkSync(f.agent, join(f.root, "alias"));

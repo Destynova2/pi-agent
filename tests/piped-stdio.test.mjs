@@ -8,9 +8,11 @@ import { LINUX_STDIO_RELAY } from "../scripts/codex-shell.mjs";
 import { spawn } from "../extensions/confined-lsp/piped-spawn.mjs";
 
 const posix = { skip: !["linux", "darwin"].includes(process.platform), timeout: 5000 };
+// The relay is Linux-only (codex-shell.mjs); macOS /bin/bash 3.2 cannot `wait` a process-substitution pid.
+const linux = { skip: process.platform !== "linux", timeout: 5000 };
 const args = script => ["--noprofile", "--norc", "-c", script, "pi-relay-test"];
 
-test("stdio supervisor reaps a relay even when its exit follows the last closed output", posix, async () => {
+test("stdio supervisor reaps a relay even when its exit follows the last closed output", linux, async () => {
   // Make the real scheduling race deterministic: no inherited output keeps
   // child.close pending, but the stderr relay still needs to be waited for.
   const script = LINUX_STDIO_RELAY.replace("/bin/cat >&2",
@@ -24,7 +26,7 @@ test("stdio supervisor reaps a relay even when its exit follows the last closed 
   assert.equal(stderr, "diagnostic");
 });
 
-test("stdio supervisor preserves failure status and stops its relay with stdin still open", posix, async () => {
+test("stdio supervisor preserves failure status and stops its relay with stdin still open", linux, async () => {
   const input = new PassThrough();
   input.write("request\n");
   try {

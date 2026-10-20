@@ -67,7 +67,7 @@ export function notesWritableRoots(cwd) {
 
 // Explicit host approval may add these roots for one process, never its parent session.
 export function commandWritableRoots(paths, cwd, agentDir, protectedPaths = []) {
-  if (!Array.isArray(paths) || paths.length < 1 || paths.length > 8) throw new Error("Expected 1–8 exact write paths");
+  if (!Array.isArray(paths) || paths.length < 1 || paths.length > 9) throw new Error("Expected 1–9 exact write paths");
   const within = (parent, path) => { const rel = relative(parent, path); return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel)); };
   const agent = realpathSync.native(agentDir);
   const runtime = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));

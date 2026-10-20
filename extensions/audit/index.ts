@@ -40,7 +40,7 @@ export function registerAudit(pi: ExtensionAPI, agentDir: string) {
   pi.on("before_agent_start", (event, ctx) => {
     attach(ctx);
     if ("prompt" in event) observe(ctx, "prompt.user", { text: event.prompt, images: event.images });
-    else observe(ctx, "prompt.custom", event.message);
+    else observe(ctx, "prompt.custom", (event as { message?: unknown }).message); // older Pi: event is never here
   });
   pi.on("agent_start", (_event, ctx) => observe(ctx, "prompt.system", { text: ctx.getSystemPrompt() }));
   pi.on("input", (event, ctx) => { attach(ctx); observe(ctx, "input", event); });
