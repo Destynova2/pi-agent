@@ -9,13 +9,21 @@
  * Env: GROB_URL (default http://127.0.0.1:13456). Inspect traffic with `grob watch` or ~/.grob/grob.log.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { Api, Model, SimpleStreamOptions, StreamOptions } from "@earendil-works/pi-ai";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
+import { DEFAULT_GROB_URL, grobFetch } from "../../lib/grob.ts";
+import { registerGrobCommand } from "./command.ts";
 
-export const DEFAULT_GROB_URL = "http://127.0.0.1:13456";
+export { DEFAULT_GROB_URL };
+// Validate at request time: a malformed URL must not prevent the protective
+// provider overrides from registering and leave the built-in transports active.
 export const GROB_URL = (process.env.GROB_URL ?? DEFAULT_GROB_URL).replace(/\/+$/, "");
+export const PROXIED_PROVIDERS = ["openai", "openai-codex", "anthropic"];
 /** Logical routes Grob always exposes; `/v1/models` adds the explicitly configured upstream names. */
 export const TIER_IDS = ["default-model", "think-model", "background-model"];
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-const HEALTH_TIMEOUT_MS = 3000;
+const PROBE_TIMEOUT_MS = 3000;
 
 export interface GrobModel {
 	id: string;
@@ -50,7 +58,8 @@ export function grobModel(id: string): GrobModel {
 export async function discoverModels(baseUrl: string, signal?: AbortSignal): Promise<GrobModel[]> {
 	const ids = new Set(TIER_IDS);
 	try {
-		const response = await fetch(`${baseUrl}/v1/models`, { signal });
+		const deadline = AbortSignal.timeout(PROBE_TIMEOUT_MS);
+        const response = await grobFetch(baseUrl)(`${baseUrl}/v1/models`, { signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
 		if (response.ok) {
 			const body = (await response.json()) as { data?: { id?: unknown }[] };
 			for (const entry of body.data ?? []) if (typeof entry.id === "string" && entry.id) ids.add(entry.id);
@@ -64,13 +73,34 @@ export async function discoverModels(baseUrl: string, signal?: AbortSignal): Pro
 /** True when Grob answers /health; never sends credentials. */
 export async function isHealthy(baseUrl: string): Promise<boolean> {
 	try {
-		return (await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })).ok;
+        return (await grobFetch(baseUrl)(`${baseUrl}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })).ok;
 	} catch {
 		return false;
 	}
 }
 
 export default function (pi: ExtensionAPI) {
+    registerGrobCommand(pi, GROB_URL, isHealthy);
+    const { stream, streamSimple } = anthropicMessagesApi();
+    const transport: ReturnType<typeof grobFetch> = (input, init) => grobFetch(GROB_URL)(input, init);
+    const routed = (model: Model<Api>): Model<"anthropic-messages"> => ({ ...model, api: "anthropic-messages", baseUrl: GROB_URL, headers: undefined });
+    const options = <T extends StreamOptions>(value?: T) => ({ ...value, apiKey: "grob", headers: undefined, env: {}, fetch: transport, client: undefined });
+    // Override the provider itself so restored models, compaction and nested reviewer
+    // calls use Grob even when they retained an old model object or provider name.
+    for (const provider of builtinProviders().filter(provider => PROXIED_PROVIDERS.includes(provider.id))) {
+        const models = provider.getModels().map(routed);
+        pi.registerProvider({
+            id: provider.id, name: `${provider.name} via Grob`, baseUrl: GROB_URL,
+            auth: { ...provider.auth, apiKey: {
+                name: "Grob", login: async () => ({ type: "api_key", key: "grob" }),
+                check: async () => ({ type: "api_key", source: "Grob" }),
+                resolve: async () => ({ auth: { apiKey: "grob" }, source: "Grob" }),
+            } },
+            getModels: () => models,
+            stream: (model, context, value) => stream(routed(model), context, options(value)),
+            streamSimple: (model, context, value) => streamSimple(routed(model), context, options(value)),
+        });
+    }
 	pi.registerProvider("grob", {
 		name: "Grob proxy",
 		baseUrl: GROB_URL,
@@ -78,8 +108,10 @@ export default function (pi: ExtensionAPI) {
 		api: "anthropic-messages",
 		models: TIER_IDS.map(grobModel),
 		refreshModels: (context) => discoverModels(GROB_URL, context.signal),
+        streamSimple: (model, context, value) => streamSimple(routed(model), context, options<SimpleStreamOptions>(value)),
 	});
 	pi.on("session_start", async (_event, ctx) => {
-		if (!(await isHealthy(GROB_URL))) ctx.ui.notify(`Grob proxy unreachable at ${GROB_URL}; run \`grob start -d\``, "warning");
+		ctx.ui.setStatus("grob", "Model traffic via Grob");
+		if (!(await isHealthy(GROB_URL))) ctx.ui.notify("Grob proxy unavailable or GROB_URL invalid; check its loopback address or use /grob start", "warning");
 	});
 }

@@ -42,3 +42,14 @@ test("proxy down: tiers only, health false, no throw", async () => {
   assert.deepEqual((await discoverModels(dead)).map(m => m.id), TIER_IDS);
   assert.equal(await isHealthy(dead), false);
 });
+
+test("catalog discovery has its own deadline when the proxy accepts but never answers", { timeout: 2000 }, async t => {
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, "timeout", ms => { assert.equal(ms, 3000); return timeout(30); });
+  const server = createServer(() => {});
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("stub did not bind");
+  assert.deepEqual((await discoverModels(`http://127.0.0.1:${address.port}`)).map(m => m.id), TIER_IDS);
+});

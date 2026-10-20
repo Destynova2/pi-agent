@@ -19,7 +19,13 @@ export function claudeSearchBinary(cwd: string): string {
 
 /** Read only the default Claude login, on the trusted parent. Never return a refresh token. */
 export async function claudeSearchToken(agentDir: string, signal?: AbortSignal, execute = runProcess): Promise<string | undefined> {
-  if (process.platform !== "darwin" || process.env.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CODE_OAUTH_TOKEN ||
+  if (process.platform !== "darwin") return undefined;
+  return readKeychainToken(agentDir, signal, execute);
+}
+
+/** Consent, bounded transport and token validation; execute is the credential adapter. */
+export async function readKeychainToken(agentDir: string, signal: AbortSignal | undefined, execute: typeof runProcess): Promise<string | undefined> {
+  if (process.env.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CODE_OAUTH_TOKEN ||
       process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return undefined;
   let fd: number;
   try { fd = openSync(join(agentDir, "web-search.json"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }

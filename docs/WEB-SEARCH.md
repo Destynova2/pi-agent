@@ -1,57 +1,38 @@
-# Confined web search
+# Web search through Grob
 
-`web_search` starts the installed Claude Code client inside the Codex sandbox.
-Hooks, skills and MCP are disabled; its only tool is `WebSearch`. The executable
-must be outside the writable project. The fixed worker can contact
-`api.anthropic.com` and `claude.ai` through the managed proxy. This does not grant
-these hosts to Bash or to the session. Explicit denials in `network-policy.json`
-remain binding.
+`web_search` and `/web --search` send a bounded query to the local Grob proxy.
+The request declares only Anthropic's server-side `web_search` tool. It has no
+local filesystem tools, hooks, skills or MCP servers and starts no Claude process.
+Provider credentials stay in Grob; Pi supplies only its dummy loopback key.
 
-## Native login on macOS
+Configure a `websearch-model` route to a provider supporting WebSearch in
+`~/.grob/config.toml`. `router.websearch` may point to that route. This consumes
+provider quota, so use search only when explicitly requested. The main model's
+choice does not select the search provider.
 
-Claude Code stores its default macOS login in the system Keychain. That login is
-normally unavailable to the confined client, even when `claude auth status`
-succeeds in an operator terminal.
+The query passes through the same Grob DLP pipeline as other model traffic.
+`GROB_URL` must name a loopback HTTP(S) origin. Redirects, remote origins and
+embedded credentials are refused. Explicit denials for the Anthropic hosts in
+`network-policy.json` remain binding. This path grants no network permission
+to Bash or subprocesses.
 
-The optional bridge reads only the default `Claude Code-credentials` entry,
-extracts its unexpired access token, and passes that token in memory through the
-fixed worker's stdin to the Claude child environment. It never passes the
-refresh token, writes a credential file, or opens the Keychain to shell tools.
-It never starts Claude outside the sandbox.
+## Authentication and failures
 
-The bridge is **disabled by default**. After explicit operator consent, create
-`<agent-dir>/web-search.json` with owner-only permissions (`0600`):
+Set up provider authentication in Grob. The former `web-search.json` Keychain
+bridge and Claude environment credentials are unused by this path. Existing
+files are preserved, but neither the current tool nor its legacy worker reads
+or relays those credentials.
 
-```json
-{"keychainBridge": true}
-```
+A proxy error, server-side search error, empty result, timeout or cancellation
+fails the search. There is no direct-provider fallback, alternate executor or
+automatic retry. Provider error bodies are not copied into tool output.
 
-This is host-owned configuration, outside the agent's writable project.
-The installer preserves it and never enables it. Missing, disabled, malformed,
-publicly readable, symbolic-link or hard-linked configuration cannot authorize
-a Keychain read. Set the value to `false` or remove the file to disable future
-reads. No reload is needed for this setting.
+`web_fetch` remains a fixed HTTP reader without a model call and keeps its
+existing destination and user-URL permission checks.
 
-Existing explicit token/API-key environment settings take precedence and skip
-the bridge. Custom `CLAUDE_CONFIG_DIR` logins are not bridged. An expired or
-nearly expired token requires refreshing the native Claude login before a new
-search; Pi never refreshes or exports the refresh token. Search consumes the
-existing Claude account's quota when requested.
+## Verification
 
-These mechanisms follow Claude Code's documented
-[native credential storage](https://code.claude.com/docs/en/authentication) and
-[`CLAUDE_CODE_OAUTH_TOKEN` environment setting](https://code.claude.com/docs/en/env-vars).
-
-## Failure and recovery
-
-Claude sometimes prints an authentication error to stdout before exiting 1.
-Pi now retains a bounded, masked diagnostic instead of only reporting the exit
-code. Errors distinguish missing login, unavailable CLI, incompatible flags,
-rate limiting, sandbox denial and cancellation. Partial output is never
-accepted as a successful search. There is no automatic retry or alternate
-executor.
-
-Unit tests use fictitious credentials. Native integration tests use a local
-fixture CLI and verify sandbox write denial and error propagation without a
-provider call. They do not prove that a real account can complete a search;
-that requires a separately authorized live check.
+Unit tests verify the fixed request, credential suppression and refusal behavior.
+The integration test uses a loopback Grob fixture and a hostile project-local
+Claude executable: the executable is never started and the outside file remains
+unchanged. Live upstream behavior is checked separately with an authorized search.

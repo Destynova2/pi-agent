@@ -2,8 +2,9 @@ import { getAgentDir, getPackageDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runProcess } from "./process.ts";
-import { CLAUDE_SEARCH_HOSTS, claudeSearchBinary, claudeSearchToken } from "./claude-search.ts";
+import { CLAUDE_SEARCH_HOSTS } from "./claude-search.ts";
 import { readNetworkPolicy } from "../scripts/codex-network.mjs";
+import { grobWebSearch } from "./grob.ts";
 
 /** The launcher selects a fixed GET worker; no command or session network grant. */
 export async function runUserWebRead(cwd: string, url: string, signal?: AbortSignal): Promise<string> {
@@ -20,9 +21,7 @@ export async function runConfined(cwd: string, service: "notes" | "graphify" | "
   if (service === "search") {
     if (!input || typeof input !== "object" || !("query" in input) || typeof input.query !== "string" || !input.query.trim() || input.query.length > 16000) throw new Error("Expected a bounded search query");
     if (CLAUDE_SEARCH_HOSTS.some(host => readNetworkPolicy(getAgentDir()).deny.includes(host))) throw new Error("WEB_SEARCH_NETWORK_DENIED: a required Anthropic host is explicitly denied");
-    const executable = claudeSearchBinary(cwd);
-    const oauthToken = await claudeSearchToken(getAgentDir(), signal);
-    input = { query: input.query, executable, oauthToken };
+    return grobWebSearch(input.query, signal);
   }
   const payload = JSON.stringify(input);
   if (Buffer.byteLength(payload) > 1024 * 1024) throw new Error("Confined request exceeds 1 MiB");

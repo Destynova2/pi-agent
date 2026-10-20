@@ -40,7 +40,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "web_search",
     label: "Web Search",
-    description: "Search via Claude Code limited to WebSearch, without user hooks/skills/MCP. Consumes Claude quota: use only on explicit search request.",
+    description: "Search via Grob's server-side WebSearch, without local tools or direct-provider fallback. Consumes provider quota: use only on explicit search request.",
     parameters: Type.Object({ query: Type.String() }),
     execute: async (_id, params, signal, _update, ctx) => ({
       content: [{ type: "text", text: String(await tasks.run((owned) => runConfined(ctx.cwd, "search", { query: params.query }, owned), signal)).slice(0, 20000) }],
