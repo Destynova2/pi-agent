@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PermissionAudit } from "../../lib/permission-audit.ts";
 import { runProcess } from "../../lib/process.ts";
-import { SessionTasks } from "../../lib/session-tasks.ts";
+import { onSessionReset, SessionTasks } from "../../lib/session-tasks.ts";
 import { activationState, requiresRestart } from "../../lib/harness-activation.mjs";
 
 const VERIFY_TIMEOUT_MS = 15 * 60_000;
@@ -19,9 +19,7 @@ const VERIFY_TIMEOUT_MS = 15 * 60_000;
  */
 export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
   let tasks = new SessionTasks(), busy = false;
-  for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) {
-    pi.on(event, async () => { const previous = tasks; tasks = new SessionTasks(); await previous.close(); });
-  }
+  onSessionReset(pi, async () => { const previous = tasks; tasks = new SessionTasks(); await previous.close(); });
   pi.registerTool({
     name: "harness_update", label: "Install a verified harness source", executionMode: "sequential", exposure: "model-only",
     description: "After human confirmation, run the source repository's `npm run verify` on the host; after a second confirmation, install that exact tree as a separate release (backup kept). With package instead of source, install one pinned pi package after one confirmation. Never automatic or remembered. Activate harness releases with /reload; changed external dependencies need a restart. The result names the required action.",

@@ -7,7 +7,7 @@ import { getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earend
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { McpApprovals, fingerprint, serverIdentity } from "../../lib/mcp-approvals.ts";
 import { checkpointReason, checkpointRepository, checkpointRoot, checkpointIdentity, createCheckpointTransaction, closeCheckpointTransaction, publishCheckpoint, type CheckpointInspection, type CheckpointResult } from "../../lib/jj-checkpoint.ts";
-import { SessionTasks } from "../../lib/session-tasks.ts";
+import { onSessionReset, SessionTasks } from "../../lib/session-tasks.ts";
 import { runProcess } from "../../lib/process.ts";
 import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
 
@@ -18,7 +18,7 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
   const command = [process.execPath, join(runtimeRoot, "scripts/jj-checkpoint.mjs")].map(quote).join(" ");
   let tasks = new SessionTasks(), tail: Promise<unknown> = Promise.resolve();
   const reset = () => { approvals.reset(); const previous = tasks; tasks = new SessionTasks(); return previous.close(); };
-  for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) pi.on(event, reset);
+  onSessionReset(pi, reset);
   pi.registerCommand("jj-checkpoint", {
     description: "/jj-checkpoint permissions [repository]: revoke checkpoint consent for the current or named repository",
     async handler(args, ctx) {

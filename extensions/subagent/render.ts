@@ -3,6 +3,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { getMarkdownTheme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type { AgentScope } from "./agents.ts";
+import type { SubagentParams } from "./parameters.ts";
 import { getFinalOutput, isFailedResult, type SingleResult, type SubagentDetails } from "./results.ts";
 
 const COLLAPSED_ITEM_COUNT = 10;
@@ -440,4 +441,4 @@ export const subagentRenderer = {
 		const text = result.content[0];
 		return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
 	},
-} satisfies Pick<ToolDefinition, "renderCall" | "renderResult">;
+} satisfies Pick<ToolDefinition<typeof SubagentParams>, "renderCall" | "renderResult">;

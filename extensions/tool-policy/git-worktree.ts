@@ -8,7 +8,7 @@ import { approvalDialog } from "../../lib/approval-dialog.ts";
 import { archiveWorktrees, validateWorktreeRemoval, worktreeIdentity, worktreeRequest, type WorktreeSnapshot } from "../../lib/git-worktree.ts";
 import { McpApprovals, fingerprint, serverIdentity } from "../../lib/mcp-approvals.ts";
 import { runProcess } from "../../lib/process.ts";
-import { SessionTasks } from "../../lib/session-tasks.ts";
+import { onSessionReset, SessionTasks } from "../../lib/session-tasks.ts";
 import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -18,7 +18,7 @@ export function registerGitWorktree(pi: ExtensionAPI, agentDir: string, verify: 
   const command = [process.execPath, join(runtimeRoot, "scripts/git-worktree.mjs")].map(quote).join(" ");
   let tasks = new SessionTasks(), tail: Promise<unknown> = Promise.resolve();
   const reset = () => { approvals.reset(); const previous = tasks; tasks = new SessionTasks(); return previous.close(); };
-  for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) pi.on(event, reset);
+  onSessionReset(pi, reset);
   pi.registerCommand("git-worktree", {
     description: "/git-worktree reset: cancel pending worktree cleanup and clear refusals",
     async handler(args, ctx) {

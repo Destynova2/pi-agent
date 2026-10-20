@@ -27,9 +27,9 @@ export async function runConfined(cwd: string, service: "notes" | "graphify" | "
   if (Buffer.byteLength(payload) > 1024 * 1024) throw new Error("Confined request exceeds 1 MiB");
   const command = [process.execPath, "--import", join(root, "lib/resolve-pi.mjs"), join(root, "scripts/confined-tool.mjs"), service].map(quote).join(" ");
   const output = await runProcess(join(root, "scripts/codex-shell.mjs"), [
-    ...(service === "search" ? ["--network-hosts", JSON.stringify(CLAUDE_SEARCH_HOSTS)] : service === "notes" ? ["--notes"] : ["web", "ci"].includes(service) ? [] : ["--offline"]), "-c", command,
+    ...(service === "notes" ? ["--notes"] : ["web", "ci"].includes(service) ? [] : ["--offline"]), "-c", command,
   ], {
-    cwd, signal, input: payload, graceMs: 3500, timeoutMs: service === "graphify" ? 180_000 : service === "search" ? 125_000 : 60_000, maxBytes: 32 * 1024 * 1024,
+    cwd, signal, input: payload, graceMs: 3500, timeoutMs: service === "graphify" ? 180_000 : 60_000, maxBytes: 32 * 1024 * 1024,
     env: { PI_PACKAGE_JSON: join(getPackageDir(), "package.json"), PI_CODING_AGENT_DIR: getAgentDir() },
   });
   return JSON.parse(output);

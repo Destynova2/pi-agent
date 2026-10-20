@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // The upstream public factory owns processes and cleanup. Its foreground path is
 // deliberately unreachable: Pi's native bash preserves structured exit failures.
@@ -18,11 +18,12 @@ export function registerBackground(pi: ExtensionAPI, factory: (options: Record<s
     ...pi,
     registerTool(tool) {
       if (tool.name !== "bash_background") { pi.registerTool(tool); return; }
+      const background = defineTool(tool);
       pi.registerTool({
-        ...tool,
+        ...background,
         parameters: Type.Object({ command: Type.String(), name: Type.Optional(Type.String()) }, { additionalProperties: false }),
         execute(id, args, signal, update, ctx) {
-          return tool.execute(id, { command: args.command, name: args.name, background: true }, signal, update, ctx);
+          return background.execute(id, { command: args.command, name: args.name, background: true }, signal, update, ctx);
         },
       });
     },

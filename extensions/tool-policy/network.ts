@@ -32,7 +32,9 @@ export function registerNetworkAccess(pi: ExtensionAPI, agentDir: string, verify
     root = realpathSync(ctx.cwd);
   });
   pi.on("session_shutdown", reset);
-  for (const event of ["session_before_switch", "session_before_fork", "session_before_tree"] as const) pi.on(event, reset);
+  pi.on("session_before_switch", reset);
+  pi.on("session_before_fork", reset);
+  pi.on("session_before_tree", reset);
   pi.registerTool({
     name: "request_network_access",
     label: "Request network access",

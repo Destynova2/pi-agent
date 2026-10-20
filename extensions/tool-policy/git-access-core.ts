@@ -56,8 +56,8 @@ export function validateGitRequest(value: unknown): GitRequest {
   const input = value as Record<string, unknown>;
   const fields: Record<string, string[]> = { branch: ["branch"], stage: ["paths"], commit: ["paths", "message"], push: ["remote", "branch"], fetch: ["remote", "branch"], fast_forward: ["remote", "branch"] };
   if (typeof input.operation !== "string" || !Object.hasOwn(fields, input.operation)) throw new Error("Only branch, stage, commit, push, fetch and fast_forward are supported");
-  const required = fields[input.operation];
-  if (Object.keys(input).some(key => !["operation", "reason", "repository", ...(input.operation === "push" ? ["source_branch"] : []), ...(["push", "fetch"].includes(input.operation) ? ["private_network"] : []), ...required].includes(key)) || required.some(key => !(key in input))) throw new Error("Invalid fields for Git operation");
+  const operation = input.operation, required = fields[operation];
+  if (Object.keys(input).some(key => !["operation", "reason", "repository", ...(operation === "push" ? ["source_branch"] : []), ...(["push", "fetch"].includes(operation) ? ["private_network"] : []), ...required].includes(key)) || required.some(key => !(key in input))) throw new Error("Invalid fields for Git operation");
   if (input.private_network !== undefined && typeof input.private_network !== "boolean") throw new Error("private_network must be a boolean for push or fetch only");
   if (input.repository !== undefined && (typeof input.repository !== "string" || !isAbsolute(input.repository) || resolve(input.repository) !== input.repository || input.repository.length > 1024 || control.test(input.repository))) throw new Error("Expected a canonical absolute repository path");
   if (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 500 || control.test(input.reason)) throw new Error("A short justification without control characters is required");

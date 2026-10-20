@@ -7,11 +7,11 @@ import { privateIpcSeccomp } from "../../lib/private-ipc-seccomp.mjs";
 import { reviewApproval } from "../../lib/approval-review.ts";
 import { PermissionAudit } from "../../lib/permission-audit.ts";
 import { runProcess } from "../../lib/process.ts";
-import { SessionTasks } from "../../lib/session-tasks.ts";
+import { onSessionReset, SessionTasks } from "../../lib/session-tasks.ts";
 
 export function registerIsolatedCommand(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess, prepareRuntime = isolatedRuntime) {
   let tasks = new SessionTasks();
-  for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) pi.on(event, () => {
+  onSessionReset(pi, () => {
     const previous = tasks; tasks = new SessionTasks(); return previous.close();
   });
   pi.registerTool({

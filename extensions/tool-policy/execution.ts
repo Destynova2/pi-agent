@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { ExecutionError, executionCapabilities, prepareExecution, type ExecutionRequest } from "../../lib/execution-plan.ts";
 import { reviewApproval } from "../../lib/approval-review.ts";
 import { PermissionAudit } from "../../lib/permission-audit.ts";
-import { SessionTasks } from "../../lib/session-tasks.ts";
+import { onSessionReset, SessionTasks } from "../../lib/session-tasks.ts";
 import { runProcess } from "../../lib/process.ts";
 
 type Job = { id: string; session: string; cwd: string; state: "running" | "completed" | "failed" | "stopped"; output: string; error?: string; controller: AbortController; done: Promise<void> };
@@ -14,7 +14,7 @@ const response = (details: unknown) => ({ content: [{ type: "text" as const, tex
 export function registerExecution(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void,
   dependencies = { prepare: prepareExecution, execute: runProcess }) {
   let tasks = new SessionTasks(), jobs = new Map<string, Job>(), reservations = new Map<string, string[]>(), generation = 0;
-  for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) pi.on(event, async () => {
+  onSessionReset(pi, async () => {
     generation++;
     const previous = tasks; tasks = new SessionTasks(); jobs = new Map(); reservations = new Map();
     await previous.close();

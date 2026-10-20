@@ -86,7 +86,11 @@ export default function (pi: ExtensionAPI) {
   const hostDesktop = (name: string, ctx: ExtensionContext) => name === "dunst" && ctx.hasUI && !process.env.PI_SUBAGENT_CHILD;
   const observed = new Set<string>();
   // File knowledge is physical, so a fork keeps it; another session, branch, compaction or shutdown does not.
-  for (const event of ["session_start", "session_before_switch", "session_before_tree", "session_compact", "session_shutdown"] as const) pi.on(event, () => observed.clear());
+  pi.on("session_start", () => observed.clear());
+  pi.on("session_before_switch", () => observed.clear());
+  pi.on("session_before_tree", () => observed.clear());
+  pi.on("session_compact", () => observed.clear());
+  pi.on("session_shutdown", () => observed.clear());
   pi.on("tool_call", (event, ctx) => {
     if (!STRICT_TOOLS.has(event.toolName) && !hostDesktop(event.toolName, ctx)) return { block: true, reason: `Strict sandbox: ${event.toolName} has no confined executor; denied without approval or exception.` };
     try { verify(ctx); } catch (error) { return { block: true, reason: (error as Error).message }; }

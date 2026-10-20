@@ -8,7 +8,7 @@ import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { buildDirectory, buildSandboxArgs, kvmStatus, prepareBuild } from "../../lib/build-sandbox.ts";
 import { McpApprovals, approvalDisplayText, fingerprint } from "../../lib/mcp-approvals.ts";
 import { runProcess } from "../../lib/process.ts";
-import { SessionTasks } from "../../lib/session-tasks.ts";
+import { onSessionReset, SessionTasks } from "../../lib/session-tasks.ts";
 
 /** A fixed project build with a separate, explicitly approved device/network policy. */
 export function registerBuildAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void,
@@ -21,7 +21,7 @@ export function registerBuildAccess(pi: ExtensionAPI, agentDir: string, verify: 
     const previous = tasks; tasks = new SessionTasks();
     await previous.close();
   };
-  for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) pi.on(event, reset);
+  onSessionReset(pi, reset);
   pi.registerCommand("build-access", {
     description: "/build-access reset: cancel the build and pending approvals, clear refusals",
     handler: async (args, ctx) => {

@@ -1,3 +1,14 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+/** Register each overload explicitly so SDK event renames fail type checking. */
+export function onSessionReset(pi: ExtensionAPI, reset: () => void | Promise<void>): void {
+  pi.on("session_start", reset);
+  pi.on("session_before_switch", reset);
+  pi.on("session_before_fork", reset);
+  pi.on("session_before_tree", reset);
+  pi.on("session_shutdown", reset);
+}
+
 /** Ownership of a session's operations, including commands without ctx.signal. */
 export class SessionTasks {
   private readonly controller = new AbortController();

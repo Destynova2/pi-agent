@@ -118,7 +118,8 @@ export function registerGrobCommand(pi: ExtensionAPI, baseUrl: string, health: (
             const signal = lifecycle.signal;
             try {
                 const parts = raw.trim().split(/\s+/).filter(Boolean);
-                let action = parts[0] as Action | undefined, provider = parts[1];
+                let action = parts[0] as Action | undefined;
+                let provider: string | undefined = parts[1];
                 if (parts.length > 2 || (action && !ACTIONS.includes(action)) || (provider && !PROVIDER.test(provider)) ||
                     ((action === "status" || action === "start") && provider)) throw new Error(USAGE);
                 if (!action) {

@@ -8,7 +8,7 @@ import { approvalDialog } from "../../lib/approval-dialog.ts";
 import { closeGitInitStage, createGitInitStage, inspectGitInitTarget, publishGitInit, validateGitInit } from "../../lib/git-init.ts";
 import { McpApprovals, fingerprint, serverIdentity } from "../../lib/mcp-approvals.ts";
 import { runProcess } from "../../lib/process.ts";
-import { SessionTasks } from "../../lib/session-tasks.ts";
+import { onSessionReset, SessionTasks } from "../../lib/session-tasks.ts";
 import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -18,7 +18,7 @@ export function registerGitInit(pi: ExtensionAPI, agentDir: string, verify: (ctx
   const command = [process.execPath, join(runtimeRoot, "scripts/git-init.mjs")].map(quote).join(" ");
   let tasks = new SessionTasks();
   const reset = () => { approvals.reset(); const previous = tasks; tasks = new SessionTasks(); return previous.close(); };
-  for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) pi.on(event, reset);
+  onSessionReset(pi, reset);
   pi.registerCommand("git-init", {
     description: "/git-init reset: cancel pending repository initialization and clear refusals",
     async handler(args, ctx) {
