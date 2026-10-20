@@ -22,11 +22,12 @@ test("installed resources register every confined adapter once and filter upstre
     const settings = JSON.parse(readFileSync(join(target, "settings.json"), "utf8"));
     const lsp = settings.packages.find(p => p.source?.includes("pi-lsp"));
     assert.deepEqual(lsp.extensions, []);
+    assert.deepEqual(lsp.skills, []);
     const isolated = { ...settings, packages: [join(target, PACKAGE_DIRECTORY), lsp], npmCommand: ["/usr/bin/false"] };
     writeFileSync(join(target, "settings.json"), JSON.stringify(isolated));
     const loader = new DefaultResourceLoader({
       cwd, agentDir: target, settingsManager: SettingsManager.inMemory(isolated),
-      noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      noPromptTemplates: true, noThemes: true, noContextFiles: true,
     });
     await loader.reload();
     const loaded = loader.getExtensions();
@@ -37,6 +38,11 @@ test("installed resources register every confined adapter once and filter upstre
       assert.equal(tools.filter(tool => tool === name).length, 1, `${name}: exactly one confined adapter`);
     }
     assert.equal(loaded.extensions.filter(extension => extension.tools.has("lsp")).length, 1);
+    const skills = loader.getSkills();
+    assert.deepEqual(skills.diagnostics, []);
+    assert.equal(skills.skills.filter(skill => skill.name === "pi-lsp").length, 1);
+    assert.equal(skills.skills.find(skill => skill.name === "pi-lsp").filePath,
+      join(target, PACKAGE_DIRECTORY, "extensions/confined-lsp/pi-lsp/SKILL.md"));
   } finally {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     rmSync(root, { recursive: true, force: true });

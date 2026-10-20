@@ -91,6 +91,19 @@ test("redaction removes known secrets before persistence and marks omitted or bo
   assert.doesNotThrow(() => JSON.parse(JSON.stringify(redactAudit({ huge: "x".repeat(1100000) }))));
 });
 
+test("custom turns are audited separately from current and legacy user prompts", async t => {
+  const f = fixture(t); await f.emit("session_start");
+  await f.emit("before_agent_start", { prompt: "Legacy user request" });
+  await f.emit("before_agent_start", { messageType: "user", prompt: "Current user request" });
+  await f.emit("before_agent_start", { messageType: "custom", message: {
+    role: "custom", customType: "background_result", content: "API_TOKEN=custom-secret", display: true, timestamp: Date.now(),
+  } });
+  const events = f.events();
+  assert.deepEqual(events.filter(e => e.kind === "prompt.user").map(e => e.payload.text), ["Legacy user request", "Current user request"]);
+  assert.equal(events.find(e => e.kind === "prompt.custom").payload.customType, "background_result");
+  assert.doesNotMatch(JSON.stringify(events), /custom-secret/);
+});
+
 test("concurrent dialogs keep their original request and session even after navigation", async t => {
   const f = fixture(t), pending = [];
   f.ctx.ui.select = (title) => new Promise(resolve => pending.push({ title, resolve }));

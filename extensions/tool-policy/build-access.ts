@@ -12,7 +12,8 @@ import { SessionTasks } from "../../lib/session-tasks.ts";
 
 /** A fixed project build with a separate, explicitly approved device/network policy. */
 export function registerBuildAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void,
-  dependencies = { execute: runProcess, inspectKvm: kvmStatus }) {
+  dependencies: { execute: typeof runProcess; inspectKvm: typeof kvmStatus; prepare?: typeof prepareBuild } = { execute: runProcess, inspectKvm: kvmStatus }) {
+  const prepare = dependencies.prepare ?? prepareBuild;
   const approvals = new McpApprovals(agentDir);
   let tasks = new SessionTasks(), busy = false;
   const reset = async () => {
@@ -57,14 +58,14 @@ export function registerBuildAccess(pi: ExtensionAPI, agentDir: string, verify: 
             if (!kvm.available) throw new Error(`KVM_UNAVAILABLE on host: ${kvm.reason}. Check /dev/kvm and the user's existing access on the host; no automatic chmod, module load or retry.`);
           };
           validate();
-          const plan = prepareBuild(cwd, agentDir), identity = fingerprint(plan), expires = Date.now() + 300_000;
+          const plan = prepare(cwd, agentDir), identity = fingerprint(plan), expires = Date.now() + 300_000;
           const title = "Autoriser ce build KVM ?";
           const detail = `Une fois, ${minutes} min. /dev/kvm ; réseau COMPLET de l’hôte (TCP/UDP, sockets, services locaux) accessible au code et aux dépendances du build.\nÉcritures : .cache/, output/, temporaire privé. Autres fichiers en lecture seule.\nCommande : ${JSON.stringify([plan.executable.command, "-i", "localhost,", "ansible/build.yml"])}\nSources : ${plan.sourceSha256.slice(0, 16)}\nMotif : ${reason}`;
           const visible = approvalDisplayText(`${title}\nProjet : ${JSON.stringify(cwd)}\n${detail}`);
           const revalidate = () => {
             validate();
             if (Date.now() > expires) throw new Error("Build approval expired");
-            if (fingerprint(prepareBuild(cwd, agentDir)) !== identity) throw new Error("Build sources, executable or worker changed during approval");
+            if (fingerprint(prepare(cwd, agentDir)) !== identity) throw new Error("Build sources, executable or worker changed during approval");
           };
           const ticket = await approvals.authorize(ctx, {
             resource: "build-access", auditOperation: "kvm-build", toolCallId: id, identity,

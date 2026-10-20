@@ -120,7 +120,31 @@ function quote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+// Homebrew removes versioned Cellar paths during upgrades. Persist only its
+// formula-specific stable path, after checking it selects this exact executable.
+// Never discover a replacement from a project's PATH.
+function homebrewNodePath(node) {
+  const match = node.match(/^(\/.*)\/Cellar\/(node(?:@\d+)?)\/[^/]+\/bin\/node$/);
+  return match ? join(match[1], "opt", match[2], "bin/node") : undefined;
+}
+
+export function persistentNodeExecutable(node = process.execPath) {
+  const stable = homebrewNodePath(node);
+  if (stable) {
+    try { if (realpathSync(stable) === realpathSync(node)) return stable; }
+    catch (error) { if (!["ENOENT", "ENOTDIR", "EACCES"].includes(error.code)) throw error; }
+  }
+  return node;
+}
+
+export function sameNodeInstallation(command, node = process.execPath) {
+  if (command === node || command === persistentNodeExecutable(node)) return true;
+  const stable = homebrewNodePath(node);
+  return typeof command === "string" && stable !== undefined && homebrewNodePath(command) === stable;
+}
+
 export function renderLauncher(packageJson, { node = process.execPath, agentDir = DEFAULT_AGENT_DIR, sourceRoot = SOURCE } = {}) {
+  node = persistentNodeExecutable(node);
   const manifest = resolve(packageJson);
   return `#!/bin/sh
 # pi-agent private runtime launcher
@@ -307,7 +331,7 @@ async function main(args) {
   }
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === SELF) {
+if (process.argv[1] && process.argv[1] !== "-" && realpathSync(process.argv[1]) === SELF) {
   try { await main(process.argv.slice(2)); }
   catch (error) {
     console.error(`pi runtime update: ${error.message}`);

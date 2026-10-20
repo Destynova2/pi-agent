@@ -28,7 +28,7 @@
       "./extensions/grob/index.ts",
       "./extensions/lean-prompt/index.ts"
     ],
-    "skills": [],
+    "skills": ["./extensions/confined-lsp/pi-lsp"],
     "prompts": [],
     "themes": []
   },

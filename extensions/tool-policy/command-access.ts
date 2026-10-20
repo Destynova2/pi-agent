@@ -14,10 +14,10 @@ import { metalBackend } from "../../scripts/metal-backend.mjs";
 interface FailedCommand { command: string; cwd: string; expires: number }
 
 /** True only with a reviewed, natively qualified Metal backend installed in the agent directory. */
-export function hasMetalBackend(agentDir: string): boolean { try { metalBackend(agentDir); return true; } catch { return false; } }
+export function hasMetalBackend(agentDir: string, inspect = metalBackend): boolean { try { inspect(agentDir); return true; } catch { return false; } }
 
-export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
-  const metal = hasMetalBackend(agentDir);
+export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess, inspectMetal = metalBackend) {
+  const metal = hasMetalBackend(agentDir, inspectMetal);
   let root: string | undefined;
   let tasks = new SessionTasks();
   let tail: Promise<unknown> = Promise.resolve();
@@ -124,7 +124,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
               return paths.length ? commandWritableRoots(paths, request.cwd, agentDir, [getPackageDir()]) : [];
             };
             const roots = validate();
-            const backend = gpu ? metalBackend(agentDir) : undefined;
+            const backend = gpu ? inspectMetal(agentDir) : undefined;
             const display = JSON.stringify({ command: request.command, cwd: request.cwd, additional_write_paths: roots, gpu, backend_sha256: backend?.sha256, reason }, null, 2)
               .replace(/[\u007f-\u009f\u200e-\u200f\u202a-\u202e\u2066-\u2069]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
             let source: "human" | "policy" = "human";
@@ -136,7 +136,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
                 detail: `Cette fois : la commande exacte ci-dessous sera relancée une fois, avec ses éventuels effets partiels. Session/projet : autoriser aussi les autres commandes éligibles de ce projet avec le même backend Metal. GPU seul ; aucun droit supplémentaire aux fichiers ou au réseau. Bash ordinaire reste sans GPU. Chaque commande garde sa durée limite et son identifiant d'échec à usage unique. Deadline: 60 seconds. Révocation : /command-access permissions.\n${display}`,
                 revalidate() {
                   validate();
-                  if (metalBackend(agentDir).sha256 !== backend.sha256) throw new Error("Metal backend changed during approval; nothing executed");
+                  if (inspectMetal(agentDir).sha256 !== backend.sha256) throw new Error("Metal backend changed during approval; nothing executed");
                 },
               }, owned, ctx, audit);
               authorized();
@@ -168,7 +168,7 @@ export function registerCommandAccess(pi: ExtensionAPI, agentDir: string, verify
               source = review.decision === "allow" ? "policy" : "human";
             }
             validate();
-            if (backend && metalBackend(agentDir).sha256 !== backend.sha256) throw new Error("Metal backend changed during approval; nothing executed");
+            if (backend && inspectMetal(agentDir).sha256 !== backend.sha256) throw new Error("Metal backend changed during approval; nothing executed");
             const output: Buffer[] = [];
             const journal = (status: string, error?: string) => {
               if (backend) pi.appendEntry("metal_command", { status, at: new Date().toISOString(), failedCallId: id, command: request.command, cwd: request.cwd, writePaths: roots, backendSha256: backend.sha256, timeoutMs: 60_000, output: Buffer.concat(output).toString("utf8").slice(-6000), error });

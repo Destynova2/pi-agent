@@ -72,10 +72,15 @@ export function buildSourceIdentity(cwd: string) {
 
 export function prepareBuild(cwd: string, agentDir: string) {
   if (process.platform !== "linux") throw new Error("KVM builds require Linux");
+  return buildPlan(cwd, agentDir, "/usr/bin/bwrap");
+}
+
+/** Source and mount planning is portable; only prepareBuild selects a native backend. */
+export function buildPlan(cwd: string, agentDir: string, backendCommand: string) {
   cwd = realpathSync(cwd);
   const path = [join(homedir(), ".local/bin"), "/home/linuxbrew/.linuxbrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].join(":");
   const executable = serverIdentity("ansible-playbook", [], cwd, { PATH: path });
-  const backend = serverIdentity("/usr/bin/bwrap", [], cwd, { PATH: path });
+  const backend = serverIdentity(backendCommand, [], cwd, { PATH: path });
   const worker = realpathSync(join(runtimeRoot, "scripts/build-worker.mjs"));
   for (const protectedPath of [realpathSync(agentDir), worker, realpathSync(process.execPath), executable.command, backend.command]) {
     if (inside(cwd, protectedPath)) throw new Error("Build runtime must live outside the project");

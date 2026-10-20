@@ -4,12 +4,17 @@ import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runProcess } from "../process.ts";
+import { runProcess, signalProcessGroup } from "../process.ts";
 
 // Portable path relative to this test file: never $HOME or a user install path.
 const GATES_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../gates/pi-orchestrate");
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Inject Darwin's retry policy only; child processes and signals use the real host.
+// This verifies the policy on either OS without claiming native Darwin qualification.
+const runDarwinProcess = (program: string, args: string[], options: Parameters<typeof runProcess>[2]) =>
+  runProcess(program, args, options, (pid, signal, settled) => signalProcessGroup(pid, signal, settled, { platform: "darwin" }));
+
 
 for (const mode of ["timeout", "abort", "parent-exits"] as const) {
   test(`supervision ${mode}: a descendant ignoring TERM does not survive`, async () => {
@@ -85,7 +90,7 @@ test("bounded output, launch error and success", async () => {
   await assert.rejects(runProcess(process.execPath, ["-e", "console.log('x'.repeat(10000))"], { cwd, maxBytes: 100, graceMs: 10 }), /too large/);
 });
 
-test("Darwin reaps a real exited child before retrying its group signal", { skip: process.platform !== "darwin" }, async () => {
+test("POSIX supervision handles an exited child while its parent has not yet reaped it", async () => {
   const wait = new Int32Array(new SharedArrayBuffer(4));
   await assert.rejects(runProcess(process.execPath, ["-e", "process.stdout.write('ready');process.exit(0)"], {
     cwd: tmpdir(), graceMs: 10,
@@ -100,7 +105,7 @@ test("Darwin reaps a real exited child before retrying its group signal", { skip
 // Darwin killpg can return EPERM for a same-user zombie-only group until it is reaped.
 // Exercise all signal sites without depending on the scheduler winning that race.
 for (const target of ["SIGTERM", "SIGKILL", 0] as const) {
-  test(`transient Darwin EPERM on ${target} retries the same signal after reaping`, { skip: process.platform !== "darwin" }, async (t) => {
+  test(`injected Darwin EPERM on ${target} retries the same signal after reaping`, async (t) => {
     const realKill = process.kill.bind(process);
     let calls = 0;
     const spy = t.mock.method(process, "kill", (pid: number, signal?: string | number) => {
@@ -111,19 +116,19 @@ for (const target of ["SIGTERM", "SIGKILL", 0] as const) {
     });
     try {
       if (target === 0) {
-        assert.equal(await runProcess(process.execPath, ["-e", "console.log('OK')"], { cwd: tmpdir() }), "OK");
+        assert.equal(await runDarwinProcess(process.execPath, ["-e", "console.log('OK')"], { cwd: tmpdir() }), "OK");
       } else {
         const script = target === "SIGKILL"
           ? "process.on('SIGTERM',()=>{}); console.log('x'.repeat(10000)); setTimeout(()=>{},5000)"
           : "console.log('x'.repeat(10000))";
-        await assert.rejects(runProcess(process.execPath, ["-e", script], { cwd: tmpdir(), maxBytes: 100, graceMs: 10 }), /too large/);
+        await assert.rejects(runDarwinProcess(process.execPath, ["-e", script], { cwd: tmpdir(), maxBytes: 100, graceMs: 10 }), /too large/);
       }
       assert.equal(calls, 2, "exactly one retry of the original signal, not a permission-bypassing probe");
     } finally { spy.mock.restore(); }
   });
 }
 
-test("cancellation during an EPERM retry cannot turn into success", { skip: process.platform !== "darwin" }, async (t) => {
+test("cancellation during an injected Darwin EPERM retry cannot turn into success", async (t) => {
   const controller = new AbortController();
   const realKill = process.kill.bind(process);
   let injected = false;
@@ -136,10 +141,29 @@ test("cancellation during an EPERM retry cannot turn into success", { skip: proc
     return realKill(pid, signal);
   });
   try {
-    await assert.rejects(runProcess(process.execPath, ["-e", "console.log('OK')"], { cwd: tmpdir(), signal: controller.signal }), /canceled/);
+    await assert.rejects(runDarwinProcess(process.execPath, ["-e", "console.log('OK')"], { cwd: tmpdir(), signal: controller.signal }), /canceled/);
     assert.equal(injected, true);
   } finally { spy.mock.restore(); }
 });
+
+for (const platform of ["linux", "darwin"] as const) {
+  test(`signal error policy: ${platform} retries only its documented transient permission failure`, async () => {
+    for (const signal of ["SIGTERM", "SIGKILL", 0] as const) {
+      const calls: (NodeJS.Signals | 0)[] = [], waits: number[] = [];
+      const pending = signalProcessGroup(1234, signal, () => false, { platform,
+        kill: (_pid, sent) => { calls.push(sent); throw Object.assign(new Error("fixture"), { code: calls.length === 1 ? "EPERM" : "ESRCH" }); },
+        wait: async ms => { waits.push(ms); },
+      });
+      if (platform === "darwin") {
+        assert.equal(await pending, false);
+        assert.deepEqual(calls, [signal, signal]); assert.deepEqual(waits, [10]);
+      } else {
+        await assert.rejects(pending, { code: "EPERM" });
+        assert.deepEqual(calls, [signal]); assert.deepEqual(waits, []);
+      }
+    }
+  });
+}
 
 test("persistent EPERM remains a cleanup error, not successful cancellation", async (t) => {
   const realKill = process.kill.bind(process);

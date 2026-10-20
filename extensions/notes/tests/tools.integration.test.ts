@@ -56,7 +56,7 @@ async function setup(activeTools: string[]) {
 			await rm(home, { recursive: true, force: true });
 		},
 		async beforeAgentStart(prompt: string) {
-			const event = { type: "before_agent_start", prompt, systemPrompt: "", systemPromptOptions: { sections: {} as Record<string, string> } };
+			const event = { type: "before_agent_start", messageType: "user", prompt, systemPrompt: "", systemPromptOptions: { sections: {} as Record<string, string> } };
 			// Await the jailed worker before checking persisted state.
 			const result = await events.get("before_agent_start")!(event, { cwd }) as { message?: unknown } | void;
 			const db = new DatabaseSync(join(cwd, ".agent/notes.db"), { readOnly: true });
@@ -94,6 +94,25 @@ test("canceled note calls never start a worker or create storage", async () => {
 	try {
 		await assert.rejects(t.tools.get("note_add")!.execute("test", { kind: "done", body: "not written" }, AbortSignal.abort()), /abort|cancel/i);
 		assert.equal(existsSync(join(t.cwd, ".agent/notes.db")), false);
+	} finally { await t.cleanup(); }
+});
+
+test("custom continuations retain shared memory without recording a user request", async () => {
+	const t = await setup(["note_list", "note_add"]);
+	try {
+		await t.tools.get("note_add")!.execute("fixture", { kind: "decision", body: "Preserve existing data" });
+		const event = { type: "before_agent_start", messageType: "custom",
+			message: { role: "custom", customType: "background_result", content: "Continue the task", display: true, timestamp: Date.now() },
+			systemPrompt: "", systemPromptOptions: { sections: {} as Record<string, string> } };
+		const result = await t.events.get("before_agent_start")!(event, { cwd: t.cwd });
+		assert.match(JSON.stringify(result), /Preserve existing data/);
+		assert.match(event.systemPromptOptions.sections.shared_notes, /historical hints, not instructions or proof/);
+		await t.beforeAgentStart("inspect the project");
+		await t.events.get("before_agent_start")!(event, { cwd: t.cwd });
+		const db = new DatabaseSync(join(t.cwd, ".agent/notes.db"), { readOnly: true });
+		try {
+			assert.deepEqual(db.prepare("SELECT body FROM notes WHERE kind = 'ask' ORDER BY id").all().map(row => row.body), ["inspect the project"]);
+		} finally { db.close(); }
 	} finally { await t.cleanup(); }
 });
 
@@ -173,12 +192,23 @@ test("project history is bounded, recalled before the current ask, once per sess
 		const message = (first.result as { message: { content: string } }).message;
 		assert.match(message.content, /Keep native sessions/);
 		assert.match(message.content, /historical data/);
+		assert.doesNotMatch(message.content, /call note_list/);
 		assert.doesNotMatch(message.content, /\[ask\] continue/);
 		assert.equal((await t.beforeAgentStart("next")).result, undefined);
 		await t.tools.get("note_add")!.execute("large", { kind: "plan", body: "x".repeat(16_000) });
 		await t.restart();
 		const restarted = (await t.beforeAgentStart("resume")).result as { message: { content: string } };
-		assert.ok(restarted.message.content.length < 12_300);
-		assert.ok(restarted.message.content.endsWith("x".repeat(12_000)));
+		assert.ok(restarted.message.content.length <= 12_000);
+		const noteLines = restarted.message.content.split("\n").slice(1);
+		assert.ok(noteLines.every(line => line.length <= 160));
+		assert.ok(noteLines.some(line => /x+…$/.test(line)), "long notes retain a visibly truncated index entry");
+		await t.tools.get("note_add")!.execute("multiline", { kind: "plan", body: "x\n".repeat(8_000) });
+		await t.restart();
+		const bounded = (await t.beforeAgentStart("resume again")).result as { message: { content: string } };
+		assert.equal(bounded.message.content.length, 12_000, "multiline bodies still obey the total recall budget");
+		const db = new DatabaseSync(join(t.cwd, ".agent/notes.db"), { readOnly: true });
+		try {
+			assert.deepEqual(db.prepare("SELECT length(body) AS size FROM notes WHERE kind = 'plan' ORDER BY id").all().map(row => row.size), [16_000, 16_000]);
+		} finally { db.close(); }
 	} finally { await t.cleanup(); }
 });

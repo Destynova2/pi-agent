@@ -1,7 +1,7 @@
 // Runs the REAL scripts/confined-lsp-worker.mjs under plain `node` (no Bun, no sandbox --
 // that layer is covered separately by tests/confined-lsp-sandbox.integration.test.mjs and by
 // the repo's existing tests/codex-shell.test.mjs), driving the actual installed
-// @ian-pascoe/pi-lsp 0.4.4 against a fake stdio LSP server that speaks the real
+// @ian-pascoe/pi-lsp 0.14.2 against a fake stdio LSP server that speaks the real
 // vscode-languageserver-protocol wire format. Proves: read request, Workspace Edit
 // Preview/apply inside the workspace, session reconstruction (preview replay against a fresh
 // worker via a real "session_start" branch, exactly how @ian-pascoe/pi-lsp's own
@@ -111,6 +111,25 @@ test("confined-lsp worker: read request (hover) against a real fake LSP server",
     assert.notEqual(result.isError, true, JSON.stringify(result));
     const text = result.content.map((c) => c.text).join("\n");
     assert.match(text, /fake hover at 0:0/);
+    const completion = await rpc.request("tool", {
+      toolCallId: "completion",
+      input: { operation: "completion", file_path: "a.txt", line: 1, character: 1, prefix: "hel", limit: 1 },
+    });
+    assert.notEqual(completion.isError, true, JSON.stringify(completion));
+    const items = completion.structuredContent.results[0];
+    assert.equal(items.prefix, "hel");
+    assert.equal(items.omitted, 1);
+    assert.deepEqual(items.value.map(item => item.label), ["hello"]);
+    const status = await rpc.request("tool", { toolCallId: "status", input: { operation: "status", all: true } });
+    assert.notEqual(status.isError, true, JSON.stringify(status));
+    for (const input of [
+      { operation: "hover", file_path: "a.txt" },
+      { operation: "status", file_path: "a.txt" },
+      { operation: "completion", file_path: "a.txt", line: 1, character: 1, limit: 0 },
+    ]) {
+      const invalid = await rpc.request("tool", { toolCallId: "invalid", input });
+      assert.equal(invalid.isError, true, "upstream operation schemas must reject missing, unrelated or invalid fields");
+    }
   } finally {
     await rpc.shutdown();
   }

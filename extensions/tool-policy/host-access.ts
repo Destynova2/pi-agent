@@ -81,8 +81,14 @@ export function publicContainer(value: unknown) {
   return { id: typeof item.Id === "string" && /^[a-f0-9]{12,64}$/.test(item.Id) ? item.Id : "unknown", name: typeof item.Name === "string" && /^\/?[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(item.Name) ? item.Name : "unknown", status: typeof status === "string" && ["configured", "created", "initialized", "running", "stopped", "paused", "exited", "removing", "stopping", "unknown"].includes(status) ? status : "unknown", ports, publicOrigins: origins, fallbackFlags: flags, environmentKeys: env.map(entry => entry.slice(0, entry.indexOf("="))).filter(key => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)) };
 }
 
+/** The real clipboard adapter remains macOS-only; portable tests inject a fake sink. */
+export function nativeClipboardCommand() {
+  if (process.platform !== "darwin") throw new Error("Clipboard transfer requires macOS");
+  return "/usr/bin/pbcopy";
+}
+
 /** Explicit host capabilities, not an unrestricted shell or a replay of failed Bash. */
-export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
+export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess, clipboardCommand = nativeClipboardCommand) {
   const approvals = new McpApprovals(agentDir);
   let tasks = new SessionTasks();
   const reset = () => { approvals.reset(); const previous = tasks; tasks = new SessionTasks(); return previous.close(); };
@@ -119,7 +125,7 @@ export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (
       if (request.target !== undefined && (typeof request.target !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(request.target))) throw new Error("Expected one container name or ID, not flags");
       if (request.key !== undefined && (typeof request.key !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(request.key))) throw new Error("Invalid environment key");
       if (request.pid !== undefined && (!Number.isSafeInteger(request.pid) || request.pid <= 0)) throw new Error("Invalid process ID");
-      if (request.operation.startsWith("clipboard_") && process.platform !== "darwin") throw new Error("Clipboard transfer requires macOS");
+      const clipboard = request.operation.startsWith("clipboard_") ? clipboardCommand() : undefined;
       return tasks.run(async owned => {
         const cwd = realpathSync(ctx.cwd);
         const validate = () => {
@@ -130,7 +136,7 @@ export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (
         // Capture trusted configuration; no workspace PATH entries are used for executable lookup.
         const env = { ...process.env }, path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
         const podman = request.operation.startsWith("podman_") || request.operation === "clipboard_container_env";
-        const executable = serverIdentity(podman ? env.PI_PODMAN_BIN ?? "podman" : request.operation === "process_info" ? "/bin/ps" : "/usr/bin/pbcopy", [], cwd, { PATH: path });
+        const executable = serverIdentity(podman ? env.PI_PODMAN_BIN ?? "podman" : request.operation === "process_info" ? "/bin/ps" : clipboard!, [], cwd, { PATH: path });
         const executableRelative = relative(cwd, executable.command);
         if (!isAbsolute(executableRelative) && executableRelative !== ".." && !executableRelative.startsWith("../")) throw new Error("Host executable must be outside the writable workspace");
         let args: string[], secret: string | undefined, sourceIdentity: string | undefined, manifestIdentity: string | undefined;
@@ -218,7 +224,7 @@ export function registerHostAccess(pi: ExtensionAPI, agentDir: string, verify: (
               secret = selectedSecret(environment(record(data[0])), request.key!);
               if (!secret || secret.length > 8192) throw new Error("Invalid secret size");
               ticket();
-              await execute("/usr/bin/pbcopy", [], { ...options, input: secret });
+              await execute(clipboard!, [], { ...options, input: secret });
               text = "Selected container environment value copied to the host clipboard without displaying it. No login or form submitted.";
             }
           }

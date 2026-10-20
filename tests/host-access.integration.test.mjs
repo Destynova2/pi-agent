@@ -9,7 +9,7 @@ import { APPROVAL_CHOICES } from "../lib/mcp-approvals.ts";
 import { runProcess } from "../lib/process.ts";
 
 // Real CLI/formatting, synthetic local API only. Never connect to the user's Podman service.
-test("real Podman CLI returns projected diagnostics and suppresses secret-bearing API errors", { skip: process.platform !== "darwin", timeout: 30000 }, async () => {
+test("real Podman CLI returns projected diagnostics and suppresses secret-bearing API errors", { skip: !["linux", "darwin"].includes(process.platform) && "Podman host integration requires Linux or macOS", timeout: 30000 }, async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-host-api-"))), cwd = join(root, "project"), agent = join(root, "agent");
   mkdirSync(cwd); mkdirSync(agent);
   const id = "a".repeat(64), secret = "FIXTURE_PRIVATE_VALUE_NOT_A_CREDENTIAL", requests = [];

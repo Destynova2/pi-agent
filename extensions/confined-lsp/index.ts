@@ -18,18 +18,15 @@ import { buildConfinedLspWorkerCommand, buildConfinedLspWorkerEnv, resolveConfin
 import { RpcProcess } from "../../lib/rpc-process.ts";
 
 // Fixed, version-pinned constant: the model-invisible custom entry type
-// @ian-pascoe/pi-lsp@0.4.4's lsp-post-edit-diagnostics-rendering.ts registers under. Verified
+// @ian-pascoe/pi-lsp@0.14.2's lsp-post-edit-diagnostics-rendering.ts registers under. Verified
 // against the installed package's own `POST_EDIT_DIAGNOSTICS_ENTRY_TYPE` export (see
 // tests/confined-lsp-schema.test.mjs, which snapshot-compares this file's schema/constant
 // mirrors against the real installed package and fails loudly on a version drift).
 const POST_EDIT_DIAGNOSTICS_ENTRY_TYPE = "pi-lsp-post-edit-diagnostics";
 
-// Hand-mirrored copy of @ian-pascoe/pi-lsp@0.4.4's own `LspToolProviderParametersSchema`
-// (lsp-tool-contract.ts): the flat, provider-facing shape Pi registers and the model sees.
-// Kept visible here (not a loose passthrough) so a provider-facing contract change is obvious
-// in a diff; tests/confined-lsp-schema.test.mjs loads the real schema through the static
-// pi-lsp-module-hook.mjs preload hook and asserts JSON-Schema equality against this copy, so a
-// silent upstream drift fails a test instead of silently diverging.
+// Flat compatibility surface for saved `lsp` calls. The jailed worker dispatches
+// to upstream's strict per-operation tools. The schema test checks every upstream
+// field's constraints against this union; descriptions vary by operation.
 const OneBasedPositionSchema = Type.Object({ line: Type.Integer({ minimum: 1 }), character: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
 const OneBasedRangeSchema = Type.Object({ start: OneBasedPositionSchema, end: OneBasedPositionSchema }, { additionalProperties: false });
 const AbsolutePathSchema = Type.String({ minLength: 1, pattern: "^(?:/|[A-Za-z]:[\\\\/])" });
@@ -55,6 +52,10 @@ export const LspToolParametersSchema = Type.Object(
       ],
     }),
     file_path: Type.Optional(Type.String({ minLength: 1 })),
+    all: Type.Optional(Type.Boolean()),
+    prefix: Type.Optional(Type.String()),
+    limit: Type.Optional(Type.Integer({ minimum: 1 })),
+    depth: Type.Optional(Type.Union([Type.Integer({ minimum: 1 }), Type.Literal("all")])),
     server_id: Type.Optional(Type.String({ minLength: 1 })),
     line: Type.Optional(Type.Integer({ minimum: 1 })),
     character: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -246,6 +247,17 @@ export default function (pi: ExtensionAPI) {
         { content: ToolResultEvent["content"]; details: ToolResultEvent["details"]; isError: boolean } | undefined;
     } catch (error) {
       if (active === session) ctx.ui.notify(`LSP diagnostics unavailable: ${String(error)}`, "warning");
+    }
+  });
+  pi.on("tool_call", async (event, ctx) => {
+    const session = active;
+    if (!session?.rpc.alive || session.cwd !== ctx.cwd) return;
+    session.context = ctx;
+    await session.ready;
+    if (active !== session) return;
+    try { await session.rpc.request("tool_call", { event }, { signal: ctx.signal }); }
+    catch (error) {
+      if (active === session) ctx.ui.notify(`LSP pre-edit diagnostics unavailable: ${String(error)}`, "warning");
     }
   });
   pi.registerCommand("lsp", {

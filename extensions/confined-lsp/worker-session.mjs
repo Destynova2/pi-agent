@@ -24,7 +24,7 @@ import { createPiLspExtension } from "@ian-pascoe/pi-lsp/pi-lsp-extension";
  */
 export function createConfinedLspWorkerBridge({ hostRequest }) {
   const handlers = new Map();
-  let toolDefinition;
+  const toolDefinitions = new Map();
   let commandDefinition;
   const entryRenderers = new Map(); // Captured for completeness/tests; never invoked in the
   // worker -- rendering needs the host's live theme/TUI, see extensions/confined-lsp/index.ts.
@@ -49,7 +49,7 @@ export function createConfinedLspWorkerBridge({ hostRequest }) {
       return () => handlers.delete(event);
     },
     registerTool(definition) {
-      toolDefinition = definition;
+      toolDefinitions.set(definition.name, definition);
     },
     registerCommand(_name, options) {
       commandDefinition = options;
@@ -133,9 +133,13 @@ export function createConfinedLspWorkerBridge({ hostRequest }) {
         return {};
       }
       case "tool": {
+        // Keep the host's single confined tool and saved histories; dispatch to the
+        // upstream operation tool, which validates its own exact parameter schema.
+        const { operation, ...input } = params.input;
+        const toolDefinition = toolDefinitions.get(`lsp_${operation}`);
         if (toolDefinition === undefined) throw new Error("confined-lsp worker: lsp tool is not registered");
         try {
-          const prepared = toolDefinition.prepareArguments ? toolDefinition.prepareArguments(params.input) : params.input;
+          const prepared = toolDefinition.prepareArguments ? toolDefinition.prepareArguments(input) : input;
           return await toolDefinition.execute(params.toolCallId, prepared, signal, undefined, await makeContext(signal));
         } catch (error) {
           // Mirrors the real Pi host's own tool-execution contract (not pi-lsp-specific logic):
@@ -147,6 +151,10 @@ export function createConfinedLspWorkerBridge({ hostRequest }) {
             isError: true,
           };
         }
+      }
+      case "tool_call": {
+        await handlers.get("tool_call")?.(params.event, await makeContext(signal));
+        return null;
       }
       case "tool_result": {
         const handler = handlers.get("tool_result");

@@ -23,7 +23,7 @@ test("installed Pi SDK emits observable blocked calls, approval dialogs and exec
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     streamSimple() {
       calls++;
-      assert.ok(calls <= 2, "No automatic retries or external provider calls");
+      assert.ok(calls <= 3, "No automatic retries or external provider calls");
       const content = calls === 1 ? [
         { type: "toolCall", id: "blocked-call", name: "blocked_fixture", arguments: {} },
         { type: "toolCall", id: "approved-call", name: "approved_fixture", arguments: {} },
@@ -61,7 +61,10 @@ test("installed Pi SDK emits observable blocked calls, approval dialogs and exec
     } });
     await session.prompt("Inspect the fixture");
     assert.equal(calls, 2); assert.equal(executed, 1); assert.deepEqual(errors, []);
+    await session.sendCustomMessage({ customType: "background_result", content: "The background task completed", display: true }, { triggerTurn: true });
+    assert.equal(calls, 3); assert.equal(executed, 1); assert.deepEqual(errors, []);
     const report = auditReport(agentDir, { cwd, events: 100 });
+    assert.deepEqual(report.timeline.filter(row => row.kind === "prompt.user").map(row => row.payload.text), ["Inspect the fixture"], "an automatic continuation is not a new user request");
     assert.equal(report.summary.requests, 1);
     assert.deepEqual(report.executions.map(row => ({ ...row })), [{ outcome: "failed", count: 1 }]);
     const blocked = report.timeline.find(row => row.kind === "tool.end" && row.tool_call_id === "blocked-call");

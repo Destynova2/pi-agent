@@ -29,12 +29,17 @@ function readJson(path) {
 
 export function metalBackend(agentDir) {
   if (process.platform !== "darwin" || process.arch !== "arm64") throw new Error("Metal capability requires native Apple Silicon qualification");
+  return readMetalQualification(agentDir, { platform: process.platform, arch: process.arch, osRelease: release() });
+}
+
+/** Validate a report against an explicit host identity; this does not grant native GPU access. */
+export function readMetalQualification(agentDir, host) {
   try {
     const directory = join(agentDir, "backends/metal");
     const manifest = readJson(join(agentDir, "metal-backend.json"));
     const report = readJson(join(directory, "qualification.json"));
     if (manifest.schema !== 1 || !/^[a-f0-9]{64}$/.test(manifest.sha256 ?? "")) throw new Error("Invalid Metal backend manifest");
-    if (report.schema !== 1 || report.qualified !== true || report.backendSha256 !== manifest.sha256 || report.platform !== process.platform || report.arch !== process.arch || report.osRelease !== release()) throw new Error("Metal backend needs qualification for this binary and OS release");
+    if (report.schema !== 1 || report.qualified !== true || report.backendSha256 !== manifest.sha256 || report.platform !== host.platform || report.arch !== host.arch || report.osRelease !== host.osRelease) throw new Error("Metal backend needs qualification for this binary and OS release");
     if (!Array.isArray(report.checks) || report.checks.some(check => check.pass !== true) || METAL_CHECKS.some(name => report.checks.filter(check => check.name === name && check.pass === true).length !== 1)) throw new Error("Metal backend qualification is incomplete");
     const binary = join(directory, "codex"), fd = openTrusted(binary);
     let sha256;

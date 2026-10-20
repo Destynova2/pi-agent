@@ -68,7 +68,7 @@ test("orchestrate command: forwards instructions without simulating the LLM", as
 });
 
 test("completion guidance covers ordinary, explicit and child turns without delegation or automatic continuations", async () => {
-  type PromptEvent = { prompt: string; systemPromptOptions: { sections: Record<string, string> } };
+  type PromptEvent = { prompt?: string; messageType?: "user" | "custom"; systemPromptOptions: { sections: Record<string, string> } };
   const events = new Map<string, (event: PromptEvent) => void>();
   let command: Handler | undefined;
   const sent: string[] = [];
@@ -172,6 +172,13 @@ test("completion guidance covers ordinary, explicit and child turns without dele
     assert.equal(event.systemPromptOptions.sections.task_completion, completion);
     assert.equal(sent.length, 1, "only the explicit command queued a user request");
     assert.equal(event.systemPromptOptions.sections.jj_workflow, jj, "explicit orchestration retains jj guidance");
+    const custom: PromptEvent = { messageType: "custom", systemPromptOptions: { sections: { existing: "kept" } } };
+    before(custom);
+    assert.equal(custom.systemPromptOptions.sections.task_completion, completion, "custom continuations retain completion safeguards");
+    assert.equal(custom.systemPromptOptions.sections.jj_workflow, jj);
+    assert.equal(custom.systemPromptOptions.sections.adaptive_delegation, policy);
+    assert.equal(custom.systemPromptOptions.sections.existing, "kept");
+    assert.equal(sent.length, 1, "custom continuations must not create user requests");
   } finally {
     if (oldChild === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = oldChild;
   }

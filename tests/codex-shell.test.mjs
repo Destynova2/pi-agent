@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { sandboxArgs, sandboxBackend } from "../scripts/codex-shell.mjs";
+import { sandboxArgs, sandboxBackend, workspaceRepositoryReadOnlyRoots } from "../scripts/codex-shell.mjs";
 import register from "../extensions/codex-sandbox/index.ts";
 
 test("sandbox arguments preserve the entire shell program as one argument and never grant escalation", () => {
@@ -30,6 +30,27 @@ test("backend selection prefers the private Linux repair and never replaces an e
     assert.equal(sandboxBackend({ HOME: home }), process.platform === "linux" ? join(directory, "codex") : fallback);
     assert.equal(sandboxBackend({ HOME: home, PI_CODEX_SANDBOX_BIN: "/explicit/missing" }), "/explicit/missing");
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("umbrella workspaces protect repository metadata without traversing repository contents or links", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-workspace-repositories-")));
+  try {
+    const workspace = join(root, "workspace"), repository = join(workspace, "team/project"), outside = join(root, "outside");
+    mkdirSync(join(repository, ".git"), { recursive: true });
+    writeFileSync(join(repository, ".git/HEAD"), "ref: refs/heads/main\n");
+    mkdirSync(join(repository, ".jj")); mkdirSync(join(repository, ".pi"));
+    mkdirSync(join(workspace, ".git")); // An empty mount placeholder is not a repository.
+    mkdirSync(join(repository, "dependencies/nested/.git"), { recursive: true });
+    mkdirSync(join(outside, ".git"), { recursive: true });
+    symlinkSync(outside, join(workspace, "alias"));
+    const roots = workspaceRepositoryReadOnlyRoots(workspace);
+    assert.deepEqual(roots.sort(), [".git", ".jj", ".pi"].map(name => join(repository, name)).sort());
+    assert.deepEqual(workspaceRepositoryReadOnlyRoots(repository), [], "cwd metadata uses the existing Codex profile");
+    assert.equal(roots.some(path => path.startsWith(outside)), false);
+    const deep = join(root, "deep"); mkdirSync(deep);
+    mkdirSync(join(deep, ...Array(65).fill("nested")), { recursive: true });
+    assert.throws(() => workspaceRepositoryReadOnlyRoots(deep), /discovery exceeds its limit/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("explicit disposable metadata roots remain offline when passed through the launcher", () => {

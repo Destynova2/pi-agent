@@ -2,16 +2,16 @@
 
 Legacy permission requests use manual confirmation by default.
 `request_network_access` with `command` reviews the current task automatically.
-An uncertain or unavailable review opens a one-time human validation in an
-interactive session; a saved manual policy requests that validation directly.
-The complete command, project, hosts and scope are shown before approval.
-`auto-deny`, explicit denials and missing UI still prevent execution. No grant
-is saved and no refused command is automatically retried.
+An uncertain, unavailable or invalid review refuses execution without opening a
+human dialog, including in interactive sessions or with an `auto` policy.
+The reviewer receives the exact command, project, hosts and scope. A saved manual
+policy disables this operation. No grant is saved and no refused command is
+automatically retried or converted into a legacy session grant.
 
-`run_isolated` and `git_access` push with `private_network: true` use per-task
+`run_isolated`, `git_access` fetch/fast_forward, and `git_access` push with `private_network: true` use per-task
 review without dialogs. An explicitly saved manual policy disables these
 no-dialog operations. See [private IPC](PRIVATE-IPC.md) and
-[private Git push scope](ORCHESTRATION.md#git-operation-consent). An interactive parent can
+[Git transfer and integration scope](ORCHESTRATION.md#git-operation-consent). An interactive parent can
 delegate their evaluation to a separate, tool-free model call for one project:
 
 ```text
@@ -20,7 +20,7 @@ delegate their evaluation to a separate, tool-free model call for one project:
 /approvals manual
 ```
 
-Use `/approvals auto-deny <scope>` to avoid approval dialogs: uncertainty, an
+For legacy permission requests, use `/approvals auto-deny <scope>` to avoid approval dialogs: uncertainty, an
 unavailable reviewer or an invalid answer denies the operation. `auto` falls back
 to the existing human dialog for those cases. An explicit reviewer denial stops
 the request in either mode. Other extension dialogs are outside this setting.
@@ -73,9 +73,9 @@ refusals retain precedence over auto review.
 Explicit model refusals and uncertainty refusals are also cached for the same
 session, user context, policy and action (bounded to 512 entries). A changed task,
 policy or action is reviewed afresh. Provider unavailability is not a standing
-refusal. A network request refused only because no UI was available can be
-reviewed again when the parent becomes interactive. Explicit denials remain
-binding. The cache never grants access or becomes reviewer training/context.
+refusal. Changing UI availability does not reopen a refused one-command network
+request. Explicit denials remain binding. The cache never grants access or
+becomes reviewer training/context.
 
 GPU-only Metal requests and tools in the configured isolated Playwright container
 offer once/session/project consent. Metal consent covers eligible commands with

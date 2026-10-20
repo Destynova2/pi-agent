@@ -91,16 +91,16 @@ function userContext(ctx: ExtensionContext): string {
 }
 
 /** No model-generated grant is saved. Every new action is reviewed against current user intent. */
-export async function reviewApproval(agentDir: string, ctx: ExtensionContext, request: ReviewRequest, audit: PermissionAudit, signal?: AbortSignal, mode: "policy" | "task" | "task-with-prompt" = "policy") {
+export async function reviewApproval(agentDir: string, ctx: ExtensionContext, request: ReviewRequest, audit: PermissionAudit, signal?: AbortSignal, mode: "policy" | "task" = "policy") {
   // New one-command capabilities can qualify current user intent without creating a
   // standing grant. An explicitly saved manual policy always takes precedence.
   const currentPolicy = () => readPolicy(agentDir, ctx.cwd) ?? (mode !== "policy" ? {
-    version: 1 as const, revision: "task", cwd: realpathSync(ctx.cwd), mode: "auto" as const, fallback: mode === "task-with-prompt" ? "ask" as const : "deny" as const,
+    version: 1 as const, revision: "task", cwd: realpathSync(ctx.cwd), mode: "auto" as const, fallback: "deny" as const,
     scope: "Only the work explicitly requested in the current user messages. No standing authorization beyond that task.",
     provider: ctx.model?.provider ?? "", model: ctx.model?.id ?? "",
   } : undefined);
   const policy = currentPolicy();
-  if (!policy || policy.mode === "manual" && mode !== "task-with-prompt") return { decision: "manual" as const, check() {} };
+  if (!policy || policy.mode === "manual") return { decision: "manual" as const, check() {} };
   if (process.env.PI_SUBAGENT_CHILD) throw new Error("Automatic approval is parent-only");
   const cwd = realpathSync(ctx.cwd), digest = hash(JSON.stringify(policy)), session = ctx.sessionManager.getSessionId();
   const messages = userContext(ctx);
@@ -110,7 +110,6 @@ export async function reviewApproval(agentDir: string, ctx: ExtensionContext, re
         hash(JSON.stringify(currentPolicy()) ?? "null") !== digest) throw new Error("Automatic approval became stale or was revoked");
   };
   check();
-  if (policy.mode === "manual") return { decision: "manual" as const, check };
   const refusalKey = hash(JSON.stringify([realpathSync(agentDir), cwd, session, digest, messages, request]));
   const previousRefusal = refusedReviews.get(refusalKey) ?? (!ctx.hasUI ? refusedReviews.get(`${refusalKey}:headless`) : undefined);
   if (previousRefusal) {
@@ -194,6 +193,7 @@ export async function reviewApproval(agentDir: string, ctx: ExtensionContext, re
   if (record.decision === "allow") return { decision: "allow" as const, check };
   const recovery = diagnostic.retryAfterMs
     ? `Reviewer rate-limited; next model attempt in ${Math.ceil(diagnostic.retryAfterMs / 1000)}s. /approvals status shows the pinned reviewer.`
+    : mode === "task" ? "Check reviewer availability or clarify the authorized task; this operation has no human dialog."
     : record.category === "unavailable" ? "Check the reviewer with /approvals status or request an explicit human decision."
     : "Revise the scope with /approvals or request an explicit human decision.";
   if (record.decision === "deny" || policy.fallback === "deny" || mode === "task" || !ctx.hasUI) {

@@ -8,10 +8,9 @@ only that command receives the requested public destinations.
 
 Both operations use a separate, tool-free LLM review of the current user request.
 They work without UI when approved automatically and never save a grant.
-Network commands also support one-time interactive validation when review needs
-a human decision. A saved `manual` policy asks directly; `auto-deny` and explicit
-denials prevent this fallback. Without UI, uncertain review still refuses the
-command. `run_isolated` has no dialog and a saved manual policy disables it.
+Neither operation opens a human dialog. Uncertain, unavailable or invalid review
+refuses execution, even in interactive sessions with an `auto` policy. A saved
+`manual` policy disables both operations; explicit denials remain binding.
 Stale review never authorizes execution. Historical success,
 tool output and the working agent's justification do not authorize access.
 

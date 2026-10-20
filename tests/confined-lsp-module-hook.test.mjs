@@ -1,5 +1,5 @@
 // Proves the static preload hook in isolation, against the real installed @ian-pascoe/pi-lsp
-// 0.4.4: resolves the fixed package aliases, maps relative .js imports inside the pinned src/
+// 0.14.2: resolves the fixed package aliases, maps relative .js imports inside the pinned src/
 // root to .ts, compiles TypeScript with the installed Pi SDK's Jiti compiler, and leaves
 // everything else (other specifiers, other paths) to Node's normal resolution.
 import assert from "node:assert/strict";
@@ -52,7 +52,7 @@ test(
         appendEntry: () => {},
       };
       createPiLspExtension()(fakePi);
-      const required = ["session_start", "session_tree", "tool_result", "turn_end", "session_shutdown", "registerTool", "registerCommand", "registerEntryRenderer"];
+      const required = ["session_start", "session_tree", "tool_call", "tool_result", "turn_end", "session_shutdown", "registerTool", "registerCommand", "registerEntryRenderer"];
       for (const name of required) if (!registered.includes(name)) throw new Error("missing registration: " + name);
       process.stdout.write("OK\\n");
     `;

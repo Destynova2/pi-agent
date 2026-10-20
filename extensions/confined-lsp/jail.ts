@@ -7,7 +7,7 @@
 // lib/confined.ts derives it -- scripts/confined-lsp-worker.mjs, scripts/codex-shell.mjs, and
 // the two static `node --import` preload hooks are always read from there, never from the
 // installed agent directory. `agentDir` (Pi's own `getAgentDir()`) is only where the
-// already-installed @ian-pascoe/pi-lsp 0.4.4 and its settings/enablement files live; the worker
+// already-installed @ian-pascoe/pi-lsp 0.14.2 and its settings/enablement files live; the worker
 // resolves that root for itself from `PI_CODING_AGENT_DIR` at import time (pi-lsp-module-hook.mjs)
 // and at "session_start" time (SettingsManager.create), never from a path baked in here.
 //

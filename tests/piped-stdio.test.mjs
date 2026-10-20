@@ -3,14 +3,14 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
-import { runProcess } from "../lib/process.ts";
+import { runProcess, signalProcessGroup } from "../lib/process.ts";
 import { LINUX_STDIO_RELAY } from "../scripts/codex-shell.mjs";
 import { spawn } from "../extensions/confined-lsp/piped-spawn.mjs";
 
-const linux = { skip: process.platform !== "linux", timeout: 5000 };
+const posix = { skip: !["linux", "darwin"].includes(process.platform), timeout: 5000 };
 const args = script => ["--noprofile", "--norc", "-c", script, "pi-relay-test"];
 
-test("stdio supervisor reaps a relay even when its exit follows the last closed output", linux, async () => {
+test("stdio supervisor reaps a relay even when its exit follows the last closed output", posix, async () => {
   // Make the real scheduling race deterministic: no inherited output keeps
   // child.close pending, but the stderr relay still needs to be waited for.
   const script = LINUX_STDIO_RELAY.replace("/bin/cat >&2",
@@ -24,7 +24,7 @@ test("stdio supervisor reaps a relay even when its exit follows the last closed 
   assert.equal(stderr, "diagnostic");
 });
 
-test("stdio supervisor preserves failure status and stops its relay with stdin still open", linux, async () => {
+test("stdio supervisor preserves failure status and stops its relay with stdin still open", posix, async () => {
   const input = new PassThrough();
   input.write("request\n");
   try {
@@ -35,19 +35,22 @@ test("stdio supervisor preserves failure status and stops its relay with stdin s
   } finally { input.destroy(); }
 });
 
-test("LSP spawn supplies real pipes and leaves no relay after server exit", linux, async () => {
+test("LSP spawn preserves streams and reaps its process group; Linux uses real pipes", posix, async () => {
   const child = spawn(process.execPath, ["-e", `
     const fs = require("node:fs");
-    if (![0, 1, 2].every(fd => fs.fstatSync(fd).isFIFO())) process.exit(3);
-    process.stdout.write("out"); process.stderr.write("err");
+    if (process.platform === "linux" && ![0, 1, 2].every(fd => fs.fstatSync(fd).isFIFO())) process.exit(3);
+    let input = ""; process.stdin.setEncoding("utf8");
+    process.stdin.on("data", chunk => { input += chunk; });
+    process.stdin.on("end", () => { process.stdout.write("out:" + input); process.stderr.write("err"); });
   `], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   child.stdout.on("data", chunk => { stdout += chunk; });
   child.stderr.on("data", chunk => { stderr += chunk; });
   try {
+    child.stdin.end("payload");
     assert.deepEqual(await once(child, "close"), [0, null]);
-    assert.equal(stdout, "out"); assert.equal(stderr, "err");
-    assert.throws(() => process.kill(-child.pid, 0), { code: "ESRCH" });
+    assert.equal(stdout, "out:payload"); assert.equal(stderr, "err");
+    assert.equal(await signalProcessGroup(child.pid, 0, () => false), false, "process group must be reaped");
   } finally {
     child.stdin.destroy();
     try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }

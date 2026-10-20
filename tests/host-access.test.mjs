@@ -10,13 +10,15 @@ import { CONFINED_TOOLS } from "../lib/confined-tools.ts";
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-host-access-")));
   const agent = join(root, "agent"), cwd = join(root, "project"); mkdirSync(agent); mkdirSync(cwd);
+  const clipboard = join(root, "fixture-clipboard");
+  writeFileSync(clipboard, "#!/bin/sh\nexit 99\n", { mode: 0o700 });
   const old = process.env.PI_PODMAN_BIN; process.env.PI_PODMAN_BIN = process.execPath;
   const handlers = new Map(), tools = new Map(), commands = new Map(), calls = [];
   let prompts = 0, verifyCalls = 0, result = JSON.stringify({ id: "a".repeat(64), name: "service", ports: "127.0.0.1:9091->9091/tcp", status: "running" }), failure, active = true;
   const ctx = { cwd, hasUI: true, ui: { select: async (_title, choices) => { prompts++; assert.deepEqual(choices, APPROVAL_CHOICES.slice(0, 2)); return choices[1]; }, notify() {} } };
-  registerHostAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command), getActiveTools: () => active ? [...tools.keys()] : [] }, agent, () => { verifyCalls++; }, async (program, args, options) => { calls.push({ program, args, options }); if (failure) throw failure; return result; });
+  registerHostAccess({ on: (name, handler) => handlers.set(name, handler), registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command), getActiveTools: () => active ? [...tools.keys()] : [] }, agent, () => { verifyCalls++; }, async (program, args, options) => { calls.push({ program, args, options }); if (failure) throw failure; return result; }, () => clipboard);
   t.after(async () => { await handlers.get("session_shutdown")(); if (old === undefined) delete process.env.PI_PODMAN_BIN; else process.env.PI_PODMAN_BIN = old; rmSync(root, { recursive: true, force: true }); });
-  return { root, cwd, ctx, calls, handlers, commands, tools, request: (input, signal) => tools.get("request_host_access").execute("test", { reason: "inspect local service", ...input }, signal, undefined, ctx), set result(value) { result = value; }, set failure(value) { failure = value; }, disable() { active = false; }, get prompts() { return prompts; }, get verified() { return verifyCalls; } };
+  return { root, cwd, clipboard, ctx, calls, handlers, commands, tools, request: (input, signal) => tools.get("request_host_access").execute("test", { reason: "inspect local service", ...input }, signal, undefined, ctx), set result(value) { result = value; }, set failure(value) { failure = value; }, disable() { active = false; }, get prompts() { return prompts; }, get verified() { return verifyCalls; } };
 }
 
 test("host access is parent-only, default-deny, once-only and never inherited by subagents", async t => {
@@ -133,12 +135,12 @@ test("inspect returns public origins and environment names, never private values
   await assert.rejects(f.request({ operation: "podman_list" }), error => !error.message.includes("secret-") && /output withheld/.test(error.message));
 });
 
-test("clipboard transfer keeps secret values out of UI, argv and results; changed/outside sources fail", { skip: process.platform !== "darwin" }, async t => {
+test("clipboard transfer with a synthetic sink keeps secret values out of UI, argv and results; changed/outside sources fail", async t => {
   const f = fixture(t), file = join(f.cwd, ".env"), key = "APP_PASSWORD";
   writeFileSync(file, `${key}='secret clipboard value'\n`);
   f.ctx.ui.select = async title => { assert.doesNotMatch(title, /secret clipboard value/); return APPROVAL_CHOICES[1]; };
   const result = await f.request({ operation: "clipboard_env", file, key });
-  assert.equal(f.calls[0].program, "/usr/bin/pbcopy"); assert.deepEqual(f.calls[0].args, []);
+  assert.equal(f.calls[0].program, f.clipboard); assert.deepEqual(f.calls[0].args, []);
   assert.equal(f.calls[0].options.input, "secret clipboard value");
   assert.doesNotMatch(JSON.stringify(result), /secret clipboard value/);
   f.ctx.ui.select = async () => { writeFileSync(file, `${key}=changed\n`); return APPROVAL_CHOICES[1]; };
@@ -149,7 +151,7 @@ test("clipboard transfer keeps secret values out of UI, argv and results; change
   f.ctx.ui.select = async () => APPROVAL_CHOICES[1];
   f.result = JSON.stringify([{ Config: { Env: [`${key}=container-secret`] } }]);
   const copied = await f.request({ operation: "clipboard_container_env", target: "service", key });
-  assert.equal(f.calls.at(-1).program, "/usr/bin/pbcopy"); assert.equal(f.calls.at(-1).options.input, "container-secret");
+  assert.equal(f.calls.at(-1).program, f.clipboard); assert.equal(f.calls.at(-1).options.input, "container-secret");
   assert.doesNotMatch(JSON.stringify(copied), /container-secret/);
 });
 

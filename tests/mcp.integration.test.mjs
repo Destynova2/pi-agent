@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,8 +32,23 @@ test("local MCP persists inside the real jail, denies outside writes, and cancel
     assert.equal(second.denied, true);
     assert.equal(readFileSync(join(root, "outside"), "utf8"), "untouched");
     const pidFile = join(cwd, "pid");
-    await assert.rejects(rpc.request("tools/call", { name: "hang", arguments: { pidFile } }, { timeoutMs: 700 }), /timed out/);
-    const pid = Number(readFileSync(pidFile, "utf8"));
+    const timedOut = assert.rejects(rpc.request("tools/call", { name: "hang", arguments: { pidFile } }, { timeoutMs: 3000 }), /timed out/);
+    // Linux jails have their own PID namespace. Identify the live fixture child
+    // from the host before cancellation; its namespace PID could name PID 1 here.
+    let pid;
+    for (let attempt = 0; attempt < 100 && !pid; attempt++) {
+      if (existsSync(pidFile)) {
+        if (process.platform !== "linux") pid = Number(readFileSync(pidFile, "utf8"));
+        else for (const name of readdirSync("/proc").filter(name => /^[1-9][0-9]*$/.test(name))) {
+          try {
+            if (readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").includes(pidFile)) { pid = Number(name); break; }
+          } catch (error) { if (!["ENOENT", "ESRCH", "EACCES"].includes(error.code)) throw error; }
+        }
+      }
+      if (!pid) await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.ok(pid > 0, "MCP descendant must be observed alive before cancellation");
+    await timedOut;
     // SIGKILL has been sent before cancellation settles; Darwin may briefly retain the zombie.
     let gone = false;
     for (let attempt = 0; attempt < 100; attempt++) {

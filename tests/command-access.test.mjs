@@ -9,7 +9,7 @@ import { commandWritableRoots } from "../scripts/codex-shell.mjs";
 import { runtimeRoot } from "../lib/runtime-paths.mjs";
 import { CONFINED_TOOLS } from "../lib/confined-tools.ts";
 import { APPROVAL_CHOICES, McpApprovals } from "../lib/mcp-approvals.ts";
-import { metalFixture } from "./metal-fixture.mjs";
+import { metalFixture, fixtureMetalBackend } from "./metal-fixture.mjs";
 
 function fixture(confirm = async () => true) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "pi-command-access-")));
@@ -34,7 +34,7 @@ function fixture(confirm = async () => true) {
     assert.equal(options.env.PI_CODING_AGENT_DIR, agent);
     options.onStdout(Buffer.from(JSON.stringify({ argv: args, cwd: options.cwd })));
     return "";
-  });
+  }, fixtureMetalBackend);
   handlers.get("session_start")({}, ctx);
   const fail = (id = "failed", command = "echo original", extra = {}, isError = true) => {
     const event = { toolName: "bash", toolCallId: id, input: { command, ...extra } };
@@ -76,7 +76,7 @@ test("additional paths are canonical and narrow; runtime, links, hardlinks and a
   } finally { await f.close(); }
 });
 
-test("Metal approval binds the exact command, backend and journal without granting file writes", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+test("Metal approval binds the exact command, backend and journal without granting file writes", async () => {
   let shown;
   const f = fixture(async (_title, text) => { shown = text; return true; });
   try {
@@ -97,7 +97,7 @@ test("Metal approval binds the exact command, backend and journal without granti
   } finally { await f.close(); }
 });
 
-test("Metal fails before prompting when unavailable, and rejects backend replacement during approval", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+test("Metal fails before prompting when unavailable, and rejects backend replacement during approval", async () => {
   for (const mode of ["missing", "replacement", "refused"]) {
     const f = fixture(async () => {
       if (mode === "replacement") metalFixture(f.agent, "#!/bin/sh\nexit 2\n");
@@ -114,7 +114,7 @@ test("Metal fails before prompting when unavailable, and rejects backend replace
   }
 });
 
-test("Metal project consent covers later commands and survives reset, without duplicate audit rows", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+test("Metal project consent covers later commands and survives reset, without duplicate audit rows", async () => {
   const f = fixture(async () => APPROVAL_CHOICES[3]);
   try {
     metalFixture(f.agent);
@@ -142,7 +142,7 @@ test("Metal project consent covers later commands and survives reset, without du
   } finally { await f.close(); }
 });
 
-test("Metal session grants expire on session changes; project grants can be revoked across processes", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+test("Metal session grants expire on session changes; project grants can be revoked across processes", async () => {
   for (const scope of [2, 3]) {
     const f = fixture(async () => APPROVAL_CHOICES[scope]);
     try {
@@ -160,7 +160,7 @@ test("Metal session grants expire on session changes; project grants can be revo
   }
 });
 
-test("remembered Metal never grants extra filesystem writes or headless, disabled, delegated or stale execution", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+test("remembered Metal never grants extra filesystem writes or headless, disabled, delegated or stale execution", async () => {
   for (const mode of ["files", "headless", "disabled", "delegated", "stale"]) {
     const f = fixture(async title => title === "Metal" ? APPROVAL_CHOICES[3] : false);
     const oldChild = process.env.PI_SUBAGENT_CHILD;
@@ -183,7 +183,7 @@ test("remembered Metal never grants extra filesystem writes or headless, disable
   }
 });
 
-test("late Metal consent expires without saving a project grant and logs one cancellation", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async t => {
+test("late Metal consent expires without saving a project grant and logs one cancellation", async t => {
   let now = Date.now(), late = true; t.mock.method(Date, "now", () => now);
   const f = fixture(async (_title, _text, options) => { if (late) now += options.timeout; return APPROVAL_CHOICES[3]; });
   try {
@@ -199,7 +199,7 @@ test("late Metal consent expires without saving a project grant and logs one can
   } finally { await f.close(); }
 });
 
-test("revocation while Metal confirmation is open prevents execution and cannot restore the grant", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, async () => {
+test("revocation while Metal confirmation is open prevents execution and cannot restore the grant", async () => {
   let answer;
   const f = fixture(() => new Promise(resolve => { answer = resolve; }));
   try {

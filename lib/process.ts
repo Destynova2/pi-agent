@@ -15,8 +15,26 @@ interface Options {
   onStderr?: (chunk: Buffer) => void;
 }
 
+/** Signal policy is independently testable; native callers retain their actual OS and kill syscall. */
+export async function signalProcessGroup(pid: number | undefined, signal: NodeJS.Signals | 0, settled: () => boolean,
+  { platform = process.platform, kill = (pid: number, signal: NodeJS.Signals | 0) => process.kill(pid, signal), wait = (ms: number) => delay(ms) } = {}): Promise<boolean> {
+  if (pid === undefined) return false;
+  for (let attempt = 0; ; attempt++) {
+    try { kill(-pid, signal); return true; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") return false;
+      // Darwin returns EPERM for zombie-only groups too. Yield so libuv can reap,
+      // then retry the SAME signal once; persistent permission failures still reject.
+      if (platform !== "darwin" || code !== "EPERM" || attempt !== 0) throw error;
+      await wait(10);
+      if (settled()) return false;
+    }
+  }
+}
+
 /** Executes without a shell and stops the POSIX group before honoring a cancellation. */
-export function runProcess(program: string, args: string[], options: Options): Promise<string> {
+export function runProcess(program: string, args: string[], options: Options, signalGroup = signalProcessGroup): Promise<string> {
   if (process.platform === "win32") return Promise.reject(new Error("POSIX supervision required"));
   if (options.signal?.aborted) return Promise.reject(new Error("Operation canceled"));
   return new Promise((resolve, reject) => {
@@ -51,19 +69,7 @@ export function runProcess(program: string, args: string[], options: Options): P
       else resolve(Buffer.concat(stdout).toString("utf8").trim());
     };
     const killGroup = async (signal: NodeJS.Signals | 0): Promise<boolean> => {
-      if (child.pid === undefined) return false;
-      for (let attempt = 0; ; attempt++) {
-        try { process.kill(-child.pid, signal); return true; }
-        catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code === "ESRCH") return false;
-          // Darwin returns EPERM for zombie-only groups too. Yield so libuv can reap,
-          // then retry the SAME signal once; persistent permission failures still reject.
-          if (process.platform !== "darwin" || code !== "EPERM" || attempt !== 0) throw error;
-          await delay(10);
-          if (settled) return false;
-        }
-      }
+      return signalGroup(child.pid, signal, () => settled);
     };
     async function stop(error: Error) {
       if (stopping || settled) return;

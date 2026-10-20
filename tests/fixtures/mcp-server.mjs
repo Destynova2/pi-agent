@@ -9,7 +9,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   else if (method === "tools/list") send(id, { tools: [{ name: "probe", inputSchema: { type: "object" } }, { name: "hang" }] });
   else if (method === "tools/call") {
     if (params.name === "hang") {
-      const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: "ignore" });
+      const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)", params.arguments.pidFile], { stdio: "ignore" });
       writeFileSync(params.arguments.pidFile, String(child.pid));
       continue;
     }

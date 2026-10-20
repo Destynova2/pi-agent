@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { findPiPackageJson } from "../lib/resolve-pi.mjs";
-import { confinedArgs, prepareUpdater, renderLauncher, runCommand, selfUpdateOptions, updateRuntime } from "../scripts/update-runtime.mjs";
+import { confinedArgs, persistentNodeExecutable, sameNodeInstallation, prepareUpdater, renderLauncher, runCommand, selfUpdateOptions, updateRuntime } from "../scripts/update-runtime.mjs";
 
 const installedManifest = findPiPackageJson();
 assert.ok(installedManifest, "Installed Pi SDK is required");
@@ -93,6 +93,68 @@ test("generated launcher forwards arguments, manifest and native exit status thr
   }
   assert.equal((await readdir(f.root)).includes("injected"), false);
   assert.throws(() => renderLauncher("/line\nbreak/package.json"), /line breaks/);
+});
+
+test("launcher survives Homebrew cleanup without selecting a project PATH executable", async t => {
+  const f = await fixture(t), prefix = join(f.root, "brew 'prefix'");
+  const old = join(prefix, "Cellar/node/26.9.0/bin/node"), next = join(prefix, "Cellar/node/26.12.0/bin/node");
+  const opt = join(prefix, "opt/node"), stable = join(opt, "bin/node");
+  for (const [node, value] of [[old, "old"], [next, "new"]]) {
+    await mkdir(dirname(node), { recursive: true });
+    await writeFile(node, `#!/bin/sh\nprintf '%s\\n' '${value}'\n`, { mode: 0o700 });
+  }
+  await mkdir(dirname(opt), { recursive: true });
+  await symlink(join(prefix, "Cellar/node/26.9.0"), opt);
+  assert.equal(persistentNodeExecutable(old), stable);
+  await writeFile(f.launcher, renderLauncher(f.packageJson, { ...f, node: old }));
+  await rm(opt);
+  await symlink(join(prefix, "Cellar/node/26.12.0"), opt);
+  await rm(join(prefix, "Cellar/node/26.9.0"), { recursive: true });
+  // A stale version can migrate only inside the same formula and installation.
+  assert.equal(sameNodeInstallation(old, next), true);
+  assert.equal(sameNodeInstallation(join(f.root, "custom/bin/node"), next), false);
+  assert.equal(sameNodeInstallation(next.replace("Cellar/node/", "Cellar/node@22/"), next), false);
+  const bin = join(f.root, "untrusted-bin"), marker = join(f.root, "injected-node");
+  await mkdir(bin);
+  await writeFile(join(bin, "node"), `#!/bin/sh\ntouch '${marker}'\nexit 99\n`, { mode: 0o700 });
+  for (const args of [[], ["mcp", "--help"], ["update", "--models"]]) {
+    const result = spawnSync(f.launcher, args, { env: { ...f.env, HOME: f.root, PATH: bin }, encoding: "utf8" });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "new");
+  }
+  await assert.rejects(lstat(marker), { code: "ENOENT" });
+  const denied = spawnSync(f.launcher, ["--approve"], { env: f.env, encoding: "utf8" });
+  assert.equal(denied.status, 1);
+  assert.match(denied.stderr, /does not permit/);
+});
+
+test("persistent Node resolution keeps explicit paths and refuses mismatched Homebrew links", async t => {
+  const f = await fixture(t), prefix = join(f.root, "brew"), node = join(prefix, "Cellar/node@22/22.20.0/bin/node");
+  const opt = join(prefix, "opt/node@22");
+  await mkdir(dirname(node), { recursive: true });
+  await writeFile(node, "fixture");
+  assert.equal(persistentNodeExecutable(node), node, "missing stable link");
+  await mkdir(dirname(opt), { recursive: true });
+  await symlink(join(prefix, "missing"), opt);
+  assert.equal(persistentNodeExecutable(node), node, "broken stable link");
+  await rm(opt);
+  await symlink(dirname(dirname(process.execPath)), opt);
+  assert.equal(persistentNodeExecutable(node), node, "unrelated executable");
+  await rm(opt);
+  await symlink(dirname(dirname(node)), opt);
+  assert.equal(persistentNodeExecutable(node), join(opt, "bin/node"));
+  for (const custom of ["/usr/bin/node", "/personal/node", "/custom/Cellar/unrelated/1/bin/node"]) {
+    assert.equal(persistentNodeExecutable(custom), custom);
+  }
+});
+
+test("installer and runtime helpers can be imported from a stdin maintenance script", () => {
+  const script = `await import(${JSON.stringify(new URL("../scripts/install.mjs", import.meta.url).href)}); console.log("imported");`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], { input: script, encoding: "utf8" });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "imported");
 });
 
 test("native updates execute through an aliased agent directory", async t => {

@@ -24,6 +24,7 @@ const {
   StreamMessageWriter,
   InitializeRequest,
   HoverRequest,
+  CompletionRequest,
   ShutdownRequest,
   ExitNotification,
   ApplyWorkspaceEditRequest,
@@ -47,6 +48,7 @@ connection.onRequest(InitializeRequest.type, async () => {
   return {
     capabilities: {
       hoverProvider: true,
+      completionProvider: {},
       textDocumentSync: 1,
       diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false },
     },
@@ -54,6 +56,9 @@ connection.onRequest(InitializeRequest.type, async () => {
 });
 
 let appliedEditTriggered = false;
+connection.onRequest(CompletionRequest.type, async () => [
+  { label: "hello" }, { label: "help" }, { label: "world" },
+]);
 connection.onRequest(HoverRequest.type, async (params, _token, _workDone, _resultToken, info) => {
   // Fire a real server-initiated workspace/applyEdit once, asynchronously, the same way a
   // language server proposes a fix after answering an unrelated request. The client (the real

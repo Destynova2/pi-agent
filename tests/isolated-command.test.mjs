@@ -14,7 +14,7 @@ function fixture(t) {
   return { root, cwd, agent, snapshot: (inputs = ["config"], binaries) => snapshotCommand(cwd, agent, inputs, binaries) };
 }
 
-test("private jobs copy regular inputs, exclude credential/state metadata, and never write back", { skip: process.platform !== "linux" }, t => {
+test("private jobs copy regular inputs, exclude credential/state metadata, and never write back", { skip: process.platform !== "linux" && "Native snapshot traversal uses Linux /proc/self/fd and O_NOFOLLOW" }, t => {
   const f = fixture(t);
   for (const name of [".env", ".env.production", "terraform.tfstate", "private.pem"]) writeFileSync(join(f.cwd, "config", name), "secret");
   mkdirSync(join(f.cwd, "config/.git")); writeFileSync(join(f.cwd, "config/.git/config"), "metadata");
@@ -32,7 +32,7 @@ test("private jobs copy regular inputs, exclude credential/state metadata, and n
   assert.equal(CONFINED_TOOLS.has("run_isolated"), false, "private host snapshot preparation is parent-only");
 });
 
-test("input traversal, symlinks, hardlinks, metadata and unsafe storage fail closed with cleanup", { skip: process.platform !== "linux" }, t => {
+test("input traversal, symlinks, hardlinks, metadata and unsafe storage fail closed with cleanup", { skip: process.platform !== "linux" && "Native snapshot traversal uses Linux /proc/self/fd and O_NOFOLLOW" }, t => {
   const f = fixture(t);
   for (const input of [".", "..", "../outside", "/etc/passwd", "config/../other", ".env", ".git/config", "config//main.tf", "config\n"]) assert.throws(() => f.snapshot([input]));
   symlinkSync(f.root, join(f.cwd, "alias"));
@@ -44,7 +44,7 @@ test("input traversal, symlinks, hardlinks, metadata and unsafe storage fail clo
   assert.throws(() => snapshotCommand(f.root, f.agent, ["project/config"]), /outside/);
 });
 
-test("standalone binaries are snapshotted, scripts and host directory imports are refused", { skip: process.platform !== "linux" }, t => {
+test("standalone binaries are snapshotted, scripts and host directory imports are refused", { skip: process.platform !== "linux" && "Native snapshot traversal uses Linux /proc/self/fd and O_NOFOLLOW" }, t => {
   const f = fixture(t), binary = join(f.root, "tofu");
   writeFileSync(binary, Buffer.from([127, 69, 76, 70, 1, 2, 3]), { mode: 0o700 });
   const snapshot = f.snapshot(["config"], [binary]);

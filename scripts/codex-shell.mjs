@@ -2,7 +2,7 @@
 // Pi's shellPath adapter. The existing Bash supervisor still owns process groups and logs.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,7 +73,10 @@ export function commandWritableRoots(paths, cwd, agentDir, protectedPaths = []) 
   const runtime = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
   const cache = join(homedir(), ".cache/pi-codex-sandbox");
   const backend = sandboxBackend();
-  const protectedRoots = [...new Set([agent, runtime, cache, backend, process.execPath, ...protectedPaths].map(path => existsSync(path) ? realpathSync.native(path) : resolve(path)))];
+  const home = homedir();
+  const hostPaths = [".local/bin", ".local/share/pi-codex", ".local/share/pi-runtime", ".config", ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".bash_logout", ".profile", ".gitconfig", ".git-credentials", ".ssh", ".aws", ".kube", ".codex", ".claude"].map(name => join(home, name));
+  const lexicalPaths = [agentDir, agent, runtime, cache, backend, join(home, ".local/bin/codex"), join(home, ".local/share/pi-codex/0.155.1-file-roots/codex"), process.execPath, ...hostPaths, ...(process.env.PATH ?? "").split(":").filter(path => isAbsolute(path)), ...(process.env.XDG_CONFIG_HOME ? [process.env.XDG_CONFIG_HOME] : []), ...protectedPaths];
+  const protectedRoots = [...new Set(lexicalPaths.flatMap(path => [resolve(path), ...(existsSync(path) ? [realpathSync.native(path)] : [])]))];
   return [...new Set(paths.map(path => {
     if (typeof path !== "string" || path.length > 1024 || !isAbsolute(path) || path !== resolve(path) || /[\u0000-\u001f\u007f-\u009f\u200e-\u200f\u202a-\u202e\u2066-\u2069]/u.test(path)) throw new Error("Write paths must be canonical absolute paths without control characters");
     for (let current = path; ; current = dirname(current)) {
@@ -92,6 +95,76 @@ export function commandWritableRoots(paths, cwd, agentDir, protectedPaths = []) 
   }))].sort();
 }
 
+// Generic composition is separate from the legacy metadata/GPU worker channels.
+export function executionProfile(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "hosts,writePaths") throw new Error("Expected exact execution hosts and writePaths");
+  if (!Array.isArray(value.hosts) || value.hosts.length > 10 || !Array.isArray(value.writePaths) || value.writePaths.length > 8) throw new Error("Execution resource limit exceeded");
+  if (value.writePaths.some(path => typeof path !== "string" || path.split("/").some(part => [".git", ".jj", ".pi", ".codex", ".agents", ".ssh", ".aws", ".kube"].includes(part)))) throw new Error("Protected metadata or credentials cannot be execution write paths");
+  return { hosts: [...new Set(value.hosts.map(normalizeHost))].sort(), writePaths: [...new Set(value.writePaths)].sort() };
+}
+
+export function executionBinding(cwd, roots) {
+  const identify = path => {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || realpathSync.native(path) !== path) throw new Error("Execution resources must remain canonical and unlinked");
+    return [path, stat.dev, stat.ino, stat.mode];
+  };
+  const metadata = createHash("sha256").update(JSON.stringify(executionReadOnlyRoots([cwd, ...roots]).sort())).digest("hex");
+  return { cwd: identify(cwd), roots: roots.map(identify), metadata };
+}
+
+export function executionEnvironment(env) {
+  const keys = ["PATH", "HOME", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR", "PI_CODING_AGENT_DIR", "PI_CODEX_SANDBOX_BIN"];
+  return Object.fromEntries(keys.filter(key => typeof env[key] === "string").map(key => [key, env[key]]));
+}
+
+export function executionReadOnlyRoots(roots) {
+  const names = [".git", ".jj", ".pi", ".codex", ".agents", ".ssh", ".aws", ".kube"];
+  const protectedPaths = [];
+  let count = 0;
+  const visit = (path, depth) => {
+    if (++count > 20000 || depth > 64) throw new Error("Execution write roots exceed inspection limit");
+    let stat;
+    try { stat = lstatSync(path); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+    if (!stat.isDirectory()) return; // Never traverse links or add children below regular files.
+    for (const name of names) if (depth === 0 || existsSync(join(path, name))) protectedPaths.push(join(path, name));
+    for (const entry of readdirSync(path, { withFileTypes: true })) if (entry.isDirectory() && !names.includes(entry.name)) visit(join(path, entry.name), depth + 1);
+  };
+  for (const root of roots) visit(root, 0);
+  if (Buffer.byteLength(JSON.stringify(protectedPaths)) > 12000) throw new Error("Execution metadata exclusions exceed the bounded profile size");
+  return protectedPaths;
+}
+
+// Codex protects metadata at cwd, but does not discover repositories below an
+// umbrella workspace. Find their roots without walking dependency/build trees.
+export function workspaceRepositoryReadOnlyRoots(cwd) {
+  const markers = [".git", ".jj"];
+  // Empty metadata placeholders can be left by a sandbox mount; they do not
+  // turn an umbrella directory into a repository.
+  const hasRepository = path => markers.some(name => {
+    const marker = join(path, name);
+    return existsSync(marker) && (!lstatSync(marker).isDirectory() || readdirSync(marker).length > 0);
+  });
+  if (hasRepository(cwd)) return [];
+  const protectedPaths = [];
+  let count = 0;
+  const visit = (path, depth) => {
+    if (++count > 20000 || depth > 64) throw new Error("Workspace repository discovery exceeds its limit; open a specific repository");
+    if (hasRepository(path)) {
+      for (const name of [".git", ".jj", ".pi", ".codex", ".agents"]) {
+        if (existsSync(join(path, name))) protectedPaths.push(join(path, name));
+      }
+      return;
+    }
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      if (entry.isDirectory()) visit(join(path, entry.name), depth + 1);
+    }
+  };
+  visit(cwd, 0);
+  if (Buffer.byteLength(JSON.stringify(protectedPaths)) > 12000) throw new Error("Workspace repository exclusions exceed their limit; open a specific repository");
+  return protectedPaths;
+}
+
 export function sandboxArgs(command, cwd, scratch, writableRoots = [], readOnlyRoots = []) {
   return [
     "sandbox", "-C", cwd, "-P", "pi", "--include-managed-config",
@@ -106,6 +179,19 @@ export function launch(argv = process.argv.slice(2)) {
   let webUrl;
   let commandHosts;
   let gitNetwork;
+  let execution;
+  let binding;
+  if (argv[0] === "--execution-profile") {
+    if (process.platform !== "linux") throw new Error("Generic execution requires a qualified Linux mount backend; no platform fallback");
+    if (!argv[1] || Buffer.byteLength(argv[1]) > 16384) throw new Error("Invalid execution profile");
+    const value = JSON.parse(argv[1]);
+    if (!value || typeof value !== "object" || Object.keys(value).sort().join(",") !== "binding,hosts,writePaths") throw new Error("Execution requires its reviewed resource binding");
+    binding = value.binding;
+    execution = executionProfile({ hosts: value.hosts, writePaths: value.writePaths });
+    argv = argv.slice(2);
+    if (argv.length !== 2 || argv[0] !== "-c") throw new Error("Execution profile expects exactly one command");
+    commandHosts = execution.hosts;
+  }
   if (argv[0] === "--git-network") {
     if (!argv[1] || Buffer.byteLength(argv[1]) > 1024) throw new Error("Invalid Git network request");
     gitNetwork = JSON.parse(argv[1]);
@@ -135,7 +221,7 @@ export function launch(argv = process.argv.slice(2)) {
     if (!/^[a-f0-9]{64}$/.test(metalDigest ?? "")) throw new Error("Metal requires the exact approved backend digest");
     argv = argv.slice(2);
   }
-  let requestedRoots;
+  let requestedRoots = execution?.writePaths.length ? execution.writePaths : undefined;
   if (argv[0] === "--write-roots") {
     if (!argv[1] || Buffer.byteLength(argv[1]) > 16384) throw new Error("Invalid write-roots request");
     requestedRoots = JSON.parse(argv[1]);
@@ -154,6 +240,7 @@ export function launch(argv = process.argv.slice(2)) {
   if (argv.length !== 2 || argv[0] !== "-c") throw new Error("Codex shell expects exactly: -c <command>.");
   if (typeof process.execve !== "function") throw new Error("Codex shell requires Node with process.execve (Node >=22.19).");
   const cwd = realpathSync(process.cwd());
+  if (execution && JSON.stringify(executionBinding(cwd, execution.writePaths)) !== JSON.stringify(binding)) throw new Error("STALE_EXECUTION: resources changed after review");
   const runtime = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
   if (gitNetwork) {
     const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
@@ -177,7 +264,7 @@ export function launch(argv = process.argv.slice(2)) {
   const scratch = join(cache, createHash("sha256").update(cwd).digest("hex").slice(0, 32), "tmp");
   mkdirSync(config, { recursive: true, mode: 0o700 });
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
-  const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
+  const env = execution ? executionEnvironment(process.env) : Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
   env.PI_CODING_AGENT_DIR = agentDir;
   env.CODEX_HOME = config; // Do not inherit the user's Codex profiles, auth or allow rules.
   env.TMPDIR = scratch; // A private per-project temp root, not all of /tmp.
@@ -198,7 +285,13 @@ export function launch(argv = process.argv.slice(2)) {
   if (allowedHosts.length) requireNetworkProxyVersion(execFileSync(codex, ["--version"], { env, encoding: "utf8", timeout: 5000, maxBuffer: 65536 }));
   const roots = requestedRoots === undefined ? (service === "notes" ? notesWritableRoots(cwd) : [])
     : commandWritableRoots(requestedRoots, cwd, process.env.PI_CODING_AGENT_DIR ?? agentDir, [codex]);
+  if (execution) {
+    readOnlyRoots = executionReadOnlyRoots([cwd, ...roots]);
+  } else {
+    readOnlyRoots = [...new Set([...workspaceRepositoryReadOnlyRoots(cwd), ...readOnlyRoots])];
+  }
   const args = allowedHosts.length ? networkSandboxArgs(argv[1], cwd, scratch, allowedHosts, roots, readOnlyRoots, gitNetwork?.privateNetwork ? gitNetwork.host : undefined) : sandboxArgs(argv[1], cwd, scratch, roots, readOnlyRoots);
+  if (execution && JSON.stringify(executionBinding(cwd, roots)) !== JSON.stringify(binding)) throw new Error("STALE_EXECUTION: resources changed before sandbox launch");
   delete env.PI_CONFINED; // Only the command inside Codex sets the handoff marker.
   if (metal) args.splice(1, 0, "--allow-metal");
   delete env.PI_CODEX_NETWORK_GRANTS; // Grants are broker state, not a child-controlled channel.

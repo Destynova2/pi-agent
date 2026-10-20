@@ -58,6 +58,12 @@ test("LSP host preserves interactive enablement, post-edit entries and session r
     assert.match(renderEntry(diagnosticsEntry).render(120).join("\n"), /fixture\s+diagnostic/);
     assert.match(renderEntry({ data: { outcomes: [{ kind: "warning", message: "fixture warning" }] } }).render(120).join("\n"), /fixture warning/);
     assert.ok((await command.getArgumentCompletions("disable ")).some(item => item.value === "disable fake"));
+    const edit = { type: "tool_call", toolCallId: "baseline", toolName: "write", input: { path: "a.txt", content: "hello\n" } };
+    assert.equal(await events.get("tool_call")(edit, ctx), undefined);
+    const unchanged = await events.get("tool_result")({ ...edit, type: "tool_result",
+      content: [{ type: "text", text: "written" }], details: {}, isError: false,
+    }, ctx);
+    assert.match(JSON.stringify(unchanged.content), /no new diagnostics.*unchanged/);
     assert.equal(notifications.filter(item => item.level === "error").length, 0, JSON.stringify(notifications));
   } finally {
     await events.get("session_shutdown")({}, ctx);

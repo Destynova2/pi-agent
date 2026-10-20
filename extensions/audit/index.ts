@@ -37,7 +37,11 @@ export function registerAudit(pi: ExtensionAPI, agentDir: string) {
       coverage: "Future public UI dialogs, notifications, messages and tool events. Custom UI content and native windows are opaque; no retrospective import." });
   });
   pi.on("session_shutdown", (_event, ctx) => { observe(ctx, "session.shutdown", {}); restore?.(); restore = ui = undefined; latest = undefined; });
-  pi.on("before_agent_start", (event, ctx) => { attach(ctx); observe(ctx, "prompt.user", { text: event.prompt, images: event.images }); });
+  pi.on("before_agent_start", (event, ctx) => {
+    attach(ctx);
+    if ("prompt" in event) observe(ctx, "prompt.user", { text: event.prompt, images: event.images });
+    else observe(ctx, "prompt.custom", event.message);
+  });
   pi.on("agent_start", (_event, ctx) => observe(ctx, "prompt.system", { text: ctx.getSystemPrompt() }));
   pi.on("input", (event, ctx) => { attach(ctx); observe(ctx, "input", event); });
   pi.on("message_end", (event, ctx) => observe(ctx, "message.end", event.message));

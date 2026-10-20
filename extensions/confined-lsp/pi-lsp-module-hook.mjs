@@ -8,7 +8,7 @@
 //   2. use Node's native TypeScript transform when available; Node 26 removed it,
 //      so use the Jiti compiler already shipped by the installed Pi SDK there.
 //
-// Scope is fixed and narrow on purpose: only `@ian-pascoe/pi-lsp@0.4.4` (the version this repo
+// Scope is fixed and narrow on purpose: only `@ian-pascoe/pi-lsp@0.14.2` (the version this repo
 // pins and tests against) under one trusted `PI_CODING_AGENT_DIR`, and only `.ts` files that are
 // already physically inside that package's own `src/` directory. No other specifier, package
 // version, or path is redirected or transformed; everything else falls through to Node's normal
@@ -21,13 +21,13 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const EXPECTED_NAME = "@ian-pascoe/pi-lsp";
-const EXPECTED_VERSION = "0.4.4";
+const EXPECTED_VERSION = "0.14.2";
 
 /**
  * Fixed submodule aliases the worker and this repo's tests import by bare specifier:
  * `pi-lsp-extension` (createPiLspExtension/PiLspLifecycleController, the worker's real
- * business logic) and `lsp-tool-contract` (LspToolProviderParametersSchema, the real
- * provider-facing tool schema, used only by tests/confined-lsp-schema.test.mjs to catch a
+ * business logic) and `lsp-tool-contract` (LspOperationParametersSchemas, the real
+ * operation schemas, used only by tests/confined-lsp-schema.test.mjs to catch a
  * silent upstream drift from extensions/confined-lsp/index.ts's hand-mirrored copy).
  */
 const SUBMODULE_ALIASES = {
@@ -46,7 +46,7 @@ function readValidPackageJson(path) {
 }
 
 /**
- * Locates the pinned `@ian-pascoe/pi-lsp@0.4.4` package under one trusted npm root.
+ * Locates the pinned `@ian-pascoe/pi-lsp@0.14.2` package under one trusted npm root.
  *
  * Realpath'd on purpose: `PI_CODING_AGENT_DIR`/its `npm` root may itself be a symlink (tests
  * point an isolated agent dir's `npm` at the real installed one without copying it). Node's own
@@ -66,7 +66,6 @@ export function findPinnedPiLspRoot(env = process.env) {
 
 function registerPiLspHooks(pinned) {
   if (!piPackageJson) throw new Error("Confined LSP requires the installed Pi SDK compiler");
-  const valueUrl = pathToFileURL(createRequire(piPackageJson).resolve("typebox/value")).href;
   // Native ESM avoids Node 24's CommonJS load-hook resolution gap for ESM-only SDKs.
   const nativeTransform = process.allowedNodeEnvironmentFlags.has("--experimental-transform-types");
   const compiler = nativeTransform ? undefined : createRequire(piPackageJson)("jiti").createJiti(
@@ -83,11 +82,13 @@ function registerPiLspHooks(pinned) {
 
   registerHooks({
     resolve(specifier, context, nextResolve) {
+      // The pinned LSP sources compile to CommonJS on Node 26; pi-utils publishes
+      // import-only ESM exports, which Node can load synchronously in this worker.
+      if (specifier.startsWith("@ian-pascoe/pi-utils/") && context.parentURL?.startsWith(srcDirUrl)) {
+        return nextResolve(specifier, { ...context, conditions: [...context.conditions.filter(value => value !== "require"), "import"] });
+      }
       if (process.platform === "linux" && specifier === "cross-spawn" && context.parentURL === `${srcDirUrl}lsp-server-client.ts`) {
         return { url: new URL("piped-spawn.mjs", import.meta.url).href, shortCircuit: true };
-      }
-      if (specifier === "typebox/value" && context.parentURL?.startsWith(srcDirUrl)) {
-        return { url: valueUrl, shortCircuit: true };
       }
       if (specifier === "@earendil-works/pi-coding-agent" && context.parentURL?.startsWith(srcDirUrl)) {
         return { url: new URL("readonly-settings.mjs", import.meta.url).href, shortCircuit: true };

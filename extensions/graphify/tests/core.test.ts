@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import { cacheDirectory, command, projectGraph, projectRoot } from "../core.ts";
 
 // Explicit skip only when the real binary is absent from PATH; PI_TEST_INTEGRATION=1 forces a
@@ -44,7 +45,8 @@ test("Git root, project separation, ignored files, deletions and no Git mutation
     assert.doesNotMatch(await readFile(updated.graph, "utf8"), /helper/);
     const lock = join(cacheDirectory(root, cache), "index.lock");
     await mkdir(lock);
-    await assert.rejects(projectGraph(repo, "overview", "", undefined, cache), /already in progress/);
+    await assert.rejects(projectGraph(repo, "overview", "", undefined, cache), /Legacy Graphify lock/);
+    assert.ok(existsSync(lock), "an old worker's lock must never be stolen");
     await rm(lock, { recursive: true });
     await assert.rejects(projectGraph(repo, "explain", "--help", undefined, cache), /symbol/i);
   } finally {
@@ -114,4 +116,54 @@ test("outside a repository: no implicit initialization", async () => {
   const temp = await mkdtemp(join(tmpdir(), "pi-graphify-no-repo-"));
   try { await assert.rejects(projectRoot(temp), /No Git\/jj root/); }
   finally { await rm(temp, { recursive: true, force: true }); }
+});
+
+test("failed or canceled extraction preserves the last published graph and cleans its own staging", { timeout: 15_000 }, async (t) => {
+  if (!requireDependency(t, "git") || !requireDependency(t, "python3")) return;
+  const temp = await mkdtemp(join(tmpdir(), "pi-graph-publish-"));
+  const previousPath = process.env.PATH;
+  const abort = new AbortController();
+  let pending: Promise<unknown> | undefined;
+  try {
+    const repo = join(temp, "repo"), base = join(temp, "cache"), bin = join(temp, "bin");
+    await mkdir(repo); await mkdir(bin);
+    await command("git", ["init", "-q"], repo);
+    await copyFile(new URL("fixtures/graphify.py", import.meta.url), join(bin, "graphify"));
+    await chmod(join(bin, "graphify"), 0o700);
+    process.env.PATH = `${bin}${delimiter}${previousPath ?? ""}`;
+    const config = (value: object) => writeFile(join(repo, "fixture.json"), JSON.stringify(value));
+    await config({ nodes: [{ id: "published" }] });
+    const result = await projectGraph(repo, "overview", "", undefined, base);
+    const cache = cacheDirectory(result.root, base);
+    const graph = await readFile(result.graph, "utf8");
+    const metadata = await readFile(join(cache, "project.json"), "utf8");
+    for (const failure of [{ nodes: [{ id: "partial" }], failAnalysis: true }, { invalid: true }]) {
+      await config(failure);
+      await assert.rejects(projectGraph(repo, "overview", "", undefined, base), /analysis failed|nodes missing/);
+      assert.equal(await readFile(result.graph, "utf8"), graph);
+      assert.equal(await readFile(join(cache, "project.json"), "utf8"), metadata);
+      assert.ok((await readdir(cache)).every(name => !name.startsWith(".index-")));
+    }
+    await config({ nodes: [{ id: "interrupted" }], slow: true });
+    pending = projectGraph(repo, "overview", "", abort.signal, base);
+    const rejected = assert.rejects(pending, /canceled|abort/i);
+    const deadline = Date.now() + 5000;
+    while (!(await readdir(cache)).some(name => name.startsWith(".index-") && existsSync(join(cache, name, "extract.ready")))) {
+      assert.ok(Date.now() < deadline, "extractor did not reach its staging directory");
+      await delay(20);
+    }
+    abort.abort();
+    await rejected;
+    assert.equal(await readFile(result.graph, "utf8"), graph);
+    assert.equal(await readFile(join(cache, "project.json"), "utf8"), metadata);
+    assert.ok((await readdir(cache)).every(name => !name.startsWith(".index-")));
+    await config({ nodes: [{ id: "recovered" }] });
+    await projectGraph(repo, "overview", "", undefined, base);
+    assert.match(await readFile(result.graph, "utf8"), /recovered/);
+  } finally {
+    abort.abort();
+    await pending?.catch(() => undefined);
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    await rm(temp, { recursive: true, force: true });
+  }
 });
