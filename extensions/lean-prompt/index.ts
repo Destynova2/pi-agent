@@ -18,14 +18,15 @@ export const DEFERRED_TOOLS: Record<string, string> = {
 	request_build_access: "one-shot KVM Linux image build (ansible-playbook) with host networking, reviewed and supervised",
 	request_podman_access: "Podman engine commands through the host CLI, approved per exact argv",
 	request_host_access: "one approved host operation: Podman diagnostics, clipboard transfer, process info",
+	request_http_access: "local/private API GET, Nexus inventory, dotenv credential references; status or selected JSON",
 	git_repository_init: "initialize a separate repository with empty main, develop and one HTTPS remote",
 	git_worktree_cleanup: "inspect, remove or prune Git worktrees with archived files and preserved branches",
 	model_catalog: "cached Pi model registry snapshot without credential or quota probes",
 	execution: "generic scoped commands and session jobs; capabilities/run/status/stop",
 	run_isolated: "run a command on explicit source copies in a disposable offline Linux job",
-	dunst: "Mac desktop automation on the host, your real apps and logins; observation consent remembered, every action confirmed by the human",
-	harness_update: "verify a pi-agent-config source on the host and install it, or install one pi package, after human confirmation",
-	request_host_command: "one exact command on the host outside every sandbox (real browser, long-lived service), confirmed by the human each time",
+	dunst: "Mac desktop automation; observation consent remembered, actions confirmed by the human",
+	harness_update: "verify and install harness or Pi package; human approval, backup, /reload",
+	request_host_command: "exact host shell command or detached service; full access, human confirmation each time",
 };
 /** Prompt sections that only describe deferred tools; returned by load_tools instead of sitting in every request. */
 export const DEFERRED_SECTIONS: Record<string, string> = { podman_bridge: "request_podman_access", git_initialization: "git_repository_init", worktree_cleanup: "git_worktree_cleanup" };

@@ -10,6 +10,7 @@ import { registerCommandAccess } from "../extensions/tool-policy/command-access.
 import { registerNetworkAccess } from "../extensions/tool-policy/network.ts";
 import { registerIsolatedCommand } from "../extensions/tool-policy/isolated-command.ts";
 import { registerHostAccess } from "../extensions/tool-policy/host-access.ts";
+import { registerHttpAccess } from "../extensions/tool-policy/http-access.ts";
 import { runtimeRoot } from "../lib/runtime-paths.mjs";
 import { metalFixture, fixtureMetalBackend } from "./metal-fixture.mjs";
 
@@ -249,6 +250,34 @@ test("automatic command and network grants pass exact requests through existing 
     assert.deepEqual(executions[1].args, ["--network-hosts", '["packages.example.com"]', "-c", "curl https://packages.example.com/archive"]);
     assert.deepEqual(f.query("permission_requests").slice(0, 2).map(row => [row.source, row.status]), [["policy", "granted"], ["policy", "granted"]]);
   } finally { handlers.get("session_shutdown")(); }
+});
+
+test("headless HTTP inspection reviews every exact endpoint and credential reference without exposing values", async t => {
+  const f = fixture(t); await f.activate("auto-deny Inspect the requested local API with its existing credentials");
+  f.messages.push({ type: "message", message: { role: "user", content: "Read the local Nexus repository inventory using the password in config.env." } });
+  f.ctx.hasUI = false;
+  const file = join(f.root, "config.env"); writeFileSync(file, "PASSWORD=fixture-private-password\n");
+  const tools = new Map(), handlers = new Map(); let executions = 0;
+  registerHttpAccess({ on: (name, handler) => handlers.set(name, handler), registerCommand() {},
+    registerTool: tool => tools.set(tool.name, tool), getActiveTools: () => [...tools.keys()] }, f.agent, () => {},
+  async (_request, source, _signal, revalidate) => {
+    revalidate(); assert.equal(source.read(), "fixture-private-password"); executions++;
+    return { status: 200, body: "withheld", authenticationVerified: false };
+  });
+  t.after(() => handlers.get("session_shutdown")());
+  const call = () => tools.get("request_http_access").execute("http", {
+    url: "http://127.0.0.1:8081/service/rest/v1/repositories", reason: "Inspect the requested inventory",
+    auth: { kind: "basic", username: "admin", file, key: "PASSWORD" }, fields: ["name", "type"],
+  }, undefined, undefined, f.ctx);
+  await call(); await call();
+  assert.equal(executions, 2); assert.equal(f.calls.length, 2); assert.equal(f.prompts, 0);
+  const payload = f.calls[0].context.messages[0].content;
+  assert.match(payload, /http-access/); assert.match(payload, /127\.0\.0\.1:8081/); assert.match(payload, /config\.env/);
+  assert.doesNotMatch(JSON.stringify([f.calls, f.query("permission_requests"), f.query("permission_reviews")]), /fixture-private-password/);
+  assert.ok(f.query("permission_requests").every(row => row.source === "policy" && row.scope === "once"));
+  f.verdict = { decision: "deny", category: "out_of_scope" };
+  await assert.rejects(call(), /out_of_scope/);
+  assert.equal(executions, 2); assert.equal(f.prompts, 0);
 });
 
 test("one-command network review uses current intent without UI and manual mode disables execution", async t => {

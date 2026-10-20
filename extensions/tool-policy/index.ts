@@ -18,6 +18,7 @@ import { hasMetalBackend, registerCommandAccess } from "./command-access.ts";
 import { readServers } from "../mcp/index.ts";
 import { registerIsolatedCommand } from "./isolated-command.ts";
 import { registerHostAccess } from "./host-access.ts";
+import { registerHttpAccess } from "./http-access.ts";
 import { registerBuildAccess } from "./build-access.ts";
 import { registerPodmanAccess } from "./podman-access.ts";
 import { registerGitAccess } from "./git-access.ts";
@@ -30,7 +31,7 @@ import { registerHostCommand } from "./host-command.ts";
 import { registerApprovalReview } from "../../lib/approval-review.ts";
 
 // Approval bridges are parent-only: neither host automation nor filesystem grants are delegated.
-export const STRICT_TOOLS = new Set([...CONFINED_TOOLS, "execution", "run_isolated", "ask_user", "request_host_command", "request_command_access", "request_host_access", "request_build_access", "request_podman_access", "model_catalog", "git_access", "git_repository_init", "git_worktree_cleanup", "jj_checkpoint", "task_checkpoint", "load_tools", "harness_update"]);
+export const STRICT_TOOLS = new Set([...CONFINED_TOOLS, "execution", "run_isolated", "ask_user", "request_host_command", "request_command_access", "request_host_access", "request_http_access", "request_build_access", "request_podman_access", "model_catalog", "git_access", "git_repository_init", "git_worktree_cleanup", "jj_checkpoint", "task_checkpoint", "load_tools", "harness_update"]);
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const factories = [createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition, createFindToolDefinition, createGrepToolDefinition];
 
@@ -102,6 +103,7 @@ export default function (pi: ExtensionAPI) {
   registerIsolatedCommand(pi, agentDir, verify);
   registerExecution(pi, agentDir, verify);
   registerHostAccess(pi, agentDir, verify);
+  registerHttpAccess(pi, agentDir, verify);
   registerBuildAccess(pi, agentDir, verify);
   registerPodmanAccess(pi, agentDir, verify);
   registerHarnessUpdate(pi, agentDir, verify);
@@ -133,7 +135,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("confined-tools", {
     description: "Show confined executors, one-command write approvals and blocked host automation",
     handler: async (_args, ctx) => {
-      try { verify(ctx); ctx.ui.notify(`Strict sandbox configured: ${[...CONFINED_TOOLS].join(", ")}. Other tools denied except run_isolated, request_command_access, request_host_access, request_build_access, request_podman_access, git_access, git_repository_init, git_worktree_cleanup, jj_checkpoint, task_checkpoint session metadata and the read-only model_catalog snapshot. git_worktree_cleanup reviews exact paths, archives files and metadata, preserves branches and pins commits after one-time consent; /git-worktree reset cancels pending cleanup. git_access offers repository-scoped local Git consent, but each push needs its own approval; /git-access permissions revokes it. Additional filesystem paths or an installed, qualified Metal capability require approval of one exact failed command retry; additional public network hosts require approval. Metal is never enabled for ordinary Bash by installation or restart: use request_command_access with gpu=metal after a foreground failure. A nil device in ordinary Bash is expected. Dunst is host-side and remains denied in this jail. /dunst permissions and /mcp permissions revoke project consent. KVM image builds use request_build_access with explicit one-shot approval; /build-access reset cancels them. Activate a harness release with /reload; restart after Pi SDK or external dependency changes.`, "info"); }
+      try { verify(ctx); ctx.ui.notify(`Strict sandbox configured: ${[...CONFINED_TOOLS].join(", ")}. Other tools denied except run_isolated, request_command_access, request_host_access, request_http_access, request_build_access, request_podman_access, git_access, git_repository_init, git_worktree_cleanup, jj_checkpoint, task_checkpoint session metadata and the read-only model_catalog snapshot. git_worktree_cleanup reviews exact paths, archives files and metadata, preserves branches and pins commits after one-time consent; /git-worktree reset cancels pending cleanup. git_access offers repository-scoped local Git consent, but each push needs its own approval; /git-access permissions revokes it. Additional filesystem paths or an installed, qualified Metal capability require approval of one exact failed command retry; additional public network hosts require approval. Metal is never enabled for ordinary Bash by installation or restart: use request_command_access with gpu=metal after a foreground failure. A nil device in ordinary Bash is expected. Dunst is host-side and remains denied in this jail. /dunst permissions and /mcp permissions revoke project consent. KVM image builds use request_build_access with explicit one-shot approval; /build-access reset cancels them. Activate a harness release with /reload; restart after Pi SDK or external dependency changes.`, "info"); }
       catch (error) { ctx.ui.notify((error as Error).message, "error"); }
     },
   });
