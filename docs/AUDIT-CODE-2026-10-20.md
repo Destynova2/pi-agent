@@ -2,7 +2,7 @@
 
 Date: 2026-10-20. Scope: the working tree based on `1a4688a`, including the native SDK migration, Grob transport and terminal commands, checkpoint selection, confinement, and release-based reload.
 
-**CQI after corrections: 7.9/10 — good overall.** Remaining findings: Tier 3 (0), Tier 2 (3), Tier 1 (0). The initial score was 7.7/10 with two Tier 3 findings; both are now resolved by reviewed changes and targeted host regressions. The full completion gate for the corrected tree had not yet finished when this report was updated.
+**CQI after corrections: 7.9/10 — good overall.** Remaining findings: Tier 3 (0), Tier 2 (3), Tier 1 (0). The initial score was 7.7/10 with two Tier 3 findings; both are now resolved by reviewed changes and targeted host regressions. The full completion gate also passed for the corrected tree; see the final completion evidence below.
 
 ## Method and limits
 
