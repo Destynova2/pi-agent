@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { McpApprovals, fingerprint, serverIdentity } from "../../lib/mcp-approvals.ts";
-import { checkpointReason, checkpointRoot, checkpointIdentity, createCheckpointTransaction, closeCheckpointTransaction, publishCheckpoint, type CheckpointInspection, type CheckpointResult } from "../../lib/jj-checkpoint.ts";
+import { checkpointReason, checkpointRepository, checkpointRoot, checkpointIdentity, createCheckpointTransaction, closeCheckpointTransaction, publishCheckpoint, type CheckpointInspection, type CheckpointResult } from "../../lib/jj-checkpoint.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
 import { runProcess } from "../../lib/process.ts";
 import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
@@ -20,50 +20,55 @@ export function registerJjCheckpoint(pi: ExtensionAPI, agentDir: string, verify:
   const reset = () => { approvals.reset(); const previous = tasks; tasks = new SessionTasks(); return previous.close(); };
   for (const event of ["session_start", "session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) pi.on(event, reset);
   pi.registerCommand("jj-checkpoint", {
-    description: "/jj-checkpoint permissions: revoke checkpoint consent for this project",
+    description: "/jj-checkpoint permissions [repository]: revoke checkpoint consent for the current or named repository",
     async handler(args, ctx) {
-      if (args.trim() !== "permissions") return ctx.ui.notify("usage: /jj-checkpoint permissions", "info");
+      const match = /^permissions(?:\s+(.+))?$/.exec(args.trim());
+      if (!match) return ctx.ui.notify("usage: /jj-checkpoint permissions [canonical repository path]", "info");
       verify(ctx);
       if (!ctx.hasUI || process.env.PI_SUBAGENT_CHILD) throw new Error("Checkpoints require the interactive parent");
-      const cwd = realpathSync(ctx.cwd), root = checkpointRoot(cwd);
+      const cwd = realpathSync(ctx.cwd), root = checkpointRoot(checkpointRepository(cwd, match[1]));
       await reset(); verify(ctx);
       if (realpathSync(ctx.cwd) !== cwd) throw new Error("Workspace changed during revocation");
+      if (checkpointRoot(checkpointRepository(cwd, match[1])) !== root) throw new Error("Checkpoint repository changed during revocation");
       approvals.revoke(root, "jj-checkpoint");
       ctx.ui.notify("Checkpoint consent revoked. Existing checkpoints remain.", "info");
     },
   });
   pi.registerTool({
     name: "jj_checkpoint", label: "Save a local recovery point", executionMode: "sequential", exposure: "model-only",
-    description: "Before authorized file edits, initialize jj/Git only if missing, then save the current working files and return full operation/commit IDs. Existing Git index, branches, configuration and working files are preserved. Ordinary main colocated repositories may have linked worktrees: those registrations, files and indexes remain untouched and are not backed up. Existing Git objects are read-only inputs to the isolated checkpoint. Local checkpoint consent is separate from Git commit/push consent and may be remembered per project. No restore, commit publication, network operation or arbitrary command. Ignored files and external state are not backed up; unsupported files/layouts fail explicitly.",
-    promptGuidelines: ["Take another checkpoint before a separately requested risky phase. The private Git ref retains local file contents without creating a branch or publishing them. Do not run for read-only audits or from children; this tool never installs jj. A checkpoint is not a full-system backup."],
-    parameters: Type.Object({ reason: Type.String() }, { additionalProperties: false }),
+    description: "Snapshot working files before authorized edits, initializing jj/Git if missing; return full operation/commit IDs and a private Git ref retaining contents. Preserve Git index, branches, config and files. Main colocated repositories may have linked worktrees, preserved but not backed up. Existing Git objects stay read-only. Consent is separate from Git commit/push, reusable per project. No restore, commit publication, network, arbitrary commands or jj installation. Ignored files and external state are excluded; unsupported files/layouts fail. Not a full-system backup.",
+    promptGuidelines: ["Select each repository explicitly; the session cwd and Bash access remain unchanged. Checkpoint again before a separately requested risky phase. Do not run for read-only audits or from children."],
+    parameters: Type.Object({ reason: Type.String(), repository: Type.Optional(Type.String({ description: "Exact canonical absolute root of an existing main Git repository. Select a child or separate repository without changing the session cwd. Omit to use the current project, initializing Git/jj there if missing." })) }, { additionalProperties: false }),
     async execute(_id, input, signal, _update, ctx) {
-      const reason = checkpointReason(input), cwd = realpathSync(ctx.cwd);
+      const reason = checkpointReason(input), cwd = realpathSync(ctx.cwd), workdir = checkpointRepository(cwd, input.repository);
       return tasks.run(async owned => {
         const run = async () => {
           const validate = () => {
             owned.throwIfAborted(); verify(ctx);
             if ((!ctx.hasUI && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("jj_checkpoint")) throw new Error("Checkpoints require the active interactive parent or a configured automatic parent policy in the same workspace");
+            if (checkpointRepository(cwd, input.repository) !== workdir) throw new Error("Checkpoint repository changed");
           };
           validate();
           const binary = serverIdentity("jj", [], cwd), gitBinary = serverIdentity("/usr/bin/git", [], cwd);
-          const query = async (action: "inspect" | "snapshot", workdir: string, roots?: string[], protectedMetadata: string[] = []) => {
+          const query = async (action: "inspect" | "snapshot", sandboxCwd: string, roots?: string[], protectedMetadata: string[] = []) => {
             const args = roots ? ["--write-roots", JSON.stringify(roots), "--read-roots", JSON.stringify(protectedMetadata), "--offline", "-c", command] : ["--offline", "-c", command];
-            const raw = await execute(launcher, args, { cwd: workdir, signal: owned, input: JSON.stringify({ action, binary: binary.command }), timeoutMs: 300000, maxBytes: 4 * 1024 * 1024 });
+            const raw = await execute(launcher, args, { cwd: sandboxCwd, signal: owned, input: JSON.stringify({ action, binary: binary.command, ...(action === "inspect" && input.repository !== undefined ? { repository: input.repository } : {}) }), timeoutMs: 300000, maxBytes: 4 * 1024 * 1024 });
             const output = JSON.parse(raw);
             if (output.error) throw new Error(output.error);
             validate(); return output.result;
           };
           const inspect = async (): Promise<CheckpointInspection> => {
-            const root = checkpointRoot(cwd), identity = checkpointIdentity(root);
+            const root = checkpointRoot(workdir), identity = checkpointIdentity(root);
+            // Inspection keeps the session sandbox; only the fixed worker reads
+            // the selected repository. Snapshot writes stay on a disposable copy.
             const inspected: CheckpointInspection = await query("inspect", cwd);
-            if (inspected.root !== root || checkpointRoot(cwd) !== root || checkpointIdentity(root) !== identity) throw new Error("Checkpoint repository changed during inspection");
+            if (inspected.root !== root || checkpointRoot(workdir) !== root || checkpointIdentity(root) !== identity) throw new Error("Checkpoint repository changed during inspection");
             // Codex can replace an empty .git with a protected mount. Keep the
             // parent's identity, checked on both sides of every confined read.
             return { ...inspected, identity };
           };
           const info = await inspect();
-          if (info.root !== checkpointRoot(cwd)) throw new Error("Checkpoint root differs from the current project");
+          if (info.root !== checkpointRoot(workdir)) throw new Error("Checkpoint root differs from the selected project");
           const writePaths = [join(info.root, ".git"), join(info.root, ".jj")];
           commandWritableRoots(writePaths, cwd, agentDir, [getPackageDir()]);
           const expires = Date.now() + 300000;

@@ -5,7 +5,7 @@ import { runProcess } from "../../lib/process.ts";
 import { commitHookOptions, gitEnvironment } from "../../lib/git-command.ts";
 
 export interface GitRequest {
-  operation: "branch" | "stage" | "commit" | "push";
+  operation: "branch" | "stage" | "commit" | "push" | "fetch" | "fast_forward";
   branch?: string;
   paths?: string[];
   message?: string;
@@ -26,6 +26,8 @@ export interface GitSnapshot {
   staged: string[];
   remoteUrl?: string;
   pushHead?: string;
+  targetHead?: string;
+  worktreeState?: string;
 }
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const inside = (root: string, path: string) => { const rel = relative(root, path); return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../")); };
@@ -52,11 +54,11 @@ function originalPath(path: string) {
 export function validateGitRequest(value: unknown): GitRequest {
   if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value)) > 256 * 1024) throw new Error("Invalid or oversized Git request (maximum 256 KiB)");
   const input = value as Record<string, unknown>;
-  const fields: Record<string, string[]> = { branch: ["branch"], stage: ["paths"], commit: ["paths", "message"], push: ["remote", "branch"] };
-  if (typeof input.operation !== "string" || !Object.hasOwn(fields, input.operation)) throw new Error("Only branch, stage, commit and push are supported");
+  const fields: Record<string, string[]> = { branch: ["branch"], stage: ["paths"], commit: ["paths", "message"], push: ["remote", "branch"], fetch: ["remote", "branch"], fast_forward: ["remote", "branch"] };
+  if (typeof input.operation !== "string" || !Object.hasOwn(fields, input.operation)) throw new Error("Only branch, stage, commit, push, fetch and fast_forward are supported");
   const required = fields[input.operation];
-  if (Object.keys(input).some(key => !["operation", "reason", "repository", ...(input.operation === "push" ? ["source_branch", "private_network"] : []), ...required].includes(key)) || required.some(key => !(key in input))) throw new Error("Invalid fields for Git operation");
-  if (input.private_network !== undefined && typeof input.private_network !== "boolean") throw new Error("private_network must be a boolean for push only");
+  if (Object.keys(input).some(key => !["operation", "reason", "repository", ...(input.operation === "push" ? ["source_branch"] : []), ...(["push", "fetch"].includes(input.operation) ? ["private_network"] : []), ...required].includes(key)) || required.some(key => !(key in input))) throw new Error("Invalid fields for Git operation");
+  if (input.private_network !== undefined && typeof input.private_network !== "boolean") throw new Error("private_network must be a boolean for push or fetch only");
   if (input.repository !== undefined && (typeof input.repository !== "string" || !isAbsolute(input.repository) || resolve(input.repository) !== input.repository || input.repository.length > 1024 || control.test(input.repository))) throw new Error("Expected a canonical absolute repository path");
   if (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 500 || control.test(input.reason)) throw new Error("A short justification without control characters is required");
   if (input.branch !== undefined && (typeof input.branch !== "string" || input.branch.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(input.branch) || input.branch.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock")) || input.branch.includes("..") || input.branch.endsWith("."))) throw new Error("Expected a literal branch name, not flags or a revision expression");
@@ -123,7 +125,7 @@ export async function inspectGit(cwd: string, request: GitRequest, signal?: Abor
     if (!text?.startsWith("gitdir: ") || resolve(root, text.slice(8)) !== gitDir || dirname(gitDir) !== join(commonDir, "worktrees") || regular(join(gitDir, "gitdir"), 4096)?.toString("utf8").trim() !== marker) throw new Error("Unsupported or redirected worktree metadata");
   }
   for (const directory of [gitDir, commonDir]) if (!lstatSync(directory).isDirectory() || realpathSync(directory) !== directory) throw new Error("Linked Git metadata is not supported");
-  if (request.operation === "commit" && ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"].some(name => existsSync(join(gitDir, name)))) throw new Error("An unfinished Git operation requires manual review; no commit performed");
+  if (["commit", "fast_forward"].includes(request.operation) && ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"].some(name => existsSync(join(gitDir, name)))) throw new Error("An unfinished Git operation requires manual review; no integration or commit performed");
   const headText = regular(join(gitDir, "HEAD"), 4096)?.toString("utf8").trim() ?? "";
   const branch = headText.startsWith("ref: refs/heads/") ? headText.slice(16) : null;
   if (!branch && request.operation !== "branch") throw new Error("A local branch is required; detached HEAD is refused");
@@ -148,12 +150,12 @@ export async function inspectGit(cwd: string, request: GitRequest, signal?: Abor
     (_match, separator, path) => separator + "file:" + originalPath(resolve(root, path)));
   let remoteUrl: string | undefined;
   let pushHead: string | undefined;
-  if (request.operation === "push") {
-    if (/(?:^|\0)(?:remote\.[^\n]+\.vcs|push\.pushoption)\n/i.test(config)) throw new Error("Push requires standard HTTPS transport without custom VCS helpers or configured push options");
-    if (!head) throw new Error("Nothing committed to push");
-    remoteUrl = await git(root, ["remote", "get-url", "--push", "--all", request.remote!], signal);
+  if (["push", "fetch"].includes(request.operation)) {
+    if (/(?:^|\0)(?:remote\.[^\n]+\.vcs|push\.pushoption)\n/i.test(config)) throw new Error("Git transfer requires standard HTTPS transport without custom VCS helpers or configured push options");
+    if (request.operation === "push" && !head) throw new Error("Nothing committed to push");
+    remoteUrl = await git(root, ["remote", "get-url", ...(request.operation === "push" ? ["--push"] : []), "--all", request.remote!], signal);
     const url = new URL(remoteUrl);
-    if (remoteUrl.includes("\n") || url.protocol !== "https:" || url.username || url.password || url.search || url.hash || (url.port && url.port !== "443")) throw new Error("Push requires exactly one HTTPS destination without embedded credentials; no SSH, local transport or external remote helper");
+    if (remoteUrl.includes("\n") || url.protocol !== "https:" || url.username || url.password || url.search || url.hash || (url.port && url.port !== "443")) throw new Error("Git transfer requires exactly one HTTPS destination without embedded credentials; no SSH, local transport or external remote helper");
     remoteUrl = url.href;
     if (request.source_branch) {
       await git(root, ["check-ref-format", "--branch", request.source_branch], signal);
@@ -161,15 +163,31 @@ export async function inspectGit(cwd: string, request: GitRequest, signal?: Abor
       if (!/^[a-f0-9]{40,64}$/.test(pushHead)) throw new Error("Invalid push source commit");
     }
   }
+  let targetHead: string | undefined, worktreeState: string | undefined;
+  if (request.operation === "fast_forward") {
+    if (!head) throw new Error("Fast-forward requires an existing local commit");
+    targetHead = await git(root, ["rev-parse", "--verify", `refs/remotes/${request.remote}/${request.branch}^{commit}`], signal);
+    if (!/^[a-f0-9]{40,64}$/.test(targetHead)) throw new Error("Invalid integration target commit");
+    try { await git(root, ["merge-base", "--is-ancestor", head, targetHead], signal); }
+    catch { throw new Error("Fast-forward requires HEAD to be an ancestor of the fetched commit; no merge, rebase or reset performed"); }
+    // Review includes dirty tracked contents and the untracked path set, without exposing them.
+    const status = await git(root, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none", "-z"], signal);
+    const diff = await git(root, ["diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=none", "--"], signal);
+    worktreeState = sha(JSON.stringify([status, diff]));
+    const changes = await git(root, ["diff", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", head, targetHead, "--"], signal);
+    if (/^:(?:160000 |[0-9]{6} 160000 )/m.test(changes)) throw new Error("Fast-forward changes a submodule pointer; inspect and update submodules separately without recursion");
+  }
   const index = regular(join(gitDir, "index"), 64 * 1024 * 1024);
   const identity = sha(JSON.stringify(["git-access-v1", root, ...[gitDir, commonDir].map(path => { const stat = lstatSync(path); return [path, stat.dev, stat.ino, stat.birthtimeMs]; })]));
-  return { root, gitDir, commonDir, identity, stamp: sha(JSON.stringify([identity, headText, head, index && sha(index), sha(config), files, remoteUrl, pushHead])), head, branch, staged, remoteUrl, ...(pushHead ? { pushHead } : {}) };
+  return { root, gitDir, commonDir, identity, stamp: sha(JSON.stringify([identity, headText, head, index && sha(index), sha(config), files, remoteUrl, pushHead, targetHead, worktreeState])), head, branch, staged, remoteUrl, ...(pushHead ? { pushHead } : {}), ...(targetHead ? { targetHead, worktreeState } : {}) };
 }
 
 /** Only mutable Git data. Config, hooks, credentials and other worktrees stay read-only. */
 export function gitWritePaths(snapshot: GitSnapshot, request: GitRequest): string[] {
   const { gitDir, commonDir } = snapshot;
-  const paths = request.operation === "stage" ? [join(gitDir, "index"), join(gitDir, "index.lock"), join(commonDir, "objects")]
+  const paths = request.operation === "fetch" ? [join(commonDir, "objects"), join(gitDir, "FETCH_HEAD"), join(gitDir, "FETCH_HEAD.lock"), join(commonDir, "refs/remotes"), join(commonDir, "logs/refs/remotes")]
+    : request.operation === "fast_forward" ? [join(gitDir, "index"), join(gitDir, "index.lock"), join(gitDir, "ORIG_HEAD"), join(gitDir, "ORIG_HEAD.lock"), join(commonDir, "refs/heads"), join(commonDir, "logs"), join(gitDir, "logs")]
+    : request.operation === "stage" ? [join(gitDir, "index"), join(gitDir, "index.lock"), join(commonDir, "objects")]
     : request.operation === "commit" ? [join(gitDir, "index"), join(gitDir, "index.lock"), join(gitDir, "HEAD.lock"), join(gitDir, "COMMIT_EDITMSG"), join(commonDir, "objects"), join(commonDir, "refs/heads"), join(commonDir, "logs"), join(gitDir, "logs")]
     : request.operation === "branch" ? [join(gitDir, "HEAD"), join(gitDir, "HEAD.lock"), join(gitDir, "index"), join(gitDir, "index.lock"), join(commonDir, "refs/heads"), join(commonDir, "logs"), join(gitDir, "logs")]
     : [join(commonDir, "refs/remotes"), join(commonDir, "logs/refs/remotes")];
@@ -181,6 +199,10 @@ export function gitOperationArgs(request: GitRequest, snapshot: GitSnapshot): st
     case "branch": return ["switch", "--no-track", "-c", request.branch!];
     case "stage": return ["--literal-pathspecs", "add", "--", ...request.paths!];
     case "commit": return ["commit", "--file=-"];
+    // Ignore configured fetch refspecs, tags, prune, recursion and automatic maintenance.
+    // Unpack within the existing bounded transaction validator; no opaque pack publication.
+    case "fetch": return ["-c", "fetch.unpackLimit=2147483647", "-c", "fetch.writeCommitGraph=false", "fetch", "--no-tags", "--no-prune", "--no-prune-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--refmap=", "--", request.remote!, `refs/heads/${request.branch}:refs/remotes/${request.remote}/${request.branch}`];
+    case "fast_forward": return ["-c", "submodule.recurse=false", "merge", "--ff-only", "--no-autostash", "--no-edit", "--", snapshot.targetHead!];
     // Use the reviewed object ID, never a moving HEAD, implicit refspec, tags or force.
     case "push": return ["-c", `remote.${request.remote}.mirror=false`, "push", "--no-force", "--no-mirror", "--no-follow-tags", "--recurse-submodules=no", "--", request.remote!, `${snapshot.pushHead ?? snapshot.head}:refs/heads/${request.branch}`];
   }
@@ -200,6 +222,7 @@ export async function performGit(cwd: string, request: GitRequest, expected: Git
   }
   await git(current.root, args, signal, request.message, env);
   const head = await git(current.root, ["rev-parse", "--revs-only", "HEAD"], signal);
+  if (request.operation === "fast_forward" && head !== current.targetHead) throw new Error("Fast-forward result differs from the reviewed commit; inspect partial effects before any retry");
   const hooksChangedTree = tree !== undefined && tree !== await git(current.root, ["rev-parse", "HEAD^{tree}"], signal);
   return { operation: request.operation, head, hooksChangedTree, notice: hooksChangedTree ? "Commit created, but its tree differs from the reviewed index (hook or concurrent changes). Inspect it before any push; do not retry the commit." : "Git command completed. Inspect the result; this is not proof of CI or application health." };
 }

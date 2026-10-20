@@ -76,13 +76,13 @@ Missing, corrupt, oversized (64 MiB) or incomplete session files are rejected wi
 
 Native `bash` and the separate `bash_background`/`bash_process` tools share the confined launcher. Notes, including automatic prompt capture and inbox polling, and Graphify, including startup indexing and root discovery, now dispatch to fixed jailed workers. Notes alone receives additional grants for project note storage, its Git exclude entry and `~/workspace/notes.db` with SQLite sidecars, never the whole workspace directory. Linked storage is refused. Graphify caches live under the private cwd-specific `TMPDIR`; existing external caches are not deleted. Git inspection is offline; `web_fetch` uses the managed network proxy.
 
-Routine calls need no approval. `request_network_access` can add exact public hosts, never filesystem permissions. `request_command_access` can rerun one failed foreground Bash command with reviewed additional write paths, still inside Codex. [Private IPC](PRIVATE-IPC.md) adds `run_isolated` for disposable offline tests and `request_network_access` with `command` for network access lasting one command. Both use automatic task qualification; network uncertainty can also receive one-time human validation. Unknown tools and executors not yet confined are denied. There is no unrestricted fallback. The legacy `tool-policy.json`, parser and shell classifier are removed; the installer backs up and deletes known legacy files. The dispatcher directory retains its name to replace the old installed entry point without loading two dispatchers.
+Routine calls need no approval. `request_network_access` can add exact public hosts, never filesystem permissions. `request_command_access` can rerun one failed foreground Bash command with reviewed additional write paths, still inside Codex. [Private IPC](PRIVATE-IPC.md) adds `run_isolated` for disposable offline tests and `request_network_access` with `command` for network access lasting one command. Both use automatic task qualification without human dialogs; uncertainty or unavailable review refuses execution. Unknown tools and executors not yet confined are denied. There is no unrestricted fallback. The legacy `tool-policy.json`, parser and shell classifier are removed; the installer backs up and deletes known legacy files. The dispatcher directory retains its name to replace the old installed entry point without loading two dispatchers.
 
 Children inherit the intersection of role tools, active parent tools and the fixed confined-executor set, without recursive delegation, network grants, `run_isolated`, `request_command_access`, `request_host_access`, `request_build_access`, `git_access`, `git_repository_init`, `git_worktree_cleanup`, `jj_checkpoint` or `model_catalog`. Canonical child cwd must remain within its parent workspace in every mode, even with no policy file. Private session/report storage and model transport remain trusted host operations. Resumes can only narrow capabilities.
 
 The installer sets `shellPath` and deploys the launchers, workers and SDK resolver. After a validated installation, `/reload` in open sessions (restart when installed `.mjs` modules changed) or start `pi` normally; the [managed launcher](../INSTALLATION.md#plain-pi-startup-on-supported-runtimes) supplies `--no-approve` without editing Pi, and an upstream launcher must pass it. Project resources are refused through `project_trust`; a session started with trusted project resources blocks permitted tools too. `/confined-tools` reports configuration, not proof that the backend can run. A missing adapter, changed cwd/shell or backend failure blocks execution.
 
-The original LSP package stays installed at 0.4.4 with its extension filtered out (`extensions: []`). The replacement runs its actual lifecycle controller inside Codex: persistent servers, workspace previews/apply, diagnostics, branch restoration and `/lsp` selections. Only UI selection/notification and the two LSP session-entry types cross back to the host. Diagnostics entries use plain-text presentation. Settings reads use Pi's storage API without acquiring a write lock outside the jail; persistent global settings writes remain denied. Session-scoped enablement works. Source TypeScript is compiled natively when Node supports transform mode; otherwise it uses the installed Pi SDK's Jiti compiler, limited to the pinned package. Project Babel configuration and compiler disk caches are disabled; Node 26's removed TypeScript transform mode is not required. No copied LSP mutation engine or unrestricted fallback is used.
+The original LSP package stays installed at 0.14.2 with its extension filtered out (`extensions: []`). The replacement runs its actual lifecycle controller inside Codex: persistent servers, workspace previews/apply, diagnostics, branch restoration and `/lsp` selections. Only UI selection/notification and the two LSP session-entry types cross back to the host. Diagnostics entries use plain-text presentation. Settings reads use Pi's storage API without acquiring a write lock outside the jail; persistent global settings writes remain denied. Session-scoped enablement works. Source TypeScript is compiled natively when Node supports transform mode; otherwise it uses the installed Pi SDK's Jiti compiler, limited to the pinned package. Project Babel configuration and compiler disk caches are disabled; Node 26's removed TypeScript transform mode is not required. No copied LSP mutation engine or unrestricted fallback is used.
 
 The installer also pins TypeScript 7.0.2 and binds the managed server to its absolute path under `<agent-dir>/npm/node_modules`, not project `npx` resolution. Default routing covers TS/TSX and JS/JSX/MJS/CJS, with `tsconfig.json`, `jsconfig.json`, `package.json` or `.git` as root markers. Only the exact old shipped TypeScript definition is migrated; custom definitions and explicit disablement are preserved. See [staged validation](../INSTALLATION.md#validate-before-activating).
 
@@ -121,7 +121,7 @@ Dunst is **not jailed**: Mac applications can write files or contact external se
 
 `ci_watch` keeps only timers and notifications on the host. All Git/`gh`/`glab` queries run in fixed workers; stops and session transitions cancel pending starts and queries. Provider authentication must already be configured and usable inside the jail. GitLab API hosts outside the network baseline require explicit grants.
 
-`web_search` runs the installed Claude helper with hooks, skills and MCP disabled and writable state under private scratch. Only this fixed search worker receives access to `api.anthropic.com` and `claude.ai`; explicit host denials still apply. The optional macOS Keychain bridge requires explicit operator opt-in and passes only a valid access token in memory. Installation leaves it disabled. Search errors retain masked stdout diagnostics, including missing login, instead of only an exit code. Login/refresh failures remain errors; no host retry or new API key is introduced. See [web search authentication, scope and validation](WEB-SEARCH.md).
+`web_search` sends its bounded query to Grob's server-side WebSearch route. It starts no Claude process, reads no Claude credentials and grants no provider hosts to Bash. Explicit Anthropic host denials still apply. Proxy and provider errors stop the search without an alternate executor or direct-provider retry. The old Keychain bridge is unused by this path. See [web search routing, scope and validation](WEB-SEARCH.md).
 
 `/orchestrate gates` also enters the installed Codex launcher, including when `PI_GATES_BIN` selects an alternative binary. Gate scratch and Prek caches remain in private `TMPDIR`; a failed launch never falls back to host execution. See [gate prerequisites](../INSTALLATION.md#gates-gatespi-prek-gatespi-orchestrategatespy).
 
@@ -190,24 +190,49 @@ Local operations offer **Refuser**, **Autoriser cette fois**, **Autoriser pour c
 | `stage` | `paths` | 1–1000 explicit repository-relative regular files or tracked deletions; literal paths, never directories, wildcard expansion or all files |
 | `commit` | `paths`, `message` | Commit the existing index only when its complete path list matches the supplied list; does not stage other files or finish an in-progress merge, rebase or cherry-pick |
 | `push` | `remote`, `branch`, optional `source_branch`, `private_network` | Publish HEAD or the named local branch's reviewed commit ID to one configured HTTPS destination and branch; fresh exact consent every time |
+| `fetch` | `remote`, `branch`, optional `private_network` | Retrieve one HTTPS branch into its remote-tracking ref; no tags, prune, recursion or worktree changes; fresh automatic task review |
+| `fast_forward` | `remote`, `branch` | Integrate the already fetched immutable commit offline using `--ff-only --no-autostash`; fresh automatic task review |
 
 All operations accept optional `repository`, the exact canonical worktree root.
 The worker selects that repository inside the original session's sandbox; neither
-inspection nor approval widens the writable workspace. To create a separate
+inspection nor approval widens the writable workspace. During an approved
+`fast_forward`, a sibling repository also receives a temporary worktree write root;
+its real Git metadata, `.agents`, `.codex` and `.pi` remain read-only in the worker.
+The grant ends with that worker. An ancestor of the current cwd cannot receive
+this additional root; open its repository root as the workspace instead. To create a separate
 repository with an empty main and populated develop, use the parent-only
 `git_repository_init` capability and [initialization workflow](GIT-INITIALIZATION.md).
 Initialization requires its own exact one-time consent; it does not inherit local
 Git grants or run in subagents.
 
+For an authorized update, call `fetch`, inspect the fetched diff and existing local
+changes, then call `fast_forward`. Each step receives a new tool-free task review
+without a dialog or saved grant. Explicit manual policies, refusals and unavailable
+reviewers still stop execution. Fetch uses the fetch URL, not a configured push URL;
+its explicit refspec and empty refmap exclude other configured refspecs. The only
+published metadata is `FETCH_HEAD` and the named remote-tracking ref/log, plus
+validated new loose objects. It does not update the local branch, index or files.
+A remote-tracking ref may follow rewritten remote history; integration still
+requires the local HEAD to be an ancestor of the fetched commit.
+
+Fast-forward binds the target commit, local HEAD/index/configuration and a digest
+of tracked dirty contents and status. It preserves compatible local changes and
+lets Git refuse overlapping changes. Changed submodule pointers are refused;
+existing dirty submodules are never updated recursively. Divergence requires a
+separate deliberate resolution, not an automatic stash, merge commit, rebase or
+reset. Its hooks run offline under the same confinement. Worktree effects can
+remain if later metadata publication fails: inspect both worktree and refs before
+any further action; there is no automatic rollback or retry.
+
 Push cannot use saved local consent. The review includes the resolved destination and immutable commit ID. Force, mirror, tags, custom VCS helpers, configured push options, SSH/local transports, embedded URL credentials and upstream-configuration changes are excluded. Approval includes proxy access to exactly the remote's DNS name for that operation; it does not need or save a separate session grant. Baseline and session hosts are excluded from this worker's network profile. Explicit `network-policy.json` denies are checked before approval, again before execution, and by the launcher. Existing credentials must work inside the jail; there is no authentication or host-execution fallback.
 
 On Linux, for a remote confirmed to resolve to private addresses, supply `private_network: true`. This capability receives fresh tool-free LLM review against the user task, including without UI, with no dialog, saved grant or automatic retry. A saved manual policy disables it; refusal, uncertainty, cancellation and unavailable review stop execution. Ordinary pushes retain their existing consent policy and block private destinations.
 
-On macOS, `private_network: true` fails with `PRIVATE_GIT_NETWORK_UNAVAILABLE` before the worker executes. Native validation found that Codex's `allow_local_binding` also permits direct host-loopback traffic and DNS outside the proxy filter. A domain allowlist alone cannot confine that capability, and macOS refuses a nested Seatbelt policy. Public Git pushes retain their confined proxy route. Private Git requires Linux network isolation until a separately qualified macOS backend exists.
+On macOS, `private_network: true` fails with `PRIVATE_GIT_NETWORK_UNAVAILABLE` before the worker executes. Native validation found that Codex's `allow_local_binding` also permits direct host-loopback traffic and DNS outside the proxy filter. A domain allowlist alone cannot confine that capability, and macOS refuses a nested Seatbelt policy. Public Git pushes and fetches retain their confined proxy route. Private Git requires Linux network isolation until a separately qualified macOS backend exists.
 
-The Linux private exception uses Codex's native `allow_local_binding` only in a profile whose domain allowlist contains the single reviewed remote name. It authorizes that DNS name, including its private/local resolutions, not pinned IP addresses. The native domain policy permits all ports and HTTP paths on that name to the Git worker and its hooks; this scope is stated in the review. Other names, IP literals, direct host connections, upstream proxies, SOCKS and host Unix sockets remain blocked. This is not a general private-network grant or an option for arbitrary Bash. The launcher accepts only the fixed Git worker with operation-specific metadata roots, and the worker binds the network scope to the reviewed push.
+The Linux private exception uses Codex's native `allow_local_binding` only in a profile whose domain allowlist contains the single reviewed remote name. It authorizes that DNS name, including its private/local resolutions, not pinned IP addresses. The native domain policy permits all ports and HTTP paths on that name to the Git worker and its hooks; this scope is stated in the review. Other names, IP literals, direct host connections, upstream proxies, SOCKS and host Unix sockets remain blocked. This is not a general private-network grant or an option for arbitrary Bash. The launcher accepts only the fixed Git worker with operation-specific metadata roots, and the worker binds the network scope to the reviewed push or fetch.
 
-`CONNECT tunnel failed, response 403` means the proxy refused the HTTPS tunnel; it does not establish an authentication failure at the Git server. Check DNS and proxy policy before changing capabilities. A permitted public-looking name resolving to an RFC1918 address can still be denied by the ordinary profile. In that case another public-host grant cannot help: use the scoped private push after inspecting partial effects. The worker reports a sanitized `GIT_PROXY_CONNECT_DENIED` diagnostic without returning raw helper output or credentials.
+`CONNECT tunnel failed, response 403` means the proxy refused the HTTPS tunnel; it does not establish an authentication failure at the Git server. Check DNS and proxy policy before changing capabilities. A permitted public-looking name resolving to an RFC1918 address can still be denied by the ordinary profile. In that case another public-host grant cannot help: use the scoped private transfer after inspecting partial effects. The worker reports a sanitized `GIT_PROXY_CONNECT_DENIED` diagnostic without returning raw helper output or credentials.
 
 Git must support `git hook run --to-stdin` (verified with the installed Git); an unsupported version fails without bypassing hooks. The fixed worker runs in Codex with operation-specific Git data paths (index/lock, objects, local refs and logs as needed), not writable Git config/hooks, the whole `.git` directory, or a general shell grant. Ordinary Bash remains unchanged. Hooks, filters, signing and checks remain enabled and confined. Automatic maintenance and the filesystem-monitor helper are disabled for this bounded operation, not in repository configuration. A hook requiring unavailable writes or services fails rather than being bypassed. Execution is bounded to five minutes; helpers' raw diagnostics are withheld because they may contain secrets.
 
@@ -246,6 +271,27 @@ Before a new authorized modification task, the agent's instructions call for
 another requested risky phase can take a new one. Read-only audits do not initialize
 or snapshot repositories. These are agent instructions, not an automatic hook that
 can infer user intent or guarantee the model calls a tool before every edit.
+
+When the session starts in a directory containing several repositories, select
+each existing main Git repository explicitly:
+
+```json
+{"repository": "/absolute/workspace/project", "reason": "before the requested changes"}
+```
+
+The optional `repository` must be the exact canonical absolute root, without
+symlinks or traversal. Subdirectories, linked worktrees and non-repository targets
+are refused. Inspection keeps the original session sandbox; only snapshotting
+uses a disposable working directory. Consent, identity checks and publication
+remain scoped to the selected repository. `/jj-checkpoint permissions <repository>`
+revokes its consent. Omitting `repository` retains current-project discovery and
+initialization; do not initialize an umbrella directory to work on its children.
+
+From an umbrella workspace, the shell launcher discovers the first Git/jj roots
+below it and protects their existing metadata from ordinary writes. Discovery
+stops at each repository root and never follows directory links. Its directory,
+depth and profile-size limits fail explicitly; open a specific repository if
+the workspace exceeds them. Empty sandbox metadata placeholders do not stop discovery.
 
 The parent-only capability initializes an ordinary colocated jj workspace once,
 creating a Git repository first if the directory is not versioned. Subsequent calls
@@ -404,7 +450,7 @@ For a different persistent baseline, create the user-owned `<agent-dir>/network-
 
 Only exact public DNS names are accepted, not URLs, ports, wildcards or IP literals. An explicit deny cannot be approved. Missing policy uses the defaults; malformed or symlinked policy fails closed. `{"allow":[]}` starts offline, with optional explicit host requests through the reviewed capabilities. Project policy files are ignored.
 
-The agent sees the current allowed hosts. Prefer `request_network_access` with `command`, `hosts` and `reason`: the exact command is reviewed against the user task and runs once with only those destinations and no saved grant, including without UI after automatic approval. An uncertain review opens a one-time human validation in an interactive parent unless `auto-deny` is configured. Manual policy asks directly. The full command and scope are displayed before approval, and cancellation, expiry, session changes, new user instructions and host denials are checked again before execution. Explicit policies take precedence. See [private IPC and network preparation](PRIVATE-IPC.md).
+The agent sees the current allowed hosts. Prefer `request_network_access` with `command`, `hosts` and `reason`: the exact command is reviewed against the user task and runs once with only those destinations and no saved grant, including without UI after automatic approval. An uncertain or unavailable review refuses execution without a human dialog, even in an interactive parent with an `auto` policy. A saved manual policy disables this capability. The reviewer sees the full command and scope; cancellation, expiry, session changes, new user instructions and host denials are checked again before execution. Explicit policies take precedence. See [private IPC and network preparation](PRIVATE-IPC.md).
 
 Omitting `command` retains the legacy human-approved session behavior described below. Already permitted hosts do not prompt. One affirmative human answer authorizes the new hosts for subsequent commands in the current workspace/Pi session. Duplicate requests share that grant; a refusal is not repeatedly prompted. Cancellation, session replacement, a new explicit deny or absent UI cannot become permission. Headless automation can use the baseline or one-command automatic review; it cannot create legacy session grants. Grants live in private host-owned `<agent-dir>/network-grants/*.json` files and are removed on session shutdown/reload; a crash can leave inert files, which are never auto-loaded by a new Pi session.
 
@@ -437,6 +483,8 @@ Tests exercise project/temp writes, outside writes including symlinks and child 
 ## Automatic Graphify scope
 
 Startup and `/reload` index the closest Git/jj worktree automatically, without a root-selection dialog. Outside a repository, automatic indexing is skipped; `/graphify` can explicitly select a child repository.
+
+Concurrent sessions wait for the same worktree's SQLite transaction lock, with cancellation and a bounded wait. The OS releases the lock if its worker dies; the `index.sqlite` file must remain in place. Extraction runs in a unique staging directory, and only a completed graph replaces the published cache. An old `index.lock` directory is a legacy marker, not proof of a live indexer: verify that old workers have stopped before removing it once during migration. New workers never create or automatically steal that marker. See [SQLite locking](https://www.sqlite.org/lockingv3.html).
 
 The default graph excludes nested repositories, internal worktrees (`.worktrees/` and hidden-directory `worktrees/`), metadata, symlinks and any subtree the bounded scope scan could not inspect. These exclusions are passed to the extractor, not just hidden from the selection menu. Partial coverage is reported in the graph summary and cached metadata. Each worktree retains its own external cache; a refresh narrows previously broader graphs too.
 

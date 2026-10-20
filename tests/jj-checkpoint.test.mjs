@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpointReason, checkpointRoot, inspectCheckpoint, createCheckpointTransaction, runCheckpoint, publishCheckpoint, closeCheckpointTransaction } from "../lib/jj-checkpoint.ts";
@@ -37,6 +37,10 @@ function metadataFiles(root) {
 
 test("checkpoint input cannot request restore, paths, arbitrary commands or control characters", () => {
   assert.equal(checkpointReason({ reason: "before edits" }), "before edits");
+  assert.equal(checkpointReason({ reason: "before edits", repository: "/workspace/project" }), "before edits");
+  for (const repository of ["", "relative", "/workspace/../project", "/workspace/project/", "/workspace/\nproject", 42, null]) {
+    assert.throws(() => checkpointReason({ reason: "before edits", repository }));
+  }
   for (const input of [{ reason: "" }, { reason: "bad\nreason" }, { reason: "test", command: "restore" }, { reason: "test", root: "/" }]) assert.throws(() => checkpointReason(input));
 });
 
@@ -273,6 +277,27 @@ test("files omitted by jj size or auto-track settings never produce a successful
   writeFileSync(process.env.JJ_CONFIG, '[user]\nname = "Fixture"\nemail = "fixture@example.com"\n[snapshot]\nauto-track = "none()"\n');
   writeFileSync(join(f.cwd, "new"), "must not be omitted\n");
   next = await f.prepare(); assert.throws(() => publishCheckpoint(next.tx, next.result), /did not capture/);
+});
+
+test("workspace-store format marker is supported without admitting other backends or metadata", async t => {
+  const f = fixture(t); if (!f) return;
+  writeFileSync(join(f.cwd, "file"), "recoverable");
+  const { tx, result } = await f.prepare();
+  const marker = join(tx.stage, ".jj/repo/workspace_store/type");
+  mkdirSync(join(tx.stage, ".jj/repo/workspace_store"), { recursive: true });
+  writeFileSync(marker, "unreviewed_backend");
+  assert.throws(() => publishCheckpoint(tx, result), /unapproved jj workspace store/);
+  writeFileSync(marker, "simple_workspace_store"); chmodSync(marker, 0o700);
+  assert.throws(() => publishCheckpoint(tx, result), /unapproved jj metadata/);
+  chmodSync(marker, 0o600);
+  const unknown = join(tx.stage, ".jj/repo/workspace_store/helper");
+  writeFileSync(unknown, "unreviewed");
+  assert.throws(() => publishCheckpoint(tx, result), /unapproved jj metadata/);
+  assert.equal(existsSync(join(f.cwd, ".jj")), false, "refused metadata is never published");
+  rmSync(unknown);
+  const checkpoint = publishCheckpoint(tx, result);
+  assert.equal(readFileSync(join(f.cwd, ".jj/repo/workspace_store/type"), "utf8"), "simple_workspace_store");
+  assert.equal(f.jj("--ignore-working-copy", "file", "show", "-r", checkpoint.commitId, "file"), "recoverable");
 });
 
 test("publication rejects changed sources, worker config changes, forged objects and redirected metadata", { timeout: 20000 }, async t => {

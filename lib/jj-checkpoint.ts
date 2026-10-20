@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { inflateSync } from "node:zlib";
 import { runProcess } from "./process.ts";
 
@@ -17,10 +17,26 @@ export interface CheckpointInspection { root: string; identity: string; initiali
 export interface CheckpointResult { root: string; operationId: string; commitId: string; initialized: boolean; tree: string }
 
 export function checkpointReason(input: unknown): string {
-  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => key !== "reason")) throw new Error("Expected only a checkpoint reason");
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["reason", "repository"].includes(key))) throw new Error("Expected a checkpoint reason and optional repository");
   const reason = (input as { reason?: unknown }).reason;
   if (typeof reason !== "string" || !reason.trim() || reason.length > 300 || controls.test(reason)) throw new Error("Expected a short checkpoint reason without control characters");
+  const repository = (input as { repository?: unknown }).repository;
+  if (repository !== undefined) checkpointRepositoryPath(repository);
   return reason;
+}
+
+function checkpointRepositoryPath(value: unknown): string {
+  if (typeof value !== "string" || !isAbsolute(value) || resolve(value) !== value || value.length > 1024 || controls.test(value)) throw new Error("Checkpoint requires a canonical absolute repository path without control characters");
+  return value;
+}
+
+/** A named target selects one existing main repository, never an umbrella folder. */
+export function checkpointRepository(cwd: string, repository?: unknown): string {
+  if (repository === undefined) return realpathSync(cwd);
+  const path = checkpointRepositoryPath(repository);
+  if (realpathSync(path) !== path || !lstatSync(path).isDirectory()) throw new Error("Checkpoint repository path must be canonical without links");
+  if (checkpointRoot(path) !== path || absent(join(path, ".git")) || readdirSync(join(path, ".git")).length === 0) throw new Error("Checkpoint requires the exact existing main repository root");
+  return path;
 }
 
 export function checkpointRoot(cwd: string): string {
@@ -151,7 +167,12 @@ function commandEnv() {
 }
 const git = async (cwd: string, args: string[], signal?: AbortSignal) => {
   const chunks: Buffer[] = [];
-  await runProcess("/usr/bin/git", ["--no-pager", "--no-lazy-fetch", "-c", "core.fsmonitor=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], { cwd, signal, env: commandEnv(), timeoutMs: 60000, maxBytes: 4 * 1024 * 1024, onStdout: chunk => chunks.push(chunk) });
+  try {
+    await runProcess("/usr/bin/git", ["--no-pager", "--no-lazy-fetch", "-c", "core.fsmonitor=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], { cwd, signal, env: commandEnv(), timeoutMs: 60000, maxBytes: 4 * 1024 * 1024, onStdout: chunk => chunks.push(chunk) });
+  } catch (error) {
+    if (error instanceof Error && /not a git repository/i.test(error.message)) throw new Error("Checkpoint target is not a git repository; select its existing main root with repository, or check the selected .git directory. No host retry.");
+    throw error;
+  }
   const output = Buffer.concat(chunks).toString("utf8");
   return args.includes("-z") ? output : output.trim();
 };
@@ -279,7 +300,7 @@ export async function runCheckpoint(stage: string, binary: string, signal?: Abor
 
 function validateJj(tree: Tree, before: Tree) {
   const hex = "[a-f0-9]{128}";
-  const allowed = new RegExp(`^(?:\\.gitignore|working_copy/(?:checkout|tree_state|type)|repo/(?:workspace_store/index|(?:index|op_heads|op_store|store|submodule_store)/type|store/git_target|index/(?:op_links|segments)/${hex}|op_heads/heads/${hex}|op_store/(?:operations|views)/${hex}|store/extra/(?:heads/)?${hex}))$`);
+  const allowed = new RegExp(`^(?:\\.gitignore|working_copy/(?:checkout|tree_state|type)|repo/(?:workspace_store/(?:index|type)|(?:index|op_heads|op_store|store|submodule_store)/type|store/git_target|index/(?:op_links|segments)/${hex}|op_heads/heads/${hex}|op_store/(?:operations|views)/${hex}|store/extra/(?:heads/)?${hex}))$`);
   for (const [path, entry] of tree) {
     if (before.get(path)?.hash === entry.hash && before.get(path)?.mode === entry.mode) continue;
     // Copied repositories receive private config IDs. Never publish pointers to
@@ -293,6 +314,9 @@ function validateJj(tree: Tree, before: Tree) {
     // Init may write a convenience trunk alias. It is unnecessary for recovery;
     // publishing executable/configuration input is outside this capability.
     if (path === "repo/config.toml" && !before.has(path)) { tree.delete(path); continue; }
+    // jj 0.46 records its workspace-store backend explicitly. Admit only the
+    // built-in format marker, never an arbitrary backend or executable file.
+    if (path === "repo/workspace_store/type" && entry.data.toString() !== "simple_workspace_store") throw new Error("Checkpoint produced an unapproved jj workspace store");
     if (!allowed.test(path) || (entry.mode & 0o111)) throw new Error("Checkpoint produced unapproved jj metadata");
     if (before.has(path) && !/^(?:working_copy\/(?:checkout|tree_state)|repo\/workspace_store\/index|repo\/index\/op_links\/[a-f0-9]{128})$/.test(path)) throw new Error("Checkpoint rewrote immutable jj metadata");
   }

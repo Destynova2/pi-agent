@@ -83,7 +83,7 @@ function broker(t, f, state = {}) {
     const data = JSON.parse(options.input);
     if (data.action === "inspect") return JSON.stringify({ result: { ...snapshot, stamp: state.stamp ?? "same" } });
     assert.equal(options.env.PI_CODING_AGENT_DIR, f.agent);
-    if (data.request.operation === "push") {
+    if (["push", "fetch"].includes(data.request.operation)) {
       assert.equal(args[0], "--git-network");
       assert.deepEqual(JSON.parse(args[1]), { host: new URL(snapshot.remoteUrl).hostname, privateNetwork: data.request.private_network === true });
       assert.equal(args[2], "--write-roots");
@@ -257,4 +257,109 @@ test("custom hook paths preserve message hooks, post hooks and reference-transac
   await f.run({ operation: "commit", paths: ["file"], message: "fix: hooks" });
   assert.match(f.git("show", "-s", "--format=%B"), /validated/); assert.match(readFileSync(join(f.cwd, "order"), "utf8"), /prepared:message\nmessage\npost\n$/);
   assert.match(readFileSync(join(f.cwd, "index-proof"), "utf8"), /index/);
+});
+
+
+test("fetch selects only one branch and the fetch URL, ignoring push URL, refmaps, tags and recursion", async t => {
+  const f = fixture(t);
+  f.git("remote", "add", "origin", "https://fetch.example.com/repo.git");
+  f.git("config", "remote.origin.pushurl", "https://push.example.com/repo.git");
+  f.git("config", "remote.origin.fetch", "+refs/*:refs/*");
+  const request = f.request({ operation: "fetch", remote: "origin", branch: "feature/test" });
+  const snapshot = await inspectGit(f.cwd, request);
+  assert.equal(snapshot.remoteUrl, "https://fetch.example.com/repo.git");
+  assert.equal(snapshot.head, "");
+  const args = gitOperationArgs(request, snapshot);
+  for (const arg of ["--no-tags", "--no-prune", "--no-prune-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--refmap="]) assert.ok(args.includes(arg));
+  assert.deepEqual(args.slice(-3), ["--", "origin", "refs/heads/feature/test:refs/remotes/origin/feature/test"]);
+  assert.ok(gitWritePaths(snapshot, request).every(path => !path.endsWith("HEAD") || path.endsWith("FETCH_HEAD")));
+  assert.throws(() => f.request({ operation: "fetch", remote: "origin", branch: "main", source_branch: "other" }));
+  assert.throws(() => f.request({ operation: "fast_forward", remote: "origin", branch: "main", private_network: true }));
+});
+
+function fetchedFixture(f) {
+  writeFileSync(join(f.cwd, "file"), "one\n"); writeFileSync(join(f.cwd, "local"), "keep\n");
+  f.git("add", "file", "local"); f.git("commit", "-m", "initial");
+  const original = f.git("rev-parse", "HEAD");
+  f.git("switch", "-c", "upstream"); writeFileSync(join(f.cwd, "file"), "two\n");
+  f.git("commit", "-am", "remote update");
+  const target = f.git("rev-parse", "HEAD"); f.git("update-ref", "refs/remotes/origin/main", target); f.git("switch", "main");
+  return { original, target, request: f.request({ operation: "fast_forward", remote: "origin", branch: "main" }) };
+}
+
+test("fast-forward integrates the pinned fetched commit offline, preserves unrelated dirt and honors hooks", async t => {
+  const f = fixture(t), { target, request } = fetchedFixture(f);
+  writeFileSync(join(f.cwd, "local"), "user changes\n"); writeFileSync(join(f.cwd, "untracked"), "preserve\n");
+  writeFileSync(join(f.cwd, ".git/hooks/post-merge"), "#!/bin/sh\nprintf ran > merge-hook\n", { mode: 0o755 });
+  const snapshot = await inspectGit(f.cwd, request);
+  assert.equal(snapshot.targetHead, target);
+  assert.deepEqual(gitOperationArgs(request, snapshot), ["-c", "submodule.recurse=false", "merge", "--ff-only", "--no-autostash", "--no-edit", "--", target]);
+  await performGit(f.cwd, request, snapshot);
+  assert.equal(f.git("rev-parse", "HEAD"), target);
+  assert.equal(readFileSync(join(f.cwd, "file"), "utf8"), "two\n");
+  assert.equal(readFileSync(join(f.cwd, "local"), "utf8"), "user changes\n");
+  assert.equal(readFileSync(join(f.cwd, "untracked"), "utf8"), "preserve\n");
+  assert.equal(readFileSync(join(f.cwd, "merge-hook"), "utf8"), "ran");
+  assert.equal(f.git("stash", "list"), "");
+});
+
+test("fast-forward rejects divergence, stale dirty contents, moving targets and overlapping changes without stashing", async t => {
+  for (const kind of ["diverged", "dirty-changed", "target-changed", "overlap", "pending"]) {
+    const f = fixture(t), { original, request } = fetchedFixture(f);
+    writeFileSync(join(f.cwd, "local"), "user edits\n");
+    if (kind === "diverged") {
+      f.git("commit", "-am", "local commit");
+      await assert.rejects(inspectGit(f.cwd, request), /ancestor/); continue;
+    }
+    if (kind === "overlap") writeFileSync(join(f.cwd, "file"), "local conflict\n");
+    const snapshot = await inspectGit(f.cwd, request);
+    if (kind === "dirty-changed") writeFileSync(join(f.cwd, "local"), "new user edits\n");
+    if (kind === "target-changed") f.git("update-ref", "refs/remotes/origin/main", original);
+    if (kind === "pending") writeFileSync(join(f.cwd, ".git/MERGE_HEAD"), original);
+    await assert.rejects(performGit(f.cwd, request, snapshot), kind === "overlap" ? /overwritten/ : kind === "pending" ? /unfinished/ : /state changed/);
+    assert.equal(f.git("rev-parse", "HEAD"), original);
+    assert.equal(f.git("stash", "list"), "");
+    if (kind === "overlap") assert.equal(readFileSync(join(f.cwd, "file"), "utf8"), "local conflict\n");
+  }
+});
+
+test("fetch and integration receive fresh task review without a dialog, even with remembered local consent", async t => {
+  const f = fixture(t), b = broker(t, f);
+  await b.request({ operation: "branch", branch: "fixture" });
+  b.ctx.hasUI = false;
+  b.ctx.model = { provider: "fixture", id: "reviewer" };
+  b.ctx.sessionManager = { getBranch: () => [{ type: "message", message: { role: "user", content: "Update the current repository from origin/main while preserving local changes" } }], getSessionId: () => "test", getSessionFile: () => undefined };
+  let reviews = 0;
+  b.ctx.modelRegistry = { find: () => b.ctx.model, streamSimple: (_model, context) => {
+    reviews++; assert.equal(context.tools, undefined);
+    return { result: async () => ({ stopReason: "stop", content: [{ type: "text", text: '{"decision":"allow","category":"within_scope"}' }] }) };
+  } };
+  await b.request({ operation: "fetch", remote: "origin", branch: "main" });
+  await b.request({ operation: "fetch", remote: "origin", branch: "main" });
+  await b.request({ operation: "fast_forward", remote: "origin", branch: "main" });
+  assert.equal(reviews, 3); assert.equal(b.prompts, 1); assert.equal(b.dispatches, 4);
+  assert.equal(existsSync(join(f.agent, "network-grants")), false);
+});
+
+
+test("fast-forward refuses changed submodule pointers and leaves the worktree untouched", async t => {
+  const f = fixture(t), { original, request } = fetchedFixture(f);
+  f.git("switch", "upstream");
+  f.git("update-index", "--add", "--cacheinfo", `160000,${original},vendor`);
+  f.git("commit", "-m", "submodule pointer");
+  f.git("update-ref", "refs/remotes/origin/main", f.git("rev-parse", "HEAD"));
+  f.git("switch", "main");
+  f.git("config", "diff.ignoreSubmodules", "all");
+  await assert.rejects(inspectGit(f.cwd, request), /changes a submodule pointer/);
+  assert.equal(f.git("rev-parse", "HEAD"), original);
+  assert.equal(readFileSync(join(f.cwd, "file"), "utf8"), "one\n");
+});
+
+test("an explicit network deny prevents fetch before either review or execution", async t => {
+  const f = fixture(t), b = broker(t, f);
+  writeFileSync(join(f.agent, "network-policy.json"), '{"allow":[],"deny":["github.com"]}');
+  for (const private_network of [false, true]) {
+    await assert.rejects(b.request({ operation: "fetch", remote: "origin", branch: "main", private_network }), /NETWORK_DENIED/);
+  }
+  assert.equal(b.dispatches, 0); assert.equal(b.prompts, 0);
 });

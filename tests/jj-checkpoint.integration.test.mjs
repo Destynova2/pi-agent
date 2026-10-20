@@ -8,9 +8,10 @@ import { registerJjCheckpoint } from "../extensions/tool-policy/jj-checkpoint.ts
 import { runProcess } from "../lib/process.ts";
 import { sandboxBackend } from "../scripts/codex-shell.mjs";
 
-for (const initializedGit of [true, false]) test(`native checkpoint preserves linked worktrees without granting ordinary Bash Git access (initialized Git: ${initializedGit})`, { timeout: 60000 }, async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "jj-checkpoint-jail-"))), agent = join(root, "agent"), cwd = join(root, "repo"), home = join(root, "home");
-  for (const path of [agent, cwd, home]) mkdirSync(path);
+for (const [initializedGit, namedTarget] of [[true, false], [false, false], [true, true]]) test(`native checkpoint preserves linked worktrees without granting ordinary Bash Git access (initialized Git: ${initializedGit}, named target: ${namedTarget})`, { timeout: 60000 }, async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "jj-checkpoint-jail-"))), agent = join(root, "agent"), workspace = join(root, "workspace"), cwd = join(workspace, "repo"), home = join(root, "home");
+  const sessionCwd = namedTarget ? workspace : cwd;
+  for (const path of [agent, workspace, cwd, home]) mkdirSync(path);
   const keys = ["HOME", "PI_CODING_AGENT_DIR", "PI_CODEX_SANDBOX_BIN", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "JJ_CONFIG", "XDG_CONFIG_HOME"];
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]])), backend = realpathSync(sandboxBackend());
   Object.assign(process.env, { HOME: home, PI_CODING_AGENT_DIR: agent, PI_CODEX_SANDBOX_BIN: backend, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", XDG_CONFIG_HOME: join(agent, "host-config") });
@@ -55,9 +56,13 @@ for (const initializedGit of [true, false]) test(`native checkpoint preserves li
     // Fail on a missing host sandbox before checking an expected Git denial.
     await runProcess(launcher, ["--offline", "-c", "true"], { cwd, timeoutMs: 15000 });
     await assert.rejects(runProcess(launcher, ["--offline", "-c", 'mkdir "$XDG_CONFIG_HOME/jj/repos"'], { cwd, timeoutMs: 15000 }), /denied|not permitted|read-only/i);
-    const ordinary = () => runProcess(launcher, ["--offline", "-c", "/usr/bin/git add -- file"], { cwd, timeoutMs: 15000 });
+    const ordinary = () => runProcess(launcher, ["--offline", "-c", `/usr/bin/git -C '${cwd}' add -- file`], { cwd: sessionCwd, timeoutMs: 15000 });
     if (initializedGit) await assert.rejects(ordinary(), /denied|not permitted|read-only/i);
     registerJjCheckpoint({ on: (name, handler) => handlers.set(name, handler), registerCommand() {}, registerTool: value => { tool = value; }, getActiveTools: () => ["jj_checkpoint"] }, agent, () => {}, async (program, args, options) => {
+      if (JSON.parse(options.input).action === "inspect") {
+        assert.equal(options.cwd, sessionCwd);
+        assert.equal(JSON.parse(options.input).repository, namedTarget ? cwd : undefined);
+      }
       if (initializedGit && JSON.parse(options.input).action === "snapshot") {
         const reads = JSON.parse(args[args.indexOf("--read-roots") + 1]);
         assert.ok(reads.includes(join(cwd, ".git/objects")));
@@ -66,11 +71,12 @@ for (const initializedGit of [true, false]) test(`native checkpoint preserves li
       }
       return runProcess(program, args, options);
     });
-    const ctx = { cwd, hasUI: true, ui: { select: async (_title, choices) => choices[1], notify() {} } };
-    const first = JSON.parse((await tool.execute("test", { reason: "isolated fixture" }, undefined, undefined, ctx)).content[0].text);
+    const ctx = { cwd: sessionCwd, hasUI: true, ui: { select: async (_title, choices) => choices[1], notify() {} } };
+    const target = namedTarget ? { repository: cwd } : {};
+    const first = JSON.parse((await tool.execute("test", { reason: "isolated fixture", ...target }, undefined, undefined, ctx)).content[0].text);
     assert.equal(first.initialized, true); assert.match(first.commitId, /^[a-f0-9]{40,64}$/);
     writeFileSync(join(cwd, "file"), "next\n");
-    const second = JSON.parse((await tool.execute("test", { reason: "next task" }, undefined, undefined, ctx)).content[0].text);
+    const second = JSON.parse((await tool.execute("test", { reason: "next task", ...target }, undefined, undefined, ctx)).content[0].text);
     assert.equal(second.initialized, false); assert.notEqual(second.operationId, first.operationId);
     if (config) assert.deepEqual(readFileSync(join(cwd, ".git/config")), config);
     if (index) assert.deepEqual(readFileSync(join(cwd, ".git/index")), index);

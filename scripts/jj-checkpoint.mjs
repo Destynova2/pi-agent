@@ -1,5 +1,5 @@
 // Fixed worker; the installed parent broker is the only capability entry point.
-import { inspectCheckpoint, runCheckpoint } from "../lib/jj-checkpoint.ts";
+import { checkpointRepository, inspectCheckpoint, runCheckpoint } from "../lib/jj-checkpoint.ts";
 let input = "";
 const controller = new AbortController(), cancel = () => controller.abort();
 process.once("SIGTERM", cancel); process.once("SIGINT", cancel);
@@ -11,7 +11,8 @@ try {
   }
   const data = JSON.parse(input);
   if (typeof data.binary !== "string" || !data.binary.startsWith("/")) throw new Error("Expected the approved jj executable");
-  const result = data.action === "inspect" ? await inspectCheckpoint(process.cwd(), data.binary, controller.signal)
+  if (data.action !== "inspect" && data.repository !== undefined) throw new Error("Checkpoint snapshot cannot override its disposable workspace");
+  const result = data.action === "inspect" ? await inspectCheckpoint(checkpointRepository(process.cwd(), data.repository), data.binary, controller.signal)
     : data.action === "snapshot" ? await runCheckpoint(process.cwd(), data.binary, controller.signal)
     : (() => { throw new Error("Unknown checkpoint action"); })();
   process.stdout.write(JSON.stringify({ result }));

@@ -1,7 +1,7 @@
 import { hasAutomaticReview } from "../../lib/approval-review.ts";
 import { runtimeRoot } from "../../lib/runtime-paths.mjs";
 import { realpathSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { Type } from "typebox";
 import { getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { approvalDialog } from "../../lib/approval-dialog.ts";
@@ -13,6 +13,7 @@ import { commandWritableRoots } from "../../scripts/codex-shell.mjs";
 import { normalizeHost, readNetworkPolicy } from "../../scripts/codex-network.mjs";
 import { gitRepositoryRoot, gitWritePaths, validateGitRequest, type GitSnapshot } from "./git-access-core.ts";
 
+const inside = (root: string, path: string) => { const rel = relative(root, path); return !isAbsolute(rel) && rel !== ".." && !rel.startsWith("../"); };
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
@@ -45,25 +46,30 @@ export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (c
   });
   pi.registerTool({
     name: "git_access", label: "Git operation with scoped consent", executionMode: "sequential", exposure: "model-only",
-    description: "Git-only approved operations inside Codex. Optional repository selects an exact canonical worktree root, including one created by git_repository_init. branch creates and switches to a NEW branch from current HEAD; stage names up to 1000 explicit repository-relative files; commit requires the exact complete staged paths and a message. push names one configured HTTPS remote and destination branch; optional source_branch selects an existing local branch instead of HEAD, resolved to a reviewed immutable commit. Each push gets proxy access only to its remote DNS name, without a session grant. On Linux, for confirmed private DNS destinations, private_network=true uses fresh no-dialog LLM task review; explicit manual policies and network denies remain binding. Local branch/stage/commit consent is repository-scoped; each push needs fresh approval for its exact destination and commit. No force, amend, reset, clean, arbitrary arguments or upstream-config change. Hooks and signing remain enabled and confined.",
-    promptGuidelines: ["Use git_access directly for authorized Git writes rather than retrying denied Bash or requesting .git access. A project permission is not an instruction to commit or publish: require the user's request for those actions. Inspect ownership, staged changes and project checks first. Supply only explicit files belonging to the requested commit. Do not bypass hooks, use --no-verify, replay through Dunst, or retry blindly after a partial failure. Inspect hook-modified commits before proposing a push. /git-access permissions revokes remembered consent."],
-    parameters: Type.Object({ operation: Type.Union([Type.Literal("branch"), Type.Literal("stage"), Type.Literal("commit"), Type.Literal("push")]), repository: Type.Optional(Type.String()), branch: Type.Optional(Type.String()), source_branch: Type.Optional(Type.String()), private_network: Type.Optional(Type.Boolean({ description: "Linux push only: allow this remote DNS name to resolve to private addresses for this operation. Fresh tool-free task review, no dialog, no saved network grant; explicit manual/deny policies remain binding." })), paths: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: 1000 })), message: Type.Optional(Type.String()), remote: Type.Optional(Type.String()), reason: Type.String() }, { additionalProperties: false }),
+    description: "Scoped Git operations inside Codex. repository selects an exact canonical worktree root, including a sibling. branch creates/switches to a NEW branch; stage selects 1–1000 literal files; commit requires the complete staged path list and message. fetch retrieves one configured HTTPS remote/branch without tags, prune or recursion. fast_forward integrates its fetched immutable tip offline with --ff-only --no-autostash; conflicts, divergence and changed submodule pointers stop it. Updates get fresh automatic task review, never remembered consent. push publishes the reviewed HEAD or optional source_branch to one remote/branch with fresh exact consent. Push/fetch proxy access covers only that remote DNS name; private_network=true permits private resolution on Linux with fresh task review. Explicit manual policies and network denies remain binding. Branch/stage/commit consent is repository-scoped. No force, amend, reset, clean, arbitrary argv or upstream-config changes. Hooks and signing remain enabled and confined.",
+    promptGuidelines: ["Use git_access directly for authorized Git writes rather than retrying denied Bash or requesting .git access. For updates use fetch, inspect the fetched diff and dirty state, then fast_forward with the same remote/branch. repository may select a separate exact root without changing the session cwd. Do not pull, stash, reset or recurse into dirty submodules. Fast-forward failure may leave worktree effects even if metadata publication fails: inspect before any further action. A project permission is not an instruction to commit or publish: require the user's request for those actions. Inspect ownership, staged changes and project checks first. Supply only explicit files belonging to the requested commit. Do not bypass hooks, use --no-verify, replay through Dunst, or retry blindly after a partial failure. Inspect hook-modified commits before proposing a push. /git-access permissions revokes remembered consent."],
+    parameters: Type.Object({ operation: Type.Union([Type.Literal("branch"), Type.Literal("stage"), Type.Literal("commit"), Type.Literal("push"), Type.Literal("fetch"), Type.Literal("fast_forward")]), repository: Type.Optional(Type.String()), branch: Type.Optional(Type.String()), source_branch: Type.Optional(Type.String()), private_network: Type.Optional(Type.Boolean({ description: "Linux push/fetch only: allow this remote DNS name to resolve to private addresses for this operation. Fresh tool-free task review, no dialog, no saved network grant; explicit manual/deny policies remain binding." })), paths: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: 1000 })), message: Type.Optional(Type.String()), remote: Type.Optional(Type.String()), reason: Type.String() }, { additionalProperties: false }),
     async execute(_id, input, signal, _update, ctx) {
-      const request = validateGitRequest(input), cwd = realpathSync(ctx.cwd), workdir = realpathSync(request.repository ?? cwd);
+      const request = validateGitRequest(input), transfer = ["push", "fetch"].includes(request.operation), update = ["fetch", "fast_forward"].includes(request.operation), cwd = realpathSync(ctx.cwd), workdir = realpathSync(request.repository ?? cwd);
       if (request.repository !== undefined && workdir !== request.repository) throw new Error("Repository path must be canonical without links");
       return tasks.run(async owned => {
         const run = async () => {
-          const validate = () => { owned.throwIfAborted(); verify(ctx); if ((!ctx.hasUI && !request.private_network && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("git_access")) throw new Error("Git access requires the interactive parent or a configured automatic parent policy in the same workspace"); };
+          const validate = () => { owned.throwIfAborted(); verify(ctx); if ((!ctx.hasUI && !request.private_network && !update && !hasAutomaticReview(agentDir, ctx)) || process.env.PI_SUBAGENT_CHILD || realpathSync(ctx.cwd) !== cwd || !pi.getActiveTools().includes("git_access")) throw new Error("Git access requires the interactive parent or a configured automatic parent policy in the same workspace"); };
           validate();
           const query = async (action: "inspect" | "execute", expected?: GitSnapshot) => {
             const transaction = expected && process.platform === "linux" ? createGitTransaction(expected, request) : undefined;
             try {
               const paths = transaction ? [transaction.commonDir] : expected ? gitWritePaths(expected, request) : [];
+              // A separate worktree gets one reviewed write root; its metadata and agent files stay read-only.
+              if (expected && request.operation === "fast_forward" && !inside(cwd, expected.root)) paths.push(expected.root);
               const roots = expected ? commandWritableRoots(paths, cwd, agentDir, [getPackageDir()]) : [];
-              const network = expected && request.operation === "push" ? ["--git-network", JSON.stringify({ host: normalizeHost(new URL(expected.remoteUrl!).hostname), privateNetwork: request.private_network === true })] : [];
-              const args = expected ? [...network, "--write-roots", JSON.stringify(roots), ...(transaction ? ["--read-roots", JSON.stringify(transaction.readOnlyRoots)] : []), "-c", command] : ["--offline", "-c", command];
-              // Selecting a repository must never widen the shell's workspace.
-              // The fixed worker selects Git's cwd, within the original jail.
+              const network = expected && transfer ? ["--git-network", JSON.stringify({ host: normalizeHost(new URL(expected.remoteUrl!).hostname), privateNetwork: request.private_network === true })] : [];
+              const readOnly = [...(transaction?.readOnlyRoots ?? []), ...(expected && request.operation === "fast_forward"
+                ? [expected.commonDir, expected.gitDir, ...[".agents", ".codex", ".pi"].map(name => join(expected.root, name))] : [])];
+              const args = expected ? [...network, "--write-roots", JSON.stringify(roots),
+                ...(readOnly.length ? ["--read-roots", JSON.stringify(readOnly)] : []),
+                ...(request.operation === "fast_forward" ? ["--offline"] : []), "-c", command] : ["--offline", "-c", command];
+              // Keep the session cwd. Extra roots apply only to this approved worker.
               const raw = await execute(launcher, args, { cwd, signal: owned, env: { PI_CODING_AGENT_DIR: agentDir }, input: JSON.stringify({ action, request, expected, transaction: transaction?.commonDir }), timeoutMs: action === "execute" ? 300000 : 60000, maxBytes: 1024 * 1024 });
               const output = JSON.parse(raw);
               if (output.error) throw new Error(`${output.error}. ${output.notice ?? ""}`);
@@ -74,11 +80,11 @@ export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (c
           };
           const snapshot: GitSnapshot = await query("inspect");
           const binary = serverIdentity("/usr/bin/git", [], cwd);
-          const roots = commandWritableRoots(gitWritePaths(snapshot, request), cwd, agentDir, [getPackageDir()]);
+          const roots = commandWritableRoots([...gitWritePaths(snapshot, request), ...(request.operation === "fast_forward" && !inside(cwd, snapshot.root) ? [snapshot.root] : [])], cwd, agentDir, [getPackageDir()]);
           const checkNetwork = () => {
-            if (request.operation !== "push") return;
+            if (!transfer) return;
             const host = normalizeHost(new URL(snapshot.remoteUrl!).hostname);
-            if (readNetworkPolicy(agentDir).deny.includes(host)) throw new Error(`NETWORK_DENIED: Git destination explicitly denied by network-policy.json; no push performed`);
+            if (readNetworkPolicy(agentDir).deny.includes(host)) throw new Error(`NETWORK_DENIED: Git destination explicitly denied by network-policy.json; no Git transfer performed`);
           };
           checkNetwork();
           const expires = Date.now() + 300000;
@@ -88,11 +94,11 @@ export function registerGitAccess(pi: ExtensionAPI, agentDir: string, verify: (c
             auditOperation: request.operation, toolCallId: _id,
             // A broader network request must not evade a human refusal of this push.
             // The immutable request and fresh review detail bind the private capability.
-            resource: "git-access", identity: fingerprint([snapshot.identity, binary]), operation: request.operation === "push" ? fingerprint(["push", request.remote, request.branch, snapshot.pushHead ?? snapshot.head, snapshot.remoteUrl]) : "local-branch-stage-commit-v1",
-            remember: request.operation !== "push", interactiveOnly: true, automaticWithoutUI: true,
-            taskOnly: request.private_network === true,
-            title: request.operation === "push" ? "Autoriser ce push uniquement ?" : "Autoriser Git pour ce projet ?",
-            detail: `${request.operation === "push" ? "Publication HTTPS, destination et commit exacts ci-dessous. Jamais mémorisée. Proxy limité au seul nom DNS du remote pour ce processus et ses hooks; tous ses ports sont accessibles, sans filtrage des chemins HTTP. Aucun hôte de la liste générale/session n'est ajouté." : "Session/projet autorise les FUTURES créations de branche, indexations de fichiers et commits de ce dépôt, pas les pushs ni un shell."}\n${request.private_network ? "Le nom DNS peut résoudre vers des adresses privées/locales. Autorisation du nom, pas épinglage des adresses IP; les autres noms, IP littérales, sockets directs et sockets Unix de l'hôte restent bloqués." : "Les destinations privées restent bloquées."}\nHooks et contrôles dans Codex, exécution limitée à 5 min. Aucun droit ajouté à Bash.\n${JSON.stringify({ ...request, repository: snapshot.root, head: snapshot.head, ...(snapshot.remoteUrl ? { destination: snapshot.remoteUrl, commit: snapshot.pushHead ?? snapshot.head } : {}) })}`,
+            resource: "git-access", identity: fingerprint([snapshot.identity, binary]), operation: transfer || update ? fingerprint([request.operation, request.remote, request.branch, snapshot.pushHead ?? snapshot.head, snapshot.remoteUrl, snapshot.targetHead, snapshot.worktreeState]) : "local-branch-stage-commit-v1",
+            remember: !transfer && !update, interactiveOnly: true, automaticWithoutUI: true,
+            taskOnly: update || request.private_network === true,
+            title: request.operation === "fetch" ? "Récupérer cette branche distante ?" : request.operation === "fast_forward" ? "Intégrer ce commit en avance rapide ?" : request.operation === "push" ? "Autoriser ce push uniquement ?" : "Autoriser Git pour ce projet ?",
+            detail: `${request.operation === "fast_forward" ? "Intégration locale du commit exact. Avance rapide seulement, sans autostash ni mise à jour des sous-modules. Écritures dans le dépôt sélectionné et ses métadonnées Git validées; configuration Git, hooks et répertoires .agents/.codex/.pi protégés. État partiel possible en cas d’échec : inspecter sans rejouer." : transfer ? "Transfert HTTPS, opération et destination exactes ci-dessous. Fetch ne modifie ni HEAD, ni l’index, ni les fichiers de travail. Jamais mémorisée. Proxy limité au seul nom DNS du remote pour ce processus et ses hooks; tous ses ports sont accessibles, sans filtrage des chemins HTTP. Aucun hôte de la liste générale/session n'est ajouté." : "Session/projet autorise les FUTURES créations de branche, indexations de fichiers et commits de ce dépôt, pas les pushs ni un shell."}\n${request.private_network ? "Le nom DNS peut résoudre vers des adresses privées/locales. Autorisation du nom, pas épinglage des adresses IP; les autres noms, IP littérales, sockets directs et sockets Unix de l'hôte restent bloqués." : "Les destinations privées restent bloquées."}\nHooks et contrôles dans Codex, exécution limitée à 5 min. Aucun droit ajouté à Bash.\n${JSON.stringify({ ...request, repository: snapshot.root, head: snapshot.head, ...(snapshot.targetHead ? { target_commit: snapshot.targetHead, worktree_state: snapshot.worktreeState } : {}), ...(snapshot.remoteUrl ? { destination: snapshot.remoteUrl, commit: snapshot.pushHead ?? snapshot.head } : {}) })}`,
             revalidate,
           }, owned, ctx);
           ticket();

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGitTransaction, publishGitTransaction, closeGitTransaction } from "../lib/git-transaction.ts";
-import { inspectGit } from "../extensions/tool-policy/git-access-core.ts";
+import { inspectGit, gitOperationArgs } from "../extensions/tool-policy/git-access-core.ts";
 
 async function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "git-transaction-test-"))), cwd = join(root, "project");
@@ -210,3 +210,34 @@ test("incoming objects must still match their Git OID", async t => {
 function readdirObjectPrefix(root) {
   return readdirSync(join(root, "objects")).find(name => /^[a-f0-9]{2}$/.test(name));
 }
+
+
+test("fetch publishes bounded unpacked objects and exactly its tracking ref, preserving HEAD, index and dirty files", async t => {
+  const f = await fixture(t); closeGitTransaction(f.tx);
+  f.git("add", "file"); f.git("commit", "-m", "initial");
+  const original = f.git("rev-parse", "HEAD"), index = readFileSync(join(f.cwd, ".git/index"));
+  f.git("remote", "add", "origin", "https://git.example.com/repo.git");
+  const remote = join(f.root, "remote");
+  execFileSync("/usr/bin/git", ["clone", "--no-hardlinks", f.cwd, remote], { stdio: "pipe" });
+  const remoteGit = (...args) => execFileSync("/usr/bin/git", args, { cwd: remote, encoding: "utf8", stdio: "pipe" }).trim();
+  remoteGit("config", "user.name", "Fixture"); remoteGit("config", "user.email", "fixture@example.com");
+  // More than Git's default unpack limit: this would produce packs without the fixed policy.
+  for (let i = 0; i < 120; i++) writeFileSync(join(remote, `new-${i}`), `object ${i}\n`);
+  remoteGit("add", "."); remoteGit("commit", "-m", "remote update");
+  const tip = remoteGit("rev-parse", "HEAD");
+  writeFileSync(join(f.cwd, "file"), "preserve local edits\n");
+  const request = { operation: "fetch", remote: "origin", branch: "main", reason: "fixture" };
+  const snapshot = await inspectGit(f.cwd, request), tx = createGitTransaction(snapshot, request);
+  t.after(() => closeGitTransaction(tx));
+  // Only the fixture transport is local; production request validation still requires HTTPS.
+  const args = gitOperationArgs(request, snapshot); args[args.length - 2] = remote;
+  execFileSync("/usr/bin/git", ["-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], { cwd: f.cwd, stdio: "pipe", env: { ...process.env, GIT_DIR: tx.gitDir, GIT_COMMON_DIR: tx.commonDir, GIT_WORK_TREE: f.cwd } });
+  assert.equal(f.git("rev-parse", "HEAD"), original);
+  publishGitTransaction(tx);
+  assert.equal(f.git("rev-parse", "refs/remotes/origin/main"), tip);
+  assert.equal(f.git("rev-parse", "HEAD"), original);
+  assert.deepEqual(readFileSync(join(f.cwd, ".git/index")), index);
+  assert.equal(readFileSync(join(f.cwd, "file"), "utf8"), "preserve local edits\n");
+  assert.equal(f.git("show", `${tip}:new-119`), "object 119");
+  f.git("fsck", "--no-reflogs", "--no-dangling");
+});

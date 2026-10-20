@@ -113,7 +113,8 @@ export function publishGitTransaction(tx: GitTransaction) {
   const allowed = new Set(request.operation === "stage" ? [local("index")]
     : request.operation === "commit" ? [local("index"), local("COMMIT_EDITMSG"), local("logs/HEAD"), "refs/heads/" + branch, "logs/refs/heads/" + branch]
     : request.operation === "branch" ? [local("index"), local("HEAD"), local("logs/HEAD"), "refs/heads/" + branch, "logs/refs/heads/" + branch]
-    : ["refs/remotes/" + request.remote + "/" + request.branch, "logs/refs/remotes/" + request.remote + "/" + request.branch]);
+    : request.operation === "fast_forward" ? [local("index"), local("ORIG_HEAD"), local("logs/HEAD"), "refs/heads/" + branch, "logs/refs/heads/" + branch]
+    : [...(request.operation === "fetch" ? [local("FETCH_HEAD")] : []), "refs/remotes/" + request.remote + "/" + request.branch, "logs/refs/remotes/" + request.remote + "/" + request.branch]);
   const changed: string[] = [];
   for (const path of new Set([...tx.before.keys(), ...after.keys()])) {
     const before = tx.before.get(path), next = after.get(path);
@@ -125,7 +126,7 @@ export function publishGitTransaction(tx: GitTransaction) {
   const objects = readTree(join(tx.commonDir, "objects"), new Set(["info/alternates"]));
   for (const [path, entry] of objects) {
     if (!/^[a-f0-9]{2}\/(?:[a-f0-9]{38}|[a-f0-9]{62})$/.test(path)) throw new Error("Git transaction produced an unsupported object artifact");
-    if (!["stage", "commit"].includes(request.operation)) throw new Error("This Git operation cannot publish objects");
+    if (!["stage", "commit", "fetch"].includes(request.operation)) throw new Error("This Git operation cannot publish objects");
     const oid = path.replace("/", "");
     if (createHash(oid.length === 40 ? "sha1" : "sha256").update(inflateSync(entry.bytes, { maxOutputLength: 64 * 1024 * 1024 })).digest("hex") !== oid) throw new Error("Git transaction object content does not match its ID");
   }
