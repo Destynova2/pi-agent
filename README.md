@@ -36,6 +36,7 @@ The package uses Pi's public APIs for tools, commands, session state and termina
 | Download with temporary network access | [`request_network_access` with `command`: automatic review, no session grant](docs/PRIVATE-IPC.md) |
 | Retry a denied write | `request_command_access`: [one confirmed command with exact additional paths](docs/ORCHESTRATION.md#one-command-filesystem-access) |
 | Request local service access | `request_host_access`: [one confirmed host operation](docs/ORCHESTRATION.md#one-host-operation), without opening Bash |
+| Inspect a local/private API with stored credentials | `request_http_access`: [one reviewed GET](docs/EXECUTION-CAPABILITIES.md#local-and-private-api-inspection), dotenv references, status or selected JSON fields |
 | Diagnose Podman | `podman_list`, `podman_inspect`, `podman_logs` (bounded, last hour), `podman_machine_list` through `request_host_access` |
 | Build and manage containers | `request_podman_access`: [generic Podman bridge](docs/PODMAN-ACCESS.md), using the default local connection and automatic or manual approval |
 | List cached models without starting Pi | `model_catalog`: metadata only, no credential resolution or quota probe |

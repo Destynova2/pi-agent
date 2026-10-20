@@ -2,8 +2,9 @@
 
 Status: the generic `execution` tool is implemented in source for bounded
 foreground commands and session jobs on Linux. This document also describes the
-remaining target architecture. Leased services, devices and a credential broker
-are not implemented. No live installation or permission migration was performed.
+remaining target architecture. A separate `request_http_access` capability provides
+reviewed API GETs with dotenv credential references. Credentials cannot be passed
+to arbitrary `execution` commands. Leased services and devices remain unimplemented.
 The RKE2 incident is a use case, not the name of a new privileged tool.
 
 ## Available now
@@ -73,6 +74,83 @@ Implementation: [planner](../lib/execution-plan.ts),
 [native checks](../tests/execution.integration.test.mjs).
 Existing capability tools remain compatible; their manual consent contracts are
 unchanged. `git_access` retains its separate semantic and metadata protections.
+
+## Local and private API inspection
+
+Load `request_http_access` with `load_tools` when the task needs one API GET on a
+local/private service or credentials already stored in a dotenv file. It performs
+one host-side request after approval of the exact URL, credential reference and
+returned fields. The existing `/approvals` policy can review each call automatically;
+otherwise the interactive parent confirms it. Headless use requires a configured
+automatic policy. Allows are never remembered or delegated to subagents.
+
+For a Nexus inventory, replace the example port, canonical file path and key with
+the service's actual configuration. Supply the reference, never the password:
+
+```json
+{
+  "url": "http://127.0.0.1:8081/service/rest/v1/repositories",
+  "reason": "Inspect the requested Nexus repository inventory",
+  "auth": {
+    "kind": "basic",
+    "username": "admin",
+    "file": "/absolute/service/config/.env",
+    "key": "NEXUS_ADMIN_PASSWORD"
+  },
+  "fields": ["name", "format", "type", "attributes.proxy.remoteUrl"]
+}
+```
+
+HTTPS is required except for `localhost`, `127.0.0.1` and `::1`. Certificate
+verification stays enabled. DNS is resolved once and the connection uses that
+address with the original Host/TLS identity; `localhost` must resolve to loopback
+for HTTP. The client does not use a proxy, follow redirects, reuse a session,
+accept arbitrary headers/cookies or issue other HTTP methods. URLs cannot contain
+credentials, query strings, fragments or a terminal DNS dot. Existing explicit network denies apply;
+the capability creates no general network or shell grant and does not bypass an
+outer sandbox denial.
+
+Basic and Bearer authentication accept one key in a regular dotenv file of at most
+64 KiB. An exact file outside the project can be reviewed. Symlinks, hard links,
+runtime storage and protected credential directories are refused. Only metadata
+is read before approval; changed file identity, network policy, session, tool
+availability or approval invalidates dispatch. This is not a vault: the host
+extension necessarily holds the credential while sending the request.
+
+With no `fields`, only status and request metadata return. With `fields`, successful
+JSON responses expose up to 12 scalar dot paths per object, at most 2,000 objects,
+512 characters per string and 256 KiB of projected output. Nested objects and
+missing fields become `null`; unselected data, headers and raw errors stay withheld.
+Referenced credentials and common encodings are masked. This is not general
+secret detection: select known metadata fields, not arbitrary sensitive content.
+The deadline is 30 seconds including DNS, and response bodies are capped at 1 MiB.
+Cancellation releases the request; an already pending system DNS lookup may finish
+later without dispatching HTTP. `/http-access reset` cancels pending inspections
+and clears human refusal memory. Explicit policy denials remain binding.
+
+For the Nexus migration case:
+
+- A public command failing with proxy `CONNECT 403` has not received a Nexus
+  response. Use `request_network_access` for a separately reviewed exact command
+  and public host; preserve explicit refusals and report unavailable transport.
+- The [repositories API](https://help.sonatype.com/en/repositories-api.html) lists
+  only repositories visible to the authenticated identity. Missing results alone
+  do not establish that Quay is absent from the external instance.
+- To check a password, use a GET endpoint documented by the running service as
+  requiring the intended permission, with the body withheld. A successful
+  anonymous endpoint proves nothing. `authenticatedRequest` means credentials
+  were sent; `authenticationVerified: false` means the transport made no
+  authentication judgment. HTTP 401/403 differ from proxy CONNECT failures.
+- Inspect the existing state and an OpenTofu plan before replacing a pod. An
+  existing container worker can run the exact plan through `request_podman_access`
+  after its own review. Plans may refresh state or contact providers; their effects
+  remain part of that review. A probe does not authorize apply, service replacement
+  or deletion. Configuration alone verifies neither migration nor a real cache pull.
+
+Implementation: [HTTP broker](../extensions/tool-policy/http-access.ts),
+[credential reader and transport](../lib/http-inspection.ts),
+[approval regressions](../tests/http-access.test.mjs) and
+[native HTTP/TLS checks](../tests/http-inspection.integration.test.mjs).
 
 ## Decision
 
