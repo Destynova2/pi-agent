@@ -6,15 +6,15 @@ events in `<agent-dir>/permission-audit/requests.sqlite`. The default location i
 earlier dialogs and error causes are not reconstructed.
 
 Use `/audit` for the current project's history or `/audit session` for this
-session. The command does not call a model. From the project directory:
+session. The command does not call a model. From the source checkout:
 
 ```bash
-node ~/.pi/agent/packages/pi-agent-config/scripts/audit-report.mjs
-node ~/.pi/agent/packages/pi-agent-config/scripts/audit-report.mjs --json --events 100
+npm run audit -- --project /path/to/project
+npm run audit -- --project /path/to/project --json --events 100
 ```
 
-From the source checkout, `npm run audit -- --project /path/to/project` runs the
-same report. Options are `--target <agent-dir>`, `--project <cwd>` or `--all`,
+These commands use the same report as `/audit`, without assuming a fixed installed
+release path. Options are `--target <agent-dir>`, `--project <cwd>` or `--all`,
 `--session <id>`, `--since <ISO timestamp>`, `--json`, and `--events <0..500>`.
 The default prints aggregate counts for the current canonical project path,
 without transcripts. Counts cover the entire selected history; only the optional

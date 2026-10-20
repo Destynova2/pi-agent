@@ -107,10 +107,10 @@ test("installed mode fails on stale executors, missing servers and unfiltered up
       await mkdir(dirname(join(target, PACKAGE_DIRECTORY, file)), { recursive: true });
       await writeFile(join(target, PACKAGE_DIRECTORY, file), await readFile(new URL(`../${file}`, import.meta.url)));
     }
-    const settings = { shellPath: join(target, PACKAGE_DIRECTORY, "scripts/codex-shell.mjs"), packages: [join(target, PACKAGE_DIRECTORY), { source: "npm:@ian-pascoe/pi-lsp@0.4.4", extensions: [] }, { source: "npm:@richardgill/pi-background-bash@0.0.3", extensions: [] }] };
+    const settings = { shellPath: join(target, PACKAGE_DIRECTORY, "scripts/codex-shell.mjs"), packages: [join(target, PACKAGE_DIRECTORY), { source: "npm:@ian-pascoe/pi-lsp@0.14.2", extensions: [], skills: [] }, { source: "npm:@richardgill/pi-background-bash@0.0.3", extensions: [] }] };
     settings.extensions = ["-builtin:mcp"];
     await writeFile(join(target, "settings.json"), JSON.stringify(settings));
-    for (const [name, version] of [["@ian-pascoe/pi-lsp", "0.4.4"], ["typescript", "7.0.2"], ["@richardgill/pi-background-bash", "0.0.3"]]) {
+    for (const [name, version] of [["@ian-pascoe/pi-lsp", "0.14.2"], ["typescript", "7.0.2"], ["@richardgill/pi-background-bash", "0.0.3"]]) {
       const dir = join(target, "npm/node_modules", name);
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "package.json"), JSON.stringify({ name, version }));
@@ -124,7 +124,7 @@ test("installed mode fails on stale executors, missing servers and unfiltered up
     await writeFile(join(target, PACKAGE_DIRECTORY, "extensions/tool-policy/index.ts"), "// outdated policy\n");
     const stale = await runDoctor({ target, installed: true, env });
     assert.ok(stale.missingRequired.some(r => r.name === "extensions/tool-policy/index.ts"));
-    settings.packages = ["npm:@ian-pascoe/pi-lsp@0.4.4"];
+    settings.packages = ["npm:@ian-pascoe/pi-lsp@0.14.2"];
     await writeFile(join(target, "settings.json"), JSON.stringify(settings));
     assert.ok((await runDoctor({ target, installed: true, env })).missingRequired.some(r => r.name === "upstream LSP hooks filtered"));
   } finally { await rm(target, { recursive: true, force: true }); await rm(binDir, { recursive: true, force: true }); }

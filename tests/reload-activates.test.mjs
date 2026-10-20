@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 // /reload calls this same loader.reload(); the loader imports TypeScript extensions without a module
-// cache, so an installed harness is live after /reload. A .mjs module imported by the extension is cached
-// by Node for the life of the process: harness_update asks for a restart when one changed.
+// cache. An in-place .mjs dependency stays cached for the life of the process.
+// harness-releases.test.mjs verifies that separate release paths solve this limitation.
 test("reloading the resource loader picks up changed extension code but not cached .mjs dependencies", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-reload-"));
   const agent = join(root, "agent"), cwd = join(root, "project"), extension = join(root, "ext.ts");
@@ -33,7 +33,7 @@ test("reloading the resource loader picks up changed extension code but not cach
     await loader.reload();
     assert.equal(description(), "v2", "extension code reloads");
     const probe = await loader.getExtensions().extensions[0].tools.get("probe").definition.execute("1", {});
-    assert.equal(probe.content[0].text, "v1", "known limit: an imported .mjs stays cached, so harness_update asks for a restart when one changed");
+    assert.equal(probe.content[0].text, "v1", "known SDK limit: .mjs dependencies with an unchanged path stay cached");
   } finally {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     rmSync(root, { recursive: true, force: true });

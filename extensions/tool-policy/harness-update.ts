@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -7,28 +7,15 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { PermissionAudit } from "../../lib/permission-audit.ts";
 import { runProcess } from "../../lib/process.ts";
 import { SessionTasks } from "../../lib/session-tasks.ts";
+import { activationState, requiresRestart } from "../../lib/harness-activation.mjs";
 
 const VERIFY_TIMEOUT_MS = 15 * 60_000;
-// /reload re-imports TypeScript extensions, but Node keeps .mjs modules imported in-process (lib/runtime-paths,
-// scripts/codex-network, …) cached for the life of the process. Any changed .mjs under these directories
-// therefore needs a restart; spawned-only scripts are included, so this errs towards asking for one.
-const CACHED_MODULE_DIRS = ["packages/pi-agent-config/lib", "packages/pi-agent-config/scripts", "scripts"];
-export function cachedModulesDigest(agentDir: string): string {
-  const hash = createHash("sha256");
-  for (const dir of CACHED_MODULE_DIRS) {
-    const path = join(agentDir, dir);
-    if (!existsSync(path)) continue;
-    for (const name of readdirSync(path).filter(entry => entry.endsWith(".mjs")).sort()) hash.update(`${dir}/${name}\0`).update(readFileSync(join(path, name))).update("\0");
-  }
-  return hash.digest("hex");
-}
-
 /**
  * Self-improvement loop with a human in it: the agent patches the pi-agent-config source; after a
  * human agrees, this capability runs that source's verify gate on the host and, after a second
  * explicit human confirmation (ctx.ui.confirm only: never an automatic policy, never a remembered
  * grant), installs the exact tree verify saw into the agent directory. The installer keeps its own
- * backup; the running session keeps the old runtime until /reload, or a restart when cached .mjs modules changed.
+ * backup; old releases remain available until /reload. Changed external dependencies require a restart.
  */
 export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify: (ctx: ExtensionContext) => void, execute = runProcess) {
   let tasks = new SessionTasks(), busy = false;
@@ -37,7 +24,7 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
   }
   pi.registerTool({
     name: "harness_update", label: "Install a verified harness source", executionMode: "sequential", exposure: "model-only",
-    description: "After the human agrees, run the pi-agent-config source repository's `npm run verify` on the host; after a second human confirmation, install the verified tree into the agent directory with its own installer (backup kept). With package instead of source, install one pi package (npm:… or git:…) after one human confirmation. Never automatic, never remembered. The running session keeps the old runtime until /reload (or a restart when installed .mjs modules changed; the result says which).",
+    description: "After human confirmation, run the source repository's `npm run verify` on the host; after a second confirmation, install that exact tree as a separate release (backup kept). With package instead of source, install one pinned pi package after one confirmation. Never automatic or remembered. Activate harness releases with /reload; changed external dependencies need a restart. The result names the required action.",
     promptGuidelines: [
       "To improve the harness: patch the pi-agent-config source (normally the current workspace), run its tests with confined tools, then call harness_update with that source path and the reason. The human confirms the host verify and then the install; a red verify, a refusal or a source changed meanwhile installs nothing. Never edit the installed agent directory directly, and never present an install as active before the /reload or restart it names ran. Keeping the harness unchanged is a valid outcome when the evidence does not argue for a change. Prefer, in order: an on-demand skill, a script, a subagent, a tool_call guard; always-on prompt text last, paid for by cutting equal text (tests/prompt-budget pins the total).",
     ],
@@ -65,8 +52,8 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
             } catch (error) { audit.finish("cancelled"); throw error; }
             const output = await execute("pi", ["install", name, "--no-approve"], { cwd: agentDir, signal: owned, timeoutMs: 10 * 60_000, maxBytes: 8 << 20, env: { PI_CODING_AGENT_DIR: agentDir, npm_config_save_exact: "true", npm_config_ignore_scripts: "true" } });
             pi.appendEntry("harness_update", { package: name, agentDir, at: new Date().toISOString() });
-            ctx.ui.notify("Paquet installé : tape /reload pour l'activer.", "info");
-            return { content: [{ type: "text" as const, text: `Installed ${name} into ${agentDir}. Run /reload to activate it; this session runs without it until then.\n${output.trim().split("\n").slice(-6).join("\n")}` }], details: undefined };
+            ctx.ui.notify("Paquet installé : redémarre Pi avec pi -c pour charger ses dépendances.", "info");
+            return { content: [{ type: "text" as const, text: `Installed ${name} into ${agentDir}. Restart Pi with pi -c to activate external dependencies.\n${output.trim().split("\n").slice(-6).join("\n")}` }], details: undefined };
           };
           const validate = () => {
             owned.throwIfAborted(); verify(ctx);
@@ -116,14 +103,14 @@ export function registerHarnessUpdate(pi: ExtensionAPI, agentDir: string, verify
             await unchanged();
             audit.finish("granted", "human", "once");
           } catch (error) { audit.finish("cancelled"); throw error; }
-          const modulesBefore = cachedModulesDigest(agentDir);
-          const output = await execute(process.execPath, [join(source, "scripts/install.mjs"), "--target", agentDir], { cwd: source, signal: owned, timeoutMs: 10 * 60_000, maxBytes: 8 << 20 });
-          const restart = cachedModulesDigest(agentDir) !== modulesBefore;
+          const before = activationState(agentDir);
+          const output = await execute(process.execPath, [join(source, "scripts/install.mjs"), "--target", agentDir, "--hot-reload"], { cwd: source, signal: owned, timeoutMs: 10 * 60_000, maxBytes: 8 << 20 });
+          const restart = requiresRestart(before, activationState(agentDir));
           pi.appendEntry("harness_update", { source, tree, agentDir, restart, at: new Date().toISOString() });
-          ctx.ui.notify(restart ? "Harness installé : des modules .mjs ont changé, redémarre Pi (pi -c reprend cette session)." : "Harness installé : tape /reload pour l'activer, sans redémarrage.", "info");
+          ctx.ui.notify(restart ? "Des dépendances externes ou un ancien runtime ont changé : redémarre Pi avec pi -c." : "Harness installé : tape /reload pour l'activer, sans redémarrage.", "info");
           const activation = restart
-            ? "Restart Pi to activate it (`pi -c` continues this session): installed .mjs modules changed and Node keeps them cached past /reload"
-            : "Run /reload to activate it (TypeScript extensions, settings and launchers reload in place, no restart)";
+            ? "Restart Pi to activate changed external dependencies or legacy modules (`pi -c` continues this session)"
+            : "Run /reload to activate the release, including its .mjs dependencies (no restart)";
           return { content: [{ type: "text" as const, text: `Installed ${source} (tree ${tree.slice(0, 12)}) into ${agentDir}. ${activation}; this session runs the previous runtime until then.\n${output.trim().split("\n").slice(-6).join("\n")}` }], details: undefined };
         }, signal);
       } finally { busy = false; }

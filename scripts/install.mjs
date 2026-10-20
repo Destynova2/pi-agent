@@ -2,16 +2,19 @@
 // Idempotent installer for the pi-agent configuration into a target directory.
 // Node stdlib only. See README.md and docs/configuration.md (pi) for the contract.
 import { access, constants, cp, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile, chmod } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { closeSync, mkdtempSync, openSync, readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, mkdtempSync, mkdirSync, openSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { isSubPath, isSymlink, pathExists } from "./lib.mjs";
-import { PACKAGE_DIRECTORY } from "../lib/runtime-paths.mjs";
+import { PACKAGE_DIRECTORY, RELEASES_DIRECTORY, installedPackageRoot, isManagedPackage } from "../lib/runtime-paths.mjs";
 import { REQUIRED_EXTENSION_FILTERS } from "../lib/settings-policy.mjs";
+import { persistentNodeExecutable, sameNodeInstallation } from "./update-runtime.mjs";
+import { activationState, requiresRestart } from "../lib/harness-activation.mjs";
 
 export { PACKAGE_DIRECTORY };
 
@@ -21,7 +24,7 @@ export const MANAGED_FILES = ["keybindings.json", "scripts/codex-shell.mjs", "sc
   ...["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"].map(name => `scripts/git-hooks/${name}`),
 ];
 const RETIRED_FILES = ["extensions/model-fallback/index.ts", "tool-policy.json", "extensions/tool-policy/core.ts", "extensions/tool-policy/task.ts", "extensions/tool-policy/tests/policy.test.ts", "extensions/tool-policy/tests/task.test.ts", "extensions/tool-policy/tests/skills.test.ts"];
-export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json", "tool-policy.json", PACKAGE_DIRECTORY];
+export const MANAGED_ENTRIES = [...MANAGED_DIRS, ...MANAGED_FILES, "settings.json", "tool-policy.json", PACKAGE_DIRECTORY, RELEASES_DIRECTORY];
 
 const DEFAULT_SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -160,6 +163,24 @@ async function listFiles(dir) {
   return results;
 }
 
+async function packageDigest(root) {
+  const digest = createHash("sha256");
+  for (const file of (await listFiles(root)).sort()) {
+    const path = join(root, file);
+    digest.update(JSON.stringify([file, (await stat(path)).mode & 0o777, (await readFile(path)).toString("base64")]));
+  }
+  return digest.digest("hex");
+}
+
+async function publishRelease(staging, target) {
+  const digest = await packageDigest(staging), destination = join(target, RELEASES_DIRECTORY, digest);
+  if (await pathExists(destination)) {
+    if (await packageDigest(destination) !== digest) throw new Error("refuse: existing harness release was modified; restore it from backup before reinstalling");
+    await rm(staging, { recursive: true });
+  } else await rename(staging, destination);
+  return destination;
+}
+
 /**
  * Copies file by file from `src` to `dest`, touching only the paths present
  * in `src`. Never deletes `dest`: any file/directory the user added in a
@@ -279,14 +300,33 @@ async function settingsWriteMode(path) {
   return mode;
 }
 
-// A failed write or rename leaves the previously selected runtime usable.
-async function writeSettingsAtomic(path, settings, renameFile) {
+// Share Pi's proper-lockfile directory protocol. Keep the read/merge/rename
+// synchronous so another session waits only for this short activation, not copies
+// or package installs. Never reclaim another writer's lock.
+async function writeSettingsAtomic(path, update, renameFile) {
   const mode = await settingsWriteMode(path);
+  const lock = `${path}.lock`;
+  for (let attempt = 0; ; attempt++) {
+    try { mkdirSync(lock, { mode: 0o700 }); break; }
+    catch (error) {
+      if (error.code !== "EEXIST" || attempt >= 9) throw error;
+      await delay(20);
+    }
+  }
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { flag: "wx", mode });
+    let current = {};
+    try { current = JSON.parse(readFileSync(path, "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    validateSettingsSchema(current, "current settings.json");
+    const settings = update(current);
+    writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { flag: "wx", mode });
     await renameFile(temporary, path);
-  } finally { await rm(temporary, { force: true }); }
+    return settings;
+  } finally {
+    try { unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    finally { rmdirSync(lock); }
+  }
 }
 
 function installPackages(packages, target, env) {
@@ -330,8 +370,9 @@ export async function runInstall({
   sourceRoot = DEFAULT_SOURCE_ROOT,
   target,
   noPackages = false,
+  hotReload = false,
   env = process.env,
-} = {}, { renameSettings = rename } = {}) {
+} = {}, { renameSettings = renameSync } = {}) {
   if (target !== undefined && (typeof target !== "string" || target.trim() === "")) {
     throw new Error("refuse: --target must be a non-empty path");
   }
@@ -343,8 +384,13 @@ export async function runInstall({
 
   const sourceSettings = await readSettings(join(sourceRoot, "settings.json"), "settings.json source");
   const targetSettings = await readSettings(join(resolvedTarget, "settings.json"), "settings.json target");
-  const mergedSettings = mergeSettings(sourceSettings, targetSettings);
-  const packageRoot = join(resolvedTarget, PACKAGE_DIRECTORY);
+  const activationBefore = hotReload || installedPackageRoot(resolvedTarget, targetSettings) !== join(resolvedTarget, PACKAGE_DIRECTORY)
+    ? activationState(resolvedTarget) : undefined;
+  const previousRoot = installedPackageRoot(resolvedTarget, targetSettings);
+  // Once migrated, all entry points keep publishing releases, including old callers.
+  hotReload ||= previousRoot !== join(resolvedTarget, PACKAGE_DIRECTORY);
+  const staging = hotReload ? join(resolvedTarget, RELEASES_DIRECTORY, `.stage-${randomUUID()}`) : undefined;
+  let packageRoot = staging ?? join(resolvedTarget, PACKAGE_DIRECTORY);
   const manifest = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8"));
   if (manifest.name !== "pi-agent-config" || !Array.isArray(manifest.pi?.extensions) ||
       !manifest.pi.extensions.length || manifest.pi.extensions.some(entry =>
@@ -358,28 +404,52 @@ export async function runInstall({
   // They refer to the former autoload paths, never the installed package paths.
   const legacyEntries = [...manifest.pi.extensions.map(entry => entry.slice(2)),
     ...RETIRED_FILES.filter(entry => entry.startsWith("extensions/") && /\.(ts|js)$/.test(entry))];
-  mergedSettings.extensions = [...new Set([...mergedSettings.extensions, ...legacyEntries.map(entry => `-${entry}`)])];
-  // Local package registration is offline. Keep code outside the working project.
-  mergedSettings.packages = [packageRoot, ...mergedSettings.packages.filter(entry =>
-    (typeof entry === "string" ? entry : entry.source) !== packageRoot)];
-  // Strict tool execution has no unrestricted-shell mode.
-  mergedSettings.shellPath = join(packageRoot, "scripts/codex-shell.mjs");
-  // Project code stays untrusted without a prompt or a flag; --no-approve from the launcher is then redundant.
-  mergedSettings.defaultProjectTrust = "never";
-  const typescript = mergedSettings.lsp?.servers?.typescript;
-  if (typescript?.command === "tsc" && isDeepStrictEqual(typescript, sourceSettings.lsp?.servers?.typescript)) {
-    // Resolve the pinned server from the protected installation, never project PATH/npx.
-    mergedSettings.lsp.servers.typescript = { ...typescript, command: process.execPath,
-      args: [join(resolvedTarget, "npm/node_modules/typescript/bin/tsc"), ...typescript.args] };
-  }
+  const selectPackage = current => {
+    const mergedSettings = mergeSettings(sourceSettings, current);
+    mergedSettings.extensions = [...new Set([...mergedSettings.extensions, ...legacyEntries.map(entry => `-${entry}`)])];
+    // Local package registration is offline. Keep code outside the working project.
+    mergedSettings.packages = [packageRoot, ...mergedSettings.packages.filter(entry =>
+      !isManagedPackage(resolvedTarget, entry))];
+    // Strict tool execution has no unrestricted-shell mode.
+    mergedSettings.shellPath = join(packageRoot, "scripts/codex-shell.mjs");
+    // Project code stays untrusted without a prompt or a flag; --no-approve from the launcher is then redundant.
+    mergedSettings.defaultProjectTrust = "never";
+    const typescript = mergedSettings.lsp?.servers?.typescript;
+    const sourceTypescript = sourceSettings.lsp?.servers?.typescript;
+    if (sourceTypescript?.command === "tsc") {
+      const args = [join(resolvedTarget, "npm/node_modules/typescript/bin/tsc"), ...sourceTypescript.args];
+      const previousManaged = typescript && sameNodeInstallation(typescript.command) &&
+        isDeepStrictEqual(typescript, { ...sourceTypescript, command: typescript.command, args });
+      if (isDeepStrictEqual(typescript, sourceTypescript) || previousManaged) {
+        // Resolve only our unchanged managed server; preserve custom executables/options.
+        mergedSettings.lsp.servers.typescript = { ...sourceTypescript, command: persistentNodeExecutable(), args };
+      }
+    }
+    return mergedSettings;
+  };
+  selectPackage(targetSettings); // Validate the merge before backing up or copying.
 
   // Refuse a known unwritable activation before backups or runtime copies.
   // writeSettingsAtomic checks again because permissions may change meanwhile.
   await settingsWriteMode(join(resolvedTarget, "settings.json"));
   await mkdir(resolvedTarget, { recursive: true });
-  const backupDir = await backupExisting(resolvedTarget, MANAGED_ENTRIES);
+  // Old releases stay in place for running sessions; back up only the selected one.
+  const backupEntries = MANAGED_ENTRIES.filter(entry => entry !== RELEASES_DIRECTORY);
+  if (previousRoot !== join(resolvedTarget, PACKAGE_DIRECTORY)) backupEntries.push(relative(resolvedTarget, previousRoot));
+  const lock = join(resolvedTarget, ".harness-install.lock");
+  try { await mkdir(lock, { mode: 0o700 }); }
+  catch (error) {
+    if (error.code === "EEXIST") throw new Error(`refuse: another harness install owns ${lock}; after a crashed installer, verify it has stopped before removing this lock`);
+    throw error;
+  }
+  let backupDir;
 
   try {
+    // Detect a competing installation which finished between our read and lock.
+    if (!isDeepStrictEqual(await readSettings(join(resolvedTarget, "settings.json"), "settings.json target"), targetSettings)) {
+      throw new Error("refuse: target settings changed before installation; run it again");
+    }
+    backupDir = await backupExisting(resolvedTarget, backupEntries);
     const syncedDirs = [];
     for (const dir of MANAGED_DIRS) {
       if (await syncDir(join(sourceRoot, dir), join(packageRoot, dir))) syncedDirs.push(dir);
@@ -396,34 +466,40 @@ export async function runInstall({
     }
     await syncFile(join(sourceRoot, "package.json"), join(packageRoot, "package.json"));
 
-    await writeSettingsAtomic(join(resolvedTarget, "settings.json"), mergedSettings, renameSettings);
+    if (hotReload) {
+      packageRoot = await publishRelease(staging, resolvedTarget);
+    }
+    const mergedSettings = await writeSettingsAtomic(join(resolvedTarget, "settings.json"), selectPackage, renameSettings);
 
     // Only retire the previous runtime after the new settings are atomically active.
     // Personal files in the old directories are deliberately retained.
-    for (const dir of MANAGED_DIRS.filter(dir => dir !== "agents")) {
+    for (const dir of hotReload ? [] : MANAGED_DIRS.filter(dir => dir !== "agents")) {
       if (!(await pathExists(join(sourceRoot, dir)))) continue;
       for (const file of await listFiles(join(sourceRoot, dir))) await rm(join(resolvedTarget, dir, file), { force: true });
     }
-    for (const file of MANAGED_FILES.filter(file => file !== "keybindings.json")) await rm(join(resolvedTarget, file), { force: true });
+    for (const file of hotReload ? [] : MANAGED_FILES.filter(file => file !== "keybindings.json")) await rm(join(resolvedTarget, file), { force: true });
 
     // Retire only known legacy files, after backup; preserve personal extensions.
-    for (const file of RETIRED_FILES) await rm(join(resolvedTarget, file), { force: true });
+    for (const file of hotReload ? [] : RETIRED_FILES) await rm(join(resolvedTarget, file), { force: true });
 
     let installed = [];
     let packageFailures = [];
     if (!noPackages) {
       ({ installed, failures: packageFailures } = installPackages(sourceSettings.packages ?? [], resolvedTarget, env));
       // pi install may rewrite package entries; preserve the resource filters selected above.
-      const installedSettings = await readSettings(join(resolvedTarget, "settings.json"), "installed settings.json");
-      await writeSettingsAtomic(join(resolvedTarget, "settings.json"), {
-        ...installedSettings, packages: mergedSettings.packages, extensions: mergedSettings.extensions,
-      }, renameSettings);
+      await writeSettingsAtomic(join(resolvedTarget, "settings.json"), current => selectPackage({
+        ...current,
+        packages: mergeSettings(mergedSettings, current).packages,
+        extensions: [...new Set([...mergedSettings.extensions, ...(current.extensions ?? [])])],
+      }), renameSettings);
     }
 
     return {
       sourceRoot,
       target: resolvedTarget,
       packageRoot,
+      hotReload,
+      restartRequired: activationBefore ? requiresRestart(activationBefore, activationState(resolvedTarget)) : undefined,
       backupDir,
       syncedDirs,
       syncedFiles,
@@ -437,17 +513,21 @@ export async function runInstall({
     // the user knows where to find their previous state.
     err.backupDir = backupDir;
     throw err;
+  } finally {
+    if (staging) await rm(staging, { recursive: true, force: true });
+    await rm(lock, { recursive: true, force: true });
   }
 }
 
 function parseArgs(argv) {
-  const out = { target: undefined, noPackages: false, help: false };
+  const out = { target: undefined, noPackages: false, hotReload: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--target") {
       if (i + 1 >= argv.length) throw new Error("--target requires a path");
       out.target = argv[++i];
     } else if (arg === "--no-packages") out.noPackages = true;
+    else if (arg === "--hot-reload") out.hotReload = true;
     else if (arg === "-h" || arg === "--help") out.help = true;
     else throw new Error(`unknown option: ${arg}`);
   }
@@ -455,15 +535,20 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/install.mjs [--target <path>] [--no-packages]
+  console.log(`Usage: node scripts/install.mjs [--target <path>] [--no-packages] [--hot-reload]
 
   --target <path>     Target agent directory (default: $PI_CODING_AGENT_DIR or ~/.pi/agent)
   --no-packages       Do not invoke \`pi install\` (offline mode)
+  --hot-reload        Publish a separate harness release; activate with /reload
 `);
 }
 
 function printSummary(result) {
   console.log(`install: target ${result.target}`);
+  console.log(`install: package ${result.packageRoot}`);
+  if (result.hotReload) console.log(result.restartRequired
+    ? "install: external package files changed; restart Pi (pi -c resumes the session)"
+    : "install: activate harness with /reload (including .mjs dependencies)");
   if (result.backupDir) console.log(`install: prior backup in ${result.backupDir}`);
   console.log(`install: synced directories: ${result.syncedDirs.join(", ") || "(none)"}`);
   console.log(`install: synced files: ${result.syncedFiles.join(", ") || "(none)"}`);
@@ -494,7 +579,7 @@ async function main() {
     return;
   }
   try {
-    const result = await runInstall({ target: args.target, noPackages: args.noPackages });
+    const result = await runInstall({ target: args.target, noPackages: args.noPackages, hotReload: args.hotReload });
     printSummary(result);
     process.exitCode = result.packageFailures.length > 0 ? 1 : 0;
   } catch (err) {

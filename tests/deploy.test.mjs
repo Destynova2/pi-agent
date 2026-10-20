@@ -3,8 +3,11 @@ import { test } from "node:test";
 import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { deploymentSnapshot } from "../scripts/deployment-snapshot.mjs";
+import { runInstall } from "../scripts/install.mjs";
+import { buildFixtureSource } from "./fixtures/build.mjs";
 
 const script = fileURLToPath(new URL("../scripts/deploy.sh", import.meta.url));
 test("deployment rejects invalid SDK paths before staging or running gates", () => {
@@ -14,7 +17,7 @@ test("deployment rejects invalid SDK paths before staging or running gates", () 
     mkdirSync(bin);
     symlinkSync(process.execPath, join(bin, "node"));
     for (const name of ["npm", "pi", "codex", "git", "curl", "python3"]) {
-      writeFileSync(join(bin, name), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\nexit 37\n', { mode: 0o755 });
+      writeFileSync(join(bin, name), `#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\nexit ${name === "git" ? 0 : 37}\n`, { mode: 0o755 });
     }
     const manifest = join(root, "sdk with spaces.json");
     const malformed = join(root, "malformed.json"), unrelated = join(root, "unrelated.json");
@@ -53,7 +56,7 @@ test("deployment rejects invalid SDK paths before staging or running gates", () 
     }
     const valid = run(manifest);
     assert.equal(valid.status, 37, valid.stderr);
-    assert.match(readFileSync(log, "utf8"), /^run check -- --evidence .*\/check.json\n$/, "a valid path with spaces reaches the first gate");
+    assert.match(readFileSync(log, "utf8"), /run check -- --evidence .*\/check.json\n$/, "a valid path with spaces reaches the first gate");
     assert.equal(existsSync(target), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -68,6 +71,7 @@ test("deployment gates precede confirmation and live writes; failures preserve e
 command="\${0##*/} $*"
 printf '%s\\n' "$command" >> "$COMMAND_LOG"
 if [[ -n "$FAIL_COMMAND" && "$command" == *"$FAIL_COMMAND"* ]]; then exit 37; fi
+if [[ "$command" == "node scripts/deployment-snapshot.mjs "* ]]; then mkdir -p -- "$2"; fi
 `, { mode: 0o755 });
     }
     const target = join(root, "live");
@@ -88,7 +92,7 @@ if [[ -n "$FAIL_COMMAND" && "$command" == *"$FAIL_COMMAND"* ]]; then exit 37; fi
       assert.ifError(result.error);
       return { ...result, stdout: readFileSync(outputPath, "utf8"), stderr: readFileSync(errorPath, "utf8"), commands: readFileSync(log, "utf8") };
     };
-    for (const fail of ["npm run check", "node scripts/install.mjs", "node scripts/doctor.mjs", "npm run verify:integration"]) {
+    for (const fail of ["node scripts/deployment-snapshot.mjs", "npm run check", "node scripts/install.mjs", "node scripts/doctor.mjs", "npm run verify:integration"]) {
       const result = run(fail);
       assert.equal(result.status, 37, result.stderr);
       assert.ok(!result.commands.includes(`--target ${target}`), result.commands);
@@ -105,4 +109,26 @@ if [[ -n "$FAIL_COMMAND" && "$command" == *"$FAIL_COMMAND"* ]]; then exit 37; fi
     assert.equal(failedInstall.status, 37);
     assert.ok(!failedInstall.commands.includes(`node scripts/doctor.mjs --target ${target}`));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("deployment installs the checked snapshot when the original checkout changes after its gate", async t => {
+  const source = await buildFixtureSource({ settings: { packages: [] } });
+  const root = mkdtempSync(join(tmpdir(), "pi-deploy-snapshot-"));
+  t.after(() => { rmSync(source, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); });
+  execFileSync("git", ["init", "--quiet", "--template="], { cwd: source });
+  writeFileSync(join(source, ".gitignore"), "auth.json\n");
+  writeFileSync(join(source, "auth.json"), "private fixture");
+  execFileSync("git", ["add", "--all"], { cwd: source });
+  writeFileSync(join(source, "lib/helper.ts"), "export const checked = true;\n");
+  const snapshot = join(root, "source");
+  deploymentSnapshot(source, snapshot);
+  execFileSync("git", ["diff", "--check"], { cwd: snapshot });
+  assert.match(execFileSync("git", ["diff"], { cwd: snapshot }).toString(), /checked = true/);
+  assert.equal(existsSync(join(snapshot, "auth.json")), false);
+  // The operator edits the checkout while the deployment confirmation is open.
+  writeFileSync(join(source, "lib/helper.ts"), "unverified invalid source {");
+  const installed = await runInstall({ sourceRoot: snapshot, target: join(root, "agent"), noPackages: true, hotReload: true });
+  assert.equal(readFileSync(join(installed.packageRoot, "lib/helper.ts"), "utf8"), "export const checked = true;\n");
+  assert.throws(() => deploymentSnapshot(source, snapshot), /already exists/);
+  assert.throws(() => deploymentSnapshot(source, join(source, "nested")), /outside/);
 });

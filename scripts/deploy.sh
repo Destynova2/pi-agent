@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run from a host terminal, with Pi sessions closed. Never bypasses a failed gate.
+# Run from a host terminal. Harness releases stay available until sessions reload.
 # PI_PACKAGE_JSON must name the SDK used by your pi executable (including wrappers).
 set -euo pipefail
 umask 077
@@ -56,16 +56,18 @@ run() {
   "$@" 2>&1 | tee "$stage/$log.log"
 }
 
+run snapshot node scripts/deployment-snapshot.mjs "$stage/source"
+cd -- "$stage/source"
 run check npm run check -- --evidence "$stage/check.json"
-run stage-install node scripts/install.mjs --target "$stage/agent"
+run stage-install node scripts/install.mjs --target "$stage/agent" --hot-reload
 run stage-doctor node scripts/doctor.mjs --target "$stage/agent" --installed
 run integration env PI_CODING_AGENT_DIR="$stage/agent" npm run verify:integration -- --reuse-check "$stage/check.json"
 
-printf '\nStaged checks passed. Close other Pi sessions before proceeding.\n'
+printf '\nStaged checks passed. Harness updates activate with /reload; SDK or external package changes require a restart.\n'
 printf 'Deploy to %s with the existing installer backup? Type DEPLOY: ' "$target"
 IFS= read -r answer
 [[ "$answer" == DEPLOY ]] || { printf 'Cancelled; live installation unchanged.\n'; exit 0; }
-run live-install node scripts/install.mjs --target "$target"
+run live-install node scripts/install.mjs --target "$target" --hot-reload
 run live-doctor node scripts/doctor.mjs --target "$target" --installed
-printf '\nDeployment checked. Backup path: see %s/live-install.log\nActivate in open sessions with /reload (restart if .mjs modules changed), or start pi through the managed launcher\n' "$stage"
+printf '\nDeployment checked. Backup path: see %s/live-install.log\nActivate this harness with /reload, or start pi through the managed launcher. Old releases remain available to open sessions.\n' "$stage"
 printf 'Provider authentication, personal MCP servers and physical clipboard are not validated by this gate.\n'

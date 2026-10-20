@@ -70,11 +70,11 @@ test("the install is bound to the tree verify saw", async () => {
     assert.deepEqual(ok.commands().slice(4), ["npm verify", "git .", "git write-tree", "git .", "git write-tree", "install"]);
     assert.equal(ok.entries[0].data.tree, "tree-a");
   } finally { ok.cleanup(); }
-  // Node caches .mjs modules imported in-process past /reload: an install that changes one asks for a restart instead.
+  // A legacy installer without versioned releases still requires a restart.
   const modules = fixture({ confirms: [true, true], installChanges: true });
   try {
     const result = await modules.run();
-    assert.match(result.content[0].text, /Installed .* Restart Pi to activate it \(`pi -c`/);
+    assert.match(result.content[0].text, /Installed .* Restart Pi to activate changed/);
     assert.equal(modules.entries[0].data.restart, true);
   } finally { modules.cleanup(); }
 });
@@ -89,7 +89,7 @@ test("a pi package installs after one human confirmation, with a strict name for
     assert.deepEqual(f.calls, []);
     const result = await f.run({ package: "npm:pi-web-access@1.2.3", reason: "search" });
     assert.deepEqual(f.calls[0].slice(0, 4), ["pi", "install", "npm:pi-web-access@1.2.3", "--no-approve"]);
-    assert.match(result.content[0].text, /Installed npm:pi-web-access@1.2.3 .* Run \/reload/);
+    assert.match(result.content[0].text, /Installed npm:pi-web-access@1.2.3 .* Restart Pi/);
     assert.equal(f.entries[0].data.package, "npm:pi-web-access@1.2.3");
     await f.run({ package: `git:github.com/org/repo@${"a".repeat(40)}`, reason: "x" }).catch(() => {});
   } finally { f.cleanup(); }

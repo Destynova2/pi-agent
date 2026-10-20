@@ -67,10 +67,10 @@ The report distinguishes permission from execution: an approved Podman request f
 The audit grants no access and never changes permissions or trains a model automatically. Existing consent files retain their authority. To inspect the current project's aggregate report without printing transcripts:
 
 ```bash
-node ~/.pi/agent/packages/pi-agent-config/scripts/audit-report.mjs
+npm --prefix /path/to/pi-agent run audit -- --project /path/to/project
 ```
 
-Installing these adapters does not activate them in an already-running session; `/reload` re-imports TypeScript extensions, settings and launchers in place; a restart (`pi -c` continues the previous session) is needed when Pi itself or an installed `.mjs` module changed, and `harness_update` says which. The upstream LSP extension stays filtered out: its replacement runs the same lifecycle inside Codex. MCP support is local stdio only. `web_search` uses the existing Claude login and quota, but authenticated live search still needs validation; no paid model call was used for testing. See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for boundaries. Model transport, trusted host internals, the explicitly confirmed host operation bridge are not jailed. Dunst remains denied by the local strict dispatcher.
+Installing these adapters does not activate them in an already-running session; `scripts/deploy.sh` and `harness_update` publish separate harness releases. `/reload` activates their extensions, nested `.mjs` dependencies, settings and launchers in the current session. Previous releases remain available to open sessions. Changes to Pi itself or external package files still need a restart (`pi -c` resumes the conversation); the installer and `harness_update` report the required action. The upstream LSP extension stays filtered out: its replacement runs the same lifecycle inside Codex. MCP support is local stdio only. `web_search` uses Grob’s server-side search route and provider quota; it starts no Claude process. OpenAI and Anthropic model calls also use Grob, including resumed sessions. Enable Grob’s DLP separately to scan that traffic. See [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox) for boundaries. Model transport, trusted host internals and explicitly confirmed host capabilities are not jailed. Dunst remains an interactive, human-confirmed capability loaded on demand.
 
 See [Latency and context](docs/PERFORMANCE.md) for measured startup/context costs, Jcode comparisons, and native batching of queued follow-ups.
 

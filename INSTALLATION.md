@@ -47,33 +47,82 @@ The separate Codex exact-file backend repair on Linux remains necessary for the 
 
 ```bash
 node scripts/doctor.mjs            # diagnostic before installing anything
-node scripts/install.mjs --target ~/.pi/agent-test   # install to a test target, never the source
+node scripts/install.mjs --target ~/.pi/agent-test --hot-reload
 node scripts/doctor.mjs --target ~/.pi/agent-test
 ```
 
 To install to pi's default target (`$PI_CODING_AGENT_DIR` or `~/.pi/agent`):
 
 ```bash
-node scripts/install.mjs
+node scripts/install.mjs --hot-reload
 ```
 
 ## Model transport through Grob
 
-`extensions/grob` registers one Pi provider, `grob`, that speaks the Anthropic Messages API to the local [Grob](https://github.com/azerozero/grob) proxy (`GROB_URL`, default `http://127.0.0.1:13456`). Its model list starts with Grob's logical tiers and is refreshed from Grob's `/v1/models`, so routing, fallback and budgets are configured in `~/.grob/config.toml`, not in this repo. The default session model is `grob/default-model`; the bundled agents use `grob/default-model` (worker), `grob/think-model` (reviewer) and `grob/background-model` (scout), so Grob's router picks the upstream provider and complexity tier. Explicit upstream names such as `grob/claude-fable-5-1` remain selectable for a single-provider run.
+`extensions/grob` routes the `grob`, `openai`, `openai-codex` and `anthropic` providers through the local [Grob](https://github.com/azerozero/grob) proxy. This covers restored conversations, compaction, subagents and nested permission reviews, including calls holding an older model object. Explicit GPT and Claude model IDs are preserved. Other providers are outside this routing policy.
 
-Grob must be running before Pi starts: `grob start -d` (or `grob status`). Pi does not read the `ANTHROPIC_BASE_URL` variables that `grob exec` sets; the extension supplies the endpoint. Grob runs with `[auth] mode = "none"` on loopback and injects its own upstream OAuth tokens; the extension's dummy key only satisfies Pi's credential check. A session start with the proxy down shows a warning; `node scripts/doctor.mjs --installed` reports the same `/health` probe as an optional check.
+`GROB_URL` defaults to `http://127.0.0.1:13456` and must be a loopback HTTP(S) origin without credentials, a path or query. The transport discards upstream authentication headers, supplies a dummy local key and rejects redirects. Proxy failures remain failures; Pi does not fall back to a direct model endpoint. This is an application transport rule, not an OS firewall: trusted extensions and separately launched clients remain outside its boundary.
 
-Only `grob/think-model` and explicit upstream names advertise reasoning to Pi. A `thinking` block makes Grob take its think route, which would send `default-model` and `background-model` to the think tier's mappings instead of their own (observed as the background tier landing on the think provider). Without the block, Grob classifies those tiers on its default path and the upstream effort is Grob's provider default.
+New installations default to `grob/default-model`; upgrades preserve the selected model, whose OpenAI/Anthropic provider now uses the proxy. Bundled agents select `grob/default-model`, `grob/think-model` and `grob/background-model`. Define those names as explicit `[[models]]` entries in `~/.grob/config.toml`, plus each GPT/Claude ID used by a restored conversation. Discovery refreshes from `/v1/models` with a three-second deadline.
+
+To preserve explicit vendor/model selection, use `auto_map_regex = "^$"`, restrict `background_regex` to `^background-model$`, and omit `router.think`: a global think route overrides explicit Claude/GPT requests containing thinking. Give `think-model` its own mapping instead. The server-side search tool needs a `websearch-model` mapping to a provider supporting Anthropic WebSearch. Unknown or unsupported models must fail; do not add an unreviewed cross-provider fallback.
+
+The local role policy uses these ordered `[[models.mappings]]` entries in Grob:
+
+| Role / model ID | Priority 1 | Priority 2 (provider failure) |
+| --- | --- | --- |
+| Planning and review: `think-model` | `anthropic/claude-fable-5-1` | `chatgpt-codex/gpt-6-astra` |
+| Development: `default-model`, `dev` | `chatgpt-codex/gpt-6-astra` | `anthropic/claude-fable-5-1` |
+| Reconnaissance: `background-model` | `chatgpt-codex/gpt-6-astra` | `anthropic/claude-fable-5-1` |
+| Other development aliases: `codex`, `fast` | Their existing OpenAI model | `anthropic/claude-fable-5-1` |
+
+Grob tries the lower numeric priority first. Keep `context_window_tokens = 272000`
+on these aliases so the route stays within the smaller provider context window.
+Keep explicit `gpt-*` and `claude-*` IDs pinned to their named model.
+`websearch-model` retains its Anthropic mapping: the OpenAI route does not provide
+the Anthropic server-side WebSearch tool.
+
+In Pi, use `/model grob/think-model` for planning, then
+`/model grob/default-model` for implementation. The bundled reviewer and worker
+already select those respective routes. Pi does not infer a plan/dev phase from
+the prompt or its reasoning level. Grob handles the provider fallback; Pi never
+retries directly against an upstream provider. A failure after streaming has
+started may still reach Pi rather than resume on another provider.
+
+After backing up and editing the Grob configuration, activate it with
+`curl --fail --request POST http://127.0.0.1:13456/api/config/reload` from the host
+terminal. Require a JSON `status` of `success`; an HTTP 200 alone is insufficient.
+The reload keeps in-flight requests on their previous configuration.
+Check `/health` and the routing decisions in `grob watch` or `~/.grob/grob.log`.
+Pi installation does not copy or overwrite the private Grob configuration.
+
+Use `/grob` directly in Pi's prompt to open the connection menu:
+
+| Pi command | Action |
+| --- | --- |
+| `/grob connect` | Select a configured provider and open its login assistant |
+| `/grob reconnect anthropic` | Start a fresh Claude login with `--force-reauth` |
+| `/grob reconnect chatgpt-codex` | Start a fresh OpenAI login with `--force-reauth` |
+| `/grob status` | Check proxy availability and list configured providers |
+| `/grob start` | Start Grob in the background |
+
+The assistant uses the same terminal and returns to Pi when it exits. Complete the browser step when Grob requests it; OAuth codes, credentials and CLI output are not copied into the conversation. Escape cancels the menu; Ctrl+C interrupts the login assistant. Reconnection is an explicit user action and replaces that provider's previous OAuth credentials. Proxy health and the assistant's exit code alone do not prove upstream authentication: the next model request exercises the connection.
+
+These commands require an idle interactive parent Pi session. They do not expose a model tool or grant Bash host access. The extension invokes the installed `grob` executable without a shell, pins `GROB_CONFIG` (default `~/.grob/config.toml`), and runs from the home directory to avoid project-local configuration. Executable, config and optional `GROB_HOME` must be outside the project. Grob must already be installed and its provider configuration created. If the proxy is stopped, the provider name can be entered manually. Current Grob with `connect --force-reauth` is required for reconnection.
+
+This local integration uses `[auth] mode = "none"` on loopback; it does not isolate clients sharing the same OS account. Configure provider credentials in Grob's encrypted store and select one owner for OAuth refresh. After an explicitly authorized migration of Pi's login, replace its old provider credentials with the dummy `grob` API key and retain private recovery backups. Do not independently refresh the same OAuth credential in Pi and Grob. The extension never migrates credentials automatically.
+
+Enable `[dlp] enabled = true`, `scan_input = true` and `scan_output = true` in Grob to scan model traffic. Installing the Pi extension alone does not enable DLP. Signed local audit is configured with `[security] audit_dir`. Detection has limits and supplements the existing tool sandbox; it does not guarantee removal of all sensitive data. See [Grob's DLP reference](https://github.com/azerozero/grob/blob/v0.36.126/docs/reference/dlp.md).
 
 Headless runs (`pi -p`, RPC without UI, subagent parents) cannot open approval dialogs, so `jj_checkpoint`, worker edits that require it, and host/Git/build requests need an automatic review policy for that exact workspace, or `/approvals global auto-deny <scope>` as the default for projects without their own policy. In an interactive session run `/approvals auto-deny <scope>` in the project (see [Automatic approval review](docs/AUTO-APPROVALS.md)); it writes `<agent-dir>/approval-policies/<sha256 of the canonical cwd>.json` with mode 0600 and pins the reviewing model. Subprojects do not inherit it, and automatic decisions never become remembered grants.
 
-To see what went through the proxy and why: `grob watch` (live), `tail -f ~/.grob/grob.log` (route decisions such as `[think :stream] default-model -> chatgpt-codex/gpt-6-astra`), `grob spend` (budget) and `grob logs` (encrypted traces). The `web_search` tool still uses the Claude login directly, not Grob.
+To see what went through the proxy and why: `grob watch` (live), `tail -f ~/.grob/grob.log` (route decisions such as `[think :stream] default-model -> chatgpt-codex/gpt-6-astra`), `grob spend` (budget) and `grob logs` (encrypted traces). The `web_search` tool also uses Grob; see [web search](docs/WEB-SEARCH.md).
 
 ## Validate before activating
 
 Run this from a host terminal capable of starting Codex's sandbox, not from inside the agent's restricted shell. If `pi` is a wrapper, first set `PI_PACKAGE_JSON` to its installed SDK manifest as described above. The live target is not touched until the full staged gate passes:
 
-The deployment script runs these gates, keeps logs under `$TMPDIR`, then asks for `DEPLOY` before updating the live target:
+The deployment script copies the standalone Git checkout into a private snapshot under `$TMPDIR`, runs every gate from that snapshot, then asks for `DEPLOY` before updating the live target from the same copy. Editing the original checkout during confirmation does not change the qualified payload. Logs and the snapshot are retained. Linked Git worktrees are not supported by this deployment wrapper:
 
 ```bash
 export TMPDIR="${TMPDIR:-$(node -p 'require("node:os").tmpdir()')}"
@@ -83,22 +132,32 @@ bash scripts/deploy.sh
 
 Replace the example SDK path with the installation used by `pi`. For a shell wrapper, inspect the launcher returned by `command -v pi`: its CLI path identifies the package directory containing `package.json`. Keep the entire exported path on one line. A pasted newline inside `node_modules` becomes part of the filename and causes `ENOENT`; the script rejects it before staging. It also rejects missing files, invalid JSON and manifests for another package without changing the selected path.
 
+If npm reports `ENOENT` for `~/workspace/package.json`, run it from this checkout or use `npm --prefix /absolute/path/to/pi-agent run verify:integration`. `PI_PACKAGE_JSON` selects the installed SDK; it does not change npm's working directory. The deployment script changes to its own checkout automatically, so its absolute path works from any directory.
+
 The early syntax check writes evidence in the stage. After staging, the integration gate reuses that syntax result only when the code/config content, Node identity/options and selected SDK manifest/CLI still match. Missing, failed, malformed or outdated evidence runs the syntax check again. Git diff checks and the full test suite always run; tests are never cached.
 
-To run the stages individually:
+To run the stages individually with the same source snapshot:
 
 ```bash
 STAGE="$(mktemp -d)" &&
-node scripts/install.mjs --target "$STAGE/agent" &&
+node scripts/deployment-snapshot.mjs "$STAGE/source" &&
+cd "$STAGE/source" &&
+node scripts/install.mjs --target "$STAGE/agent" --hot-reload &&
 node scripts/doctor.mjs --target "$STAGE/agent" --installed &&
 PI_CODING_AGENT_DIR="$STAGE/agent" npm run verify:integration &&
-node scripts/install.mjs &&
+node scripts/install.mjs --hot-reload &&
 node scripts/doctor.mjs --installed
 ```
 
 `PI_PACKAGE_JSON` selects the SDK of the runtime you will use. No separate old-runtime fixture or paste patch is required.
 
-Keep the stage and failure output if a gate fails; do not continue to the live install. Successful installation prints the backup location. Run `/reload` in open sessions (TypeScript extensions, settings and launchers reload in place); start new ones with plain `pi` through the managed launcher. Restart instead when Pi itself or an installed `.mjs` module changed (Node caches those past `/reload`; `harness_update` says which case applies), and `pi -c` continues the previous session. MCP server definitions and provider logins are user-owned and are not invented or copied into the stage. This gate checks fixture-backed services and OS boundaries, not authenticated search or a live PR subscription.
+Keep the stage and failure output if a gate fails; do not continue to the live install. Successful installation prints the backup location and activation action. `scripts/deploy.sh` and `harness_update` enable versioned harness releases. Once the agent is idle, type `/reload` in each open Pi session: the native SDK disposes the old extensions and loads the newly selected release while preserving the conversation. New sessions use it immediately. There is no automatic reload during a model response or running tool.
+
+Each release has a different physical path, so Node also reloads its nested `.mjs` dependencies. The installer leaves old releases and the previous legacy package in place for sessions that have not reloaded. It does not patch Pi, clear global module caches or grant additional tool permissions. An identical payload reuses its release; a modified existing release is refused. Settings select the completed release through an atomic write. Concurrent installers are refused, and failed activation preserves the previous selection. A crashed installer can leave `<agent-dir>/.harness-install.lock`; remove it only after verifying that the installer is no longer running. Old releases are retained without automatic garbage collection.
+
+Activation briefly acquires Pi's `settings.json.lock`, rereads the current preferences and merges the harness selection before the atomic write. Settings saved by an open session during the copy are preserved. This lock is released before any external package installation; a competing settings writer is never forcibly unlocked.
+
+Changes to Pi itself still need a restart. Changes to executable files in external npm/Git packages also trigger a restart recommendation because those modules retain their own paths. The installer and `harness_update` compare these dependency trees before and after installation and report when `pi -c` is needed. MCP server definitions and provider logins stay user-owned. This gate checks fixture-backed services and OS boundaries, not authenticated search or a live PR subscription.
 
 The installer pins `typescript@7.0.2` through Pi's package manager and configures its native LSP entry point by absolute path. No global `tsc`, project dependency or network download on first LSP use is needed. Routing includes TS/TSX and JS/JSX/MJS/CJS with package/Git root markers. The exact old shipped TypeScript definition is migrated; custom servers, other LSP settings and disabled-server preferences remain unchanged. `--no-packages` does not install this server: `doctor --installed` reports it missing.
 
@@ -111,20 +170,20 @@ Idempotent, Node stdlib only. Before any mutation:
 - validates the minimal JSON schema of `settings.json` (source and target) before any write;
 - refuses an existing unwritable `settings.json` before backup or copying, and checks its permissions again at activation.
 
-The installer places executable resources under `<target>/packages/pi-agent-config/` and registers that local directory in `settings.json.packages`. `package.json.pi.extensions` lists every shipped entry point explicitly; helper files and tests are not extension entry points. The package contains `extensions/`, `lib/`, `gates/`, agent prompts and the confined worker scripts. `shellPath` points into this protected package.
+With `--hot-reload`, the installer places executable resources under `<target>/packages/pi-agent-config-releases/<content-hash>/` and registers that exact directory in `settings.json.packages`. `shellPath` points into the same release. The migration is persistent: subsequent installations continue publishing releases even without the flag. A fresh target without the flag retains the legacy `<target>/packages/pi-agent-config/` layout. `package.json.pi.extensions` lists every shipped entry point explicitly; helper files and tests are not extension entry points. The package contains `extensions/`, `lib/`, `gates/`, agent prompts and confined worker scripts.
 
-User agent prompts are also copied to `<target>/agents/`. `settings.json` and `keybindings.json` remain at the agent root. Before migration, the installer backs up both the old resource layout and the package directory. It copies the package, atomically activates its settings, then removes shipped legacy files while preserving personal additions. Exact native extension exclusions prevent duplicate loading if cleanup is interrupted. A failed settings activation leaves the previous legacy entry points in place. The mandatory `-builtin:mcp` exclusion survives personal extension preferences and is checked by `doctor --installed`. `auth.json`, sessions, trust, network policy, MCP configuration, consent data and skills remain user-owned.
+User agent prompts are also copied to `<target>/agents/`. `settings.json` and `keybindings.json` remain at the agent root. The installer backs up the selected release and previous settings. Versioned installs preserve legacy files for running sessions; exact extension exclusions prevent duplicate loading after `/reload`. Legacy installs still retire shipped legacy copies while preserving personal additions. The mandatory `-builtin:mcp` exclusion survives personal extension preferences and is checked by `doctor --installed`, which resolves the selected release. `auth.json`, sessions, trust, network policy, MCP configuration, consent data and skills remain user-owned.
 
 The Pi package format handles extension discovery and distribution. The installer still performs the host-specific sandbox configuration and dependency setup; a bare `pi install` does not establish those boundaries. Do not load the development checkout as a personal package while editing it with an agent.
 
-Installation now enables the [strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox): it replaces `shellPath` with the installed Codex adapter, preserving the previous settings in the backup. Restart Pi with `--no-approve`, or use the managed launcher described below, which supplies that native option automatically. File tools and Bash run confined without routine approval prompts. Predefined network hosts are automatic. An exact public HTTP(S) URL supplied by the user can be read by `web_fetch` without another confirmation; its fixed GET worker receives only that destination, without cookies, redirects, uploads or a grant to Bash. `request_network_access` with `command` qualifies one exact command automatically, with network access limited to its lifetime; omitting `command` retains legacy human-approved session grants. Linux `run_isolated` supplies private IPC for offline validation on disposable source copies. Both flows support automatic approval without UI. Network commands also offer one-time human validation on uncertainty or in manual mode; explicit denials and auto-deny remain binding. Isolated jobs retain their no-dialog policy. See [private IPC prerequisites and qualification](docs/PRIVATE-IPC.md). Notes, Graphify, Git inspection, web helpers, CI queries, LSP and configured local MCP servers use confined executors; delegation inherits only confined capabilities. Dunst remains denied by the local strict dispatcher. Its separate implementation retains consent checks. The parent-only [host operation bridge](docs/ORCHESTRATION.md#one-host-operation) separately confirms bounded Podman, clipboard and process operations. It never opens Bash or delegates host access. Recognized failures are recorded through the existing confined Notes worker. See [MCP and desktop consent](docs/ORCHESTRATION.md#mcp-and-desktop-consent) for approval choices, scope and revocation. Unknown tools remain denied. Stable Codex >=0.155.1 must be installed and its OS sandbox and managed proxy must work. The installer backs up then deletes `tool-policy.json` and its obsolete parser/classifier files. It also retires `extensions/model-fallback/index.ts`: the old `fallback/anthropic-astra` default becomes the source's direct model, while other model preferences and native retry settings stay unchanged. There are no API pings, quota-error rewrites or custom provider switches. Resumed sessions may still name the removed virtual model: select a real model with `/model`. Installing this source does not alter saved sessions. The LSP package remains pinned to 0.4.4 with `extensions: []`, preventing its unconfined hooks from loading alongside the replacement. The confined adapter loads that package inside its worker. Do not remove the package or enable its original extension. Configure local MCP servers in the user-owned `mcp.json` described in [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox).
+Installation now enables the [strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox): it replaces `shellPath` with the installed Codex adapter, preserving the previous settings in the backup. Restart Pi with `--no-approve`, or use the managed launcher described below, which supplies that native option automatically. File tools and Bash run confined without routine approval prompts. Predefined network hosts are automatic. An exact public HTTP(S) URL supplied by the user can be read by `web_fetch` without another confirmation; its fixed GET worker receives only that destination, without cookies, redirects, uploads or a grant to Bash. `request_network_access` with `command` qualifies one exact command automatically, with network access limited to its lifetime; omitting `command` retains legacy human-approved session grants. Linux `run_isolated` supplies private IPC for offline validation on disposable source copies. Both flows support automatic approval without UI. Neither flow opens a human dialog: uncertainty, unavailable review, explicit denials and saved manual policy stop execution. See [private IPC prerequisites and qualification](docs/PRIVATE-IPC.md). Notes, Graphify, Git inspection, web helpers, CI queries, LSP and configured local MCP servers use confined executors; delegation inherits only confined capabilities. Dunst remains denied by the local strict dispatcher. Its separate implementation retains consent checks. The parent-only [host operation bridge](docs/ORCHESTRATION.md#one-host-operation) separately confirms bounded Podman, clipboard and process operations. It never opens Bash or delegates host access. Recognized failures are recorded through the existing confined Notes worker. See [MCP and desktop consent](docs/ORCHESTRATION.md#mcp-and-desktop-consent) for approval choices, scope and revocation. Unknown tools remain denied. Stable Codex >=0.155.1 must be installed and its OS sandbox and managed proxy must work. The installer backs up then deletes `tool-policy.json` and its obsolete parser/classifier files. It also retires `extensions/model-fallback/index.ts`: the old `fallback/anthropic-astra` default becomes the source's direct model, while other model preferences and native retry settings stay unchanged. There are no API pings, quota-error rewrites or custom provider switches. Resumed sessions may still name the removed virtual model: select a real model with `/model`. Installing this source does not alter saved sessions. The LSP package remains pinned to 0.14.2 with `extensions: []`, preventing its unconfined hooks from loading alongside the replacement. The confined adapter loads that package inside its worker. Its upstream skill is also filtered with `skills: []`; the local package supplies a compatible `pi-lsp` skill for the single confined tool. Do not remove the package or enable its original extension. Configure local MCP servers in the user-owned `mcp.json` described in [Strict tool sandbox](docs/ORCHESTRATION.md#strict-tool-sandbox).
 
-Sequence: validate and merge preferences, back up the existing target into `<target>.backup-<timestamp>/` (created with `0700` permissions), copy the package, activate settings atomically, retire shipped legacy copies while preserving personal additions, then run `pi install <source> --no-approve` for each listed package. String and filtered-object package entries are supported; source-managed packages replace their counterpart by identity (without the `@version`/`@sha` suffix), while personal target packages with no source counterpart are kept.
+Sequence: validate and merge preferences, acquire the installation lock, back up the selected resources into `<target>.backup-<timestamp>/` (created with `0700` permissions), prepare and publish the package, activate settings atomically, then run `pi install <source> --no-approve` for each listed external package. Only legacy mode retires shipped legacy copies. String and filtered-object package entries are supported; source-managed packages replace their counterpart by identity (without the `@version`/`@sha` suffix), while personal target packages with no source counterpart are kept.
 
 Options:
 
 ```bash
-node scripts/install.mjs --target <path>   # default: $PI_CODING_AGENT_DIR or ~/.pi/agent
+node scripts/install.mjs --target <path> --hot-reload
 node scripts/install.mjs --no-packages        # copies files, does not invoke `pi install` (offline mode)
 ```
 
@@ -152,6 +211,20 @@ The managed launcher inserts `--no-approve` before a prompt delimiter and reject
 
 `pi mcp add`, `pi mcp remove` and MCP help use the native configuration-only parser, which rejects session trust flags. The launcher forwards those arguments unchanged, including the server command after `--`; they do not launch a server. For discovery or calls, use the confined `mcp` tool inside Pi. Native `pi mcp list` connects servers outside this bridge and is not part of this exception.
 
+### Portable policies and native qualification
+
+Policy tests run on Linux and macOS using explicit fixture adapters for device discovery, command execution and secret transport. They exercise the same consent, revocation, expiry, audit, source revalidation and secret-handling rules without invoking Metal, KVM, Keychain or the clipboard. Synthetic Metal reports contain a fixture OS release and cannot qualify the real host backend. Adapter injection is internal JavaScript wiring, not a tool parameter, environment override or permission grant.
+
+| Coverage | Runs on both systems | Still needs its native host |
+| --- | --- | --- |
+| Metal | Qualification-file integrity, backend binding, consent and cancellation | Actual GPU compute and the ordinary sandbox's GPU denial |
+| KVM builds | Source identity, mount plan, approval, logs and cancellation | `/dev/kvm`, VM creation and Bubblewrap confinement on Linux |
+| Secrets | Consent, token parsing, redaction and clipboard transfer with a fake sink | Real macOS Keychain and clipboard integration |
+| Process supervision | Child lifecycle, stdio relay, Linux/Darwin signal policies and injected failures | OS-specific syscall behavior is exercised on that OS |
+| Private IPC | Mount and seccomp filter construction, validation rules | Linux namespaces, seccomp installation and `/proc/self/fd` snapshot traversal |
+
+Run `npm run verify` on each supported host with the installed Pi SDK. Run `npm run verify:integration` where the native prerequisites are available. A portable policy test is not native qualification: a passing Linux run does not establish that Metal works, and a passing macOS run does not establish that KVM works. Keep actual native checks enabled on the corresponding runner. The optional browser test additionally requires its exact local image and a working Podman connection/network; see [browser qualification](docs/BROWSER-MCP.md#use-and-verify).
+
 ### Updating a private runtime
 
 A shell launcher pointing into `~/.local/share/pi-runtime/` is not a global npm installation. Enable this repo's updater from a host terminal capable of running the native integration gate:
@@ -162,6 +235,8 @@ node scripts/update-runtime.mjs --install-launcher \
 ```
 
 The default launcher is `~/.local/bin/pi`; `--launcher <path>` selects another regular file. Activation runs `npm run verify:integration`, verifies that runtime files did not change during the gate, backs up the launcher, then replaces it atomically. The launcher binds the selected Node executable and SDK. Its default agent directory is `PI_CODING_AGENT_DIR` at activation, otherwise `~/.pi/agent`; an explicit environment override remains available for commands such as installation into another target. Ordinary commands execute the native CLI directly, preserving its PID, signals and exit status.
+
+For Homebrew Node, the launcher and managed TypeScript server persist the formula's absolute `opt/node/bin/node` (or `opt/node@<major>/bin/node`) path only after verifying that it resolves to the selected executable. Routine upgrades can then remove old Cellar versions without breaking Pi. Other Node installations retain their explicit executable path; project `PATH` is never used as a fallback. Reinstallation migrates an unchanged managed TypeScript server from the same Homebrew formula, preserving custom server commands and options.
 
 Updater code is copied into `<agent-dir>/runtime-updaters/<sha256>.mjs`, outside the writable source checkout. Only `pi update` commands execute that protected copy, always from the selected agent directory. The checkout remains necessary for the explicit update validation gate; ordinary startup works without it. After changing the updater source, Node installation or agent directory, rerun `--install-launcher` to validate and activate the new selection. An agent directory without the matching updater cannot run update commands. No Pi SDK file is rewritten.
 
@@ -185,6 +260,13 @@ commit IDs. Restoration remains a separate explicit action. Ignored untracked fi
 and external state are not backed up. See [scope, limits and the required native
 gate](docs/ORCHESTRATION.md#local-jj-recovery-points) before activation. Installing
 these files does not itself initialize a repository or create a checkpoint.
+
+When Pi starts from an umbrella directory such as `~/workspace`, supply
+`repository` with the canonical absolute root of the existing main Git repository.
+The tool can checkpoint child or separate repositories without changing the
+session's working directory or widening ordinary tool access. Call it once per
+affected repository. `/jj-checkpoint permissions /absolute/repository/root`
+revokes only that repository's checkpoint consent.
 
 Jj's secure repository/workspace configuration is copied into private temporary
 storage during checkpoint commands. User configuration, identity, ignore rules and

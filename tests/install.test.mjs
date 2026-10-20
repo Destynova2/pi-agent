@@ -1,3 +1,4 @@
+import { persistentNodeExecutable } from "../scripts/update-runtime.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -173,7 +174,7 @@ test("managed TypeScript is pinned, migrated and bound to the installed runtime 
     const first = await runInstall({ sourceRoot: source, target, noPackages: true });
     const installed = await readJson(join(target, "settings.json"));
     assert.ok(installed.packages.some(p => p.source === "npm:typescript@7.0.2"));
-    assert.equal(installed.lsp.servers.typescript.command, process.execPath);
+    assert.equal(installed.lsp.servers.typescript.command, persistentNodeExecutable());
     assert.deepEqual(installed.lsp.servers.typescript.args, [join(target, "npm/node_modules/typescript/bin/tsc"), "--lsp", "--stdio"]);
     assert.ok(installed.lsp.servers.typescript.rootMarkers.includes("package.json"));
     assert.ok(installed.lsp.servers.typescript.languages.some(l => l.extensions.includes(".mjs")));
@@ -182,6 +183,24 @@ test("managed TypeScript is pinned, migrated and bound to the installed runtime 
     assert.deepEqual((await readJson(join(first.backupDir, "settings.json"))).lsp.servers.typescript, legacy);
     await runInstall({ sourceRoot: source, target, noPackages: true });
     assert.deepEqual(await readJson(join(target, "settings.json")), installed, "idempotent reinstall");
+    // Simulate the command persisted before a package-manager upgrade.
+    const previousCommand = process.execPath.replace(/(\/Cellar\/node(?:@\d+)?\/)[^/]+(\/bin\/node)$/, "$1removed-version$2");
+    const previous = structuredClone(installed);
+    previous.lsp.servers.typescript.command = previousCommand;
+    await writeFile(join(target, "settings.json"), JSON.stringify(previous));
+    const migrated = await runInstall({ sourceRoot: source, target, noPackages: true });
+    assert.deepEqual(await readJson(join(target, "settings.json")), installed);
+    assert.deepEqual(await readJson(join(migrated.backupDir, "settings.json")), previous);
+    for (const customServer of [
+      { ...installed.lsp.servers.typescript, command: "/personal/node" },
+      { ...installed.lsp.servers.typescript, command: previousCommand, rootMarkers: ["personal.json"] },
+    ]) {
+      const personalSettings = structuredClone(installed);
+      personalSettings.lsp.servers.typescript = customServer;
+      await writeFile(join(target, "settings.json"), JSON.stringify(personalSettings));
+      await runInstall({ sourceRoot: source, target, noPackages: true });
+      assert.deepEqual((await readJson(join(target, "settings.json"))).lsp.servers.typescript, customServer);
+    }
     const custom = { ...legacy, command: "/personal/tsc" };
     assert.deepEqual(mergeSettings(settings, { lsp: { servers: { typescript: custom } } }).lsp.servers.typescript, custom);
     assert.equal(mergeSettings(settings, { lsp: { servers: { typescript: null } } }).lsp.servers.typescript, null);
