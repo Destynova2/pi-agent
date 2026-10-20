@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { commandExists } from "./lib.mjs";
 import { installedPackageRoot } from "../lib/runtime-paths.mjs";
 import { hasRequiredExtensionFilters } from "../lib/settings-policy.mjs";
+import { DEFAULT_GROB_URL, grobUrl } from "../lib/grob-url.mjs";
 
 export const REQUIRED_COMMANDS = ["git", "curl", "pi", "codex"];
 export const OPTIONAL_COMMANDS = ["graphify", "jj", "prek", "gitleaks", "python3", "claude", "gh", "podman"];
@@ -15,7 +16,7 @@ export const BUNDLED_TOOLS = ["gates/pi-prek"];
 // Deployment readiness, not an end-to-end proof. Compare the executable boundaries to this source.
 export const CONFINED_RUNTIME_FILES = [
   "package.json", "lib/runtime-paths.mjs", "lib/settings-policy.mjs", "extensions/background-bash/index.ts", "extensions/background-bash/core.ts",
-  "extensions/terminal-paste/index.ts", "extensions/task-progress/index.ts", "extensions/grob/index.ts", "extensions/grob/command.ts", "lib/grob.ts",
+  "extensions/terminal-paste/index.ts", "extensions/task-progress/index.ts", "extensions/grob/index.ts", "extensions/grob/command.ts", "lib/grob.ts", "lib/grob-url.mjs",
   "scripts/codex-shell.mjs", "scripts/codex-network.mjs", "scripts/codex-tool.mjs",
   "scripts/confined-tool.mjs", "scripts/confined-lsp-worker.mjs",
   "scripts/git-operation.mjs", "scripts/git-hook-guard.mjs", "scripts/web-read-worker.mjs", "scripts/jj-checkpoint.mjs",
@@ -37,7 +38,7 @@ export const CONFINED_RUNTIME_FILES = [
   "extensions/notes.ts", "extensions/notes/worker.ts", "extensions/git-inspect/index.ts",
   "extensions/ci-watch/index.ts", "extensions/ci-watch/worker.ts", "extensions/web/index.ts", "extensions/web/core.ts",
   "extensions/mcp/index.ts", "extensions/mcp/client.ts", "extensions/subagent/index.ts",
-  "extensions/subagent/render.ts", "extensions/subagent/results.ts",
+  "extensions/subagent/render.ts", "extensions/subagent/results.ts", "extensions/subagent/parameters.ts",
   "extensions/orchestrate/index.ts", "gates/pi-orchestrate/gates.py",
 ];
 
@@ -84,11 +85,13 @@ async function checkBundledTool(target, relPath) {
 }
 
 /** Reports whether the Grob proxy used by extensions/grob answers /health; never sends credentials. */
-async function checkGrobProxy(env) {
+export async function checkGrobProxy(env) {
   const name = "Grob proxy";
-  const baseUrl = (env.GROB_URL ?? "http://127.0.0.1:13456").replace(/\/+$/, "");
+  let baseUrl;
+  try { baseUrl = grobUrl(env.GROB_URL ?? DEFAULT_GROB_URL); }
+  catch (error) { return { name, required: false, ok: false, detail: error.message }; }
   try {
-    const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000) });
+    const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000), redirect: "error" });
     return { name, required: false, ok: response.ok, detail: `${baseUrl} -> HTTP ${response.status}` };
   } catch (error) { return { name, required: false, ok: false, detail: `${baseUrl} unreachable (${error.message}); run \`grob start -d\`` }; }
 }

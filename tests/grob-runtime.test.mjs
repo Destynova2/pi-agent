@@ -67,6 +67,7 @@ test("Grob registration streams through the installed Pi SDK and preserves each 
     return fetch(input, init);
   });
   for (const oldModel of restored) {
+    assert.equal(runtime.getModel(oldModel.provider, oldModel.id).compat, undefined, "upstream API compatibility flags do not leak into the proxy protocol");
     for (const model of [oldModel, runtime.getModel(oldModel.provider, oldModel.id)]) {
       for (const method of ["stream", "streamSimple"]) {
         const result = await runtime[method](model, { messages: [{ role: "user", content: "Reply OK", timestamp: Date.now() }] },

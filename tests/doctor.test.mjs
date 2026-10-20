@@ -6,8 +6,24 @@ import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { runDoctor, REQUIRED_COMMANDS, OPTIONAL_COMMANDS, CONFINED_RUNTIME_FILES } from "../scripts/doctor.mjs";
+import { runDoctor, checkGrobProxy, REQUIRED_COMMANDS, OPTIONAL_COMMANDS, CONFINED_RUNTIME_FILES } from "../scripts/doctor.mjs";
 import { makeFakeToolchain, makeTmpDir } from "./fixtures/build.mjs";
+
+test("Grob health refuses remote or secret-bearing URLs before fetching and forbids redirects", async t => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => new Response("ok"));
+  for (const GROB_URL of ["https://example.com", "http://user:private-token@localhost", "http://localhost/?private-token", "http://localhost/path", "private-token"]) {
+    const result = await checkGrobProxy({ GROB_URL });
+    assert.equal(result.ok, false);
+    assert.match(result.detail, /loopback HTTP/);
+    assert.doesNotMatch(result.detail, /private-token/);
+  }
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal((await checkGrobProxy({ GROB_URL: "http://[::1]:13456/" })).ok, true);
+  assert.equal(fetch.mock.calls[0].arguments[0], "http://[::1]:13456/health");
+  assert.equal(fetch.mock.calls[0].arguments[1].redirect, "error");
+  fetch.mock.mockImplementation(async () => { throw new TypeError("fetch failed"); });
+  assert.equal((await checkGrobProxy({})).ok, false);
+});
 
 test("reports missing required tools and fails even without --strict", async () => {
   const target = await makeTmpDir("pi-agent-doctor-target-");

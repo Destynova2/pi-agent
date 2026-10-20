@@ -83,7 +83,9 @@ export default function (pi: ExtensionAPI) {
     registerGrobCommand(pi, GROB_URL, isHealthy);
     const { stream, streamSimple } = anthropicMessagesApi();
     const transport: ReturnType<typeof grobFetch> = (input, init) => grobFetch(GROB_URL)(input, init);
-    const routed = (model: Model<Api>): Model<"anthropic-messages"> => ({ ...model, api: "anthropic-messages", baseUrl: GROB_URL, headers: undefined });
+    // Provider-specific compatibility options belong to the upstream API.
+    // Grob owns that translation; Pi speaks the proxy's Anthropic protocol.
+    const routed = (model: Model<Api>): Model<"anthropic-messages"> => ({ ...model, api: "anthropic-messages", baseUrl: GROB_URL, headers: undefined, compat: undefined });
     const options = <T extends StreamOptions>(value?: T) => ({ ...value, apiKey: "grob", headers: undefined, env: {}, fetch: transport, client: undefined });
     // Override the provider itself so restored models, compaction and nested reviewer
     // calls use Grob even when they retained an old model object or provider name.
