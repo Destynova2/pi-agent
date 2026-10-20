@@ -205,7 +205,9 @@ test("pending reviews and foreground commands reserve capacity and release it on
 
 test("oversized launch payload and metadata sets fail before review", async t => {
   const f = executionFixture(t);
-  const base = join(f.root, ...Array.from({ length: 5 }, (_, i) => `${i}${"é".repeat(100)}`));mkdirSync(base, { recursive: true });
+  // Each path stays under PATH_MAX (1024 on macOS) while eight of them, listed twice in the profile, exceed 16 KiB.
+  const parts = []; for (let fill = 1016 - Buffer.byteLength(f.root) - "/file-0".length; fill > 1;) { const n = Math.min(127, Math.floor((fill - 1) / 2)); parts.push("é".repeat(n)); fill -= 2 * n + 1; }
+  const base = join(f.root, ...parts);mkdirSync(base, { recursive: true });
   const roots = Array.from({ length: 8 }, (_, i) => join(base, `file-${i}`));
   for (const path of roots) writeFileSync(path, "");
   await assert.rejects(f.run({ write_paths: roots }), /16 KiB/);assert.equal(f.reviews.length, 0);
