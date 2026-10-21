@@ -64,10 +64,10 @@ fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
 transcript = bytearray()
 
 
-def wait_for(marker, start=0):
-    deadline = time.monotonic() + 12
+def wait_for(marker, start=0, timeout=12):
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if marker in transcript[start:]:
+        if marker is not None and marker in transcript[start:]:
             return
         ready, _, _ = select.select([fd], [], [], 0.1)
         if ready:
@@ -78,6 +78,8 @@ def wait_for(marker, start=0):
             if not data:
                 break
             transcript.extend(data)
+    if marker is None:
+        return
     text = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*\x07)", "", transcript.decode(errors="replace"))
     tail = "\n".join(line.strip() for line in text.splitlines() if line.strip() and not set(line.strip()) <= {"─"})
     raise RuntimeError(f"Did not observe {marker!r}; terminal tail:\n{tail[-2500:]}")
@@ -95,7 +97,9 @@ try:
     wait_for(b"Connecter un fournisseur", send(b"/grob\r"))
     send(b"\x1b")
     # Escape is an ambiguous terminal sequence; give Pi's input decoder its timeout.
-    time.sleep(0.2)
+    # Keep draining the pty meanwhile: a full macOS pty buffer blocks Pi's redraw, so the
+    # timer never fires and ESC merges with the next command into one Alt sequence.
+    wait_for(None, timeout=0.2)
     wait_for(b"FIXTURE_PROMPT_READY_2", send(b"/fixtureprobe\r"))
     wait_for(b"FIXTURE_LOGIN_READY", send(b"/grob connect anthropic\r"))
     wait_for("Assistant Grob terminé".encode(), send(b"fixture-code\r"))
@@ -117,7 +121,14 @@ finally:
     (root / "terminal.log").write_bytes(transcript)
     try:
         os.kill(pid, signal.SIGTERM)
+        # Pi ignores SIGTERM while a modal is open; do not let a failed step hang the test.
+        for _ in range(50):
+            if os.waitpid(pid, os.WNOHANG) != (0, 0):
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
     except ProcessLookupError:
         pass
-    os.waitpid(pid, 0)
     os.close(fd)

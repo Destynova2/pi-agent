@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -10,7 +10,9 @@ import { runInstall } from "../scripts/install.mjs";
 import { buildFixtureSource } from "./fixtures/build.mjs";
 
 const script = fileURLToPath(new URL("../scripts/deploy.sh", import.meta.url));
-test("deployment rejects invalid SDK paths before staging or running gates", () => {
+// The real script snapshots this checkout first, which linked worktrees do not support.
+const linkedWorktree = !lstatSync(new URL("../.git", import.meta.url)).isDirectory();
+test("deployment rejects invalid SDK paths before staging or running gates", { skip: linkedWorktree && "deploy.sh requires a standalone Git checkout" }, () => {
   const root = mkdtempSync(join(tmpdir(), "pi-deploy-sdk-"));
   try {
     const bin = join(root, "bin"), target = join(root, "live"), log = join(root, "commands");
